@@ -172,34 +172,46 @@ def refine_grasp_with_pose(seg: dict, cup_xyz, hand_xyz, mouth_xyz=None, fps=FPS
     d_wc = np.linalg.norm(hand - cup, axis=1)
     v_wc = np.gradient(_median_smooth(d_wc, 11)) * fps
 
-    # The grasp ENDS the one big approach. Take the first closing run that travels a real
-    # DISTANCE -- a negative slope alone is not enough.
+    # The wrist->cup distance brackets the whole cup-handling period, at BOTH ends:
+    #   GRASP   = end of the one big CLOSING run  (hand arrives, distance goes flat)
+    #   RELEASE = start of the one big OPENING run (hand lets go, distance opens up)
+    # Between them the hand and cup are one rigid body and the distance is a plateau.
     #
-    # Measured on P07: the wrist->cup distance has NINE closing runs, and they separate
-    # completely. The reach is one unbroken run covering 247mm = 95% of the whole span
-    # (399 -> 139mm). Every other run travels 0-10mm (1-4% of span): those are the hand
-    # adjusting its GRIP while already holding the cup. After the reach the distance
-    # plateaus at ~150mm and never leaves until the cup is set down.
-    #
-    # So: require the run to close >=30% of the span. The margin is enormous (95% vs <=4%,
-    # anything from ~5% to ~90% picks out exactly the reach), and unlike "just take the
-    # first run" it stays correct if a fidget happens to precede the reach, or if a
-    # participant fumbles the grasp and genuinely approaches twice.
+    # Measured on P07, and the separation is total at both ends:
+    #   closing runs: NINE, but the reach is ONE run covering 247mm = 95% of the span;
+    #                 every other closes 0-10mm (1-4%) = the hand adjusting its grip.
+    #   opening runs: EIGHT, but the release is ONE run covering 224mm = 86% of the span;
+    #                 every other opens 1-11mm (1-4%) = the same fidgets.
+    # So: require a run to travel >=30% of span. The margin is enormous (86-95% vs <=4%),
+    # and unlike "take the first/last run" it survives a fidget landing out of order or a
+    # participant who fumbles and genuinely approaches twice.
     span = float(d_wc.max() - d_wc.min())
     need = max(int(flat_s * fps), 3)
+    big = 0.3 * span
+
     closing = [(s, e) for s, e in _runs(v_wc < -flat_mmps)
-               if e - s >= need and (d_wc[s] - d_wc[e - 1]) >= 0.3 * span]
+               if e - s >= need and (d_wc[s] - d_wc[e - 1]) >= big]
+    opening = [(s, e) for s, e in _runs(v_wc > flat_mmps)
+               if e - s >= need and (d_wc[e - 1] - d_wc[s]) >= big]
     if not closing:
         return seg
-    onset = closing[0][1]                  # end of the FIRST real approach = the grasp
 
     gs, ge = seg["grasp"]
+    onset = closing[0][1]                   # end of the first real approach = grasp
+    # release = start of the first big opening run AFTER the grasp = cup set down
+    offset = next((s for s, _ in opening if s > onset), ge)
+
     if onset <= gs or onset >= ge:
         return seg                          # cup-only already agreed, or the fix is nonsense
     out = dict(seg)
-    out["grasp"] = (onset, ge)
+    out["grasp"] = (onset, min(offset, ge))
     phase = seg["phase"].copy()
     phase[gs:onset] = P_REST_PRE            # what cup-only called "motion" here was jitter
+    if offset < ge:
+        # ...and the same at the other end: cup-only kept "transporting" for 2.3s after the
+        # cup was demonstrably on the table and the hand had gone home, because its offset
+        # gate is unsigned cup speed > 10mm/s -- sitting INSIDE the jitter floor.
+        phase[offset:ge] = P_REST_POST
     out["phase"] = phase
     out["intervals"] = _intervals(phase)
     return out
@@ -393,10 +405,16 @@ def to_murphy_phases(seg: dict, hand_xyz, cup_xyz, fps=FPS,
                 out.append(("reaching", a, e))
                 continue
         if name == "rest_post" and e > s:
-            # returning = leading run of "heading back to rest" after the cup is placed
-            runs = [(a, b) for a, b in _runs(v_rest[s:e] < -dir_thr_mmps) if b - a >= min_run]
-            if runs:
-                a, b = runs[0]
+            # returning = the hand travelling home after the cup is placed. rest_post now
+            # BEGINS at the true release (the wrist->cup plateau opening up), so returning
+            # is simply the leading stretch where the hand is still closing on its rest
+            # position -- it ends when the hand settles. Position-primary again: walk
+            # forward while the hand is still meaningfully away from rest.
+            settled = d_rest[s:e] <= max(leave_rest_mm, 1.5 * float(np.median(d_rest[-30:])))
+            b = 0
+            while b < (e - s) and not settled[b]:
+                b += 1
+            if b >= min_run:
                 out.append(("returning", s, s + b))
                 if s + b < e:
                     out.append(("rest_post", s + b, e))

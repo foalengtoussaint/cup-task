@@ -20,9 +20,25 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-DEFAULT_MODEL = "cup_clean3d_refill.pt"
+DEFAULT_MODEL = str(Path(__file__).resolve().parents[1] / "models" / "cup_clean3d_refill.pt")
 CUP_CLASS = 0
 MIN_CONF = 0.25   # matches the cache's c0.25 detection threshold
+
+# RUN AT THE RESOLUTION THE MODEL WAS TRAINED AT. This was 1280 and that was a BUG --
+# not a slow-but-safe choice, a broken one. Measured on P07 cam_4 vs the research cache
+# (which calls model(...) with no imgsz at all, i.e. ultralytics' default 640):
+#
+#     imgsz    cup found    agrees w/ research    ms
+#       640        64%              100%          4.3
+#       960        62%               94%          5.5
+#      1280         8%               47%          9.0
+#      1920         0%                --         16.1
+#
+# Upsampling does NOT buy detail -- it takes the cup OFF-DISTRIBUTION. The detector
+# learned its size priors at 640; at 1280 the cup arrives at twice the scale it ever saw
+# and the model simply stops finding it. Bigger input is slower AND worse, on both axes
+# at once. If you ever retrain at another size, change this to match the TRAINING size.
+DEFAULT_IMGSZ = 640
 
 
 @dataclass
@@ -58,7 +74,7 @@ def _pick_cup(result):
 
 
 def detect_cup(clip: str | Path, model_path: str = DEFAULT_MODEL,
-               device: str | int = 0, imgsz: int = 1280,
+               device: str | int = 0, imgsz: int = DEFAULT_IMGSZ,
                progress_every: int = 60) -> list[CupDet]:
     """Run the cup segmenter over every frame; return one CupDet per frame."""
     from ultralytics import YOLO
@@ -107,7 +123,7 @@ def main(argv=None) -> int:
     ap.add_argument("-o", "--out", type=Path)
     ap.add_argument("--model", default=DEFAULT_MODEL)
     ap.add_argument("--device", default=0)
-    ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ)
     args = ap.parse_args(argv)
 
     out = args.out or args.clip.with_suffix(".cup.json")

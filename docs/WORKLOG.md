@@ -47,9 +47,14 @@ dwell exactly as designed, and using the real per-frame confidence changes nothi
 
 ### Real-time: re-measured for yolo26
 Model inference **10.3 ms/frame = 98 fps** at 1080p, vs the 16.7ms/60fps bar. Real-time
-holds. Decode is only 1.9ms/fr; batching buys ~0 (GPU already saturated per-frame).
+holds. Decode is only 1.9ms/fr.
 Caveat: `model.predict(source=<path>)` adds ~2x overhead -- feed it cv2-decoded frames.
 **An offline batch job's wall-clock says nothing about the live rate.** Don't conflate.
+
+> **Superseded 2026-07-13 (see below).** The claim "batching buys ~0 (GPU already
+> saturated per-frame)" is **WRONG** and was never measured -- it was assumed. A single
+> small image leaves a 3060 Ti almost entirely idle; batching 10 cameras costs 4.6x one
+> camera, not 10x. It is the single biggest lever we have.
 
 ### First end-to-end run (P07_drinking_left_20240124_142730, 10 cams)
 Raw video -> phases, no hand-holding:
@@ -116,3 +121,149 @@ reasons it isn't here yet:
 
 Decision: ship the base geometric pipeline (same method the research *truth* uses), then
 measure those two as separate steps.
+
+---
+
+## 2026-07-13 (later) — Fixing the grasp/release, and a detector bug that cost us both speed AND accuracy
+
+### The cup-motion onset: find the GRASP, not the cup's first wobble
+The cup-speed gate (`FWD_ON=15mm/s`) fires on the **jitter floor of a stationary cup**
+(~30-50mm/s from triangulation noise), so "transport start" landed at 0.97s -- while the
+hand was still reaching. Every reach-scoped Murphy measure inherited that error
+(`time_to_peak_velocity` read **93%**, i.e. the peak sat at the very end of a window that
+was mostly not reaching).
+
+The fix is a signal with no threshold on cup speed at all (**the user's idea**): the
+**wrist->cup distance plateau.** The distance *closes* during the reach, goes *flat* the
+instant the hand grasps (hand + cup become one rigid body), and *opens* at release. Take
+the first closing run that travels >=30% of the distance span; its END is the grasp. The
+first opening run after it is the release. Scale-free, no tuning:
+
+    reach = 247mm of travel = 95% of span   |   fidgets/noise = 0-10mm = <4%
+
+Margins are enormous, so the rule is robust rather than tuned. Same signal brackets **both**
+ends of the task -- the release fix made `returning` appear at all.
+
+| | before | after |
+|---|---|---|
+| transport window | 0.97-7.78s | **1.42-5.48s** |
+| `time_to_peak_velocity` | 93% | **39%** (healthy band 30-50%) |
+| `back_transport` | 3.58s | 1.28s |
+
+### KF+RTS gap-fill: I had it BACKWARDS, and the user was right
+I set `smooth=False` after misreading **one** overlay frame, then built a confident
+mechanistic story on it ("a constant-velocity model can't represent a dwell"). Wrong.
+Re-checked on **raw** frames (not the overlay -- an overlay drawn from the track under test
+begs the question):
+
+- **2.90s** (KF's drink onset): the cup is **already at her lips**. Linear's 3.08s is LATE.
+- **3.78s** (KF's offset): the cup has **tilted away**. Linear's 4.20s is LATE.
+
+Linear interpolation **cuts the corner** of the cup's arc to the mouth: the chord across the
+occlusion sits farther from the face than the true path, so "near the mouth" fires late and
+clears early. The KF is better at **both** ends. `smooth=True` is the default.
+
+**Lesson, written down because it keeps recurring:** look at *both* ends of an interval
+before condemning a filter, and never judge a track from an overlay rendered *with* it.
+
+### Murphy position measures: ported, exact
+`cup_task/score.py` reproduces the iMOVE container's cached measures **exactly (max diff 0)**
+given the same sites + phase intervals. The 8 angle measures are deliberately absent (they
+need MuJoCo `qpos` IK; the container's authors refused to derive them from raw keypoints and
+so do we). The one non-obvious detail: **`medfilt(3)` before the Butterworth.** Without it a
+lowpass *smears* a single-frame spike into a multi-frame bump that survives even a 2Hz
+cutoff and then dominates `peak_velocity`.
+
+### THE BIG ONE: `imgsz=1280` was a bug -- 2x slower AND 8x worse
+`cup_detect.py`/`pose_keypoints.py` defaulted to **imgsz=1280**. The research pipeline
+(`cache_dets_model.py:49`) calls `model(buf, conf=...)` with **no imgsz at all** -- i.e.
+ultralytics' default **640**. Measured on P07 cam_4, 200 frames, vs the research cache:
+
+| imgsz | cup found | agrees w/ research <10px | ms |
+|-------|-----------|--------------------------|-----|
+| **640** | **64%** | **100%** | **4.3** |
+| 960   | 62%       | 94%                      | 5.5 |
+| 1280  | **8%**    | 47%                      | 9.0 |
+| 1920  | **0%**    | --                       | 16.1|
+
+**Upsampling past the training size is OFF-DISTRIBUTION, not free detail.** The detector
+learned its size priors at 640; at 1280 the cup arrives at twice the scale it ever saw and
+the model simply stops finding it. There is no speed/accuracy tradeoff here -- 1280 was
+**worse on both axes at once**.
+
+Consequence, end-to-end on P07 (10 cams): **cup 3D coverage 76% -> 91%.** So a large part
+of what the last entry called "the cup vanishes on 24% of frames (occlusion!)" was **not
+occlusion -- it was this bug.** Real occlusion is the remaining 9%. The drink dwell widened
+0.88s -> 1.10s, in the direction `project_mouth_dwell_truth` says is correct (the speed
+proxy runs ~1s short).
+
+### What the GPU is actually bound by: LAUNCHES, not pixels
+Inference time vs imgsz at batch=1 (either net) is **flat** below the knee:
+
+    imgsz   128   512   640  1024  1280  1920
+    ms      2.8   2.9   3.2   4.3   6.6  13.3
+            ^------ FLAT (launch-bound) ------^  ^-- compute-bound --^
+
+25x fewer pixels (128 vs 640) changes inference by **4%**. The cost is per-*call* overhead
+(~200 CUDA kernel launches + Python round-trip), not arithmetic. Two consequences:
+
+- **The crop-tracking idea is unnecessary.** Cropping to the person to make the cup bigger
+  works exactly as theorized (cup is 26.0px on full@1280 vs 26.4px on crop@640) -- but
+  running at the native 640 achieves the same thing with no crop, no state machine, no drift
+  guard, no coordinate remapping. Cropping *below* 640 buys nothing (all on the floor).
+- **Batching across cameras is the real lever** -- it is the only thing that amortizes the
+  launch overhead. 10 cameras cost **4.6x** one camera, not 10x.
+
+### Speed, settled: 10 cameras @ 640, batched + threaded
+Both nets, decode excluded (a live camera hands you the frame):
+
+| cameras | 1 | 2 | 4 | 6 | 8 | 10 |
+|---|---|---|---|---|---|---|
+| **fps** | **123** | **83** | 52 | 37 | 31 | **25** |
+
+**25fps at 10 cameras, and that is ENOUGH** -- `score.py` lowpasses at 4Hz, so ~12-15fps
+fully samples everything downstream. Frames beyond that are smoothed away regardless.
+The 60fps target was a requirement we did not actually have.
+
+Threading the two nets (they are independent; 2 threads overlap one's CPU phase with the
+other's GPU phase) gives **1.30x at 640**. Note this weakens the case for the merged net:
+its speed argument was "one launch sequence instead of two", but threading already recovers
+much of that for free -- the merged net's real appeal is architectural (shared backbone,
+bit-identical keypoint head), not throughput. **TensorRT** remains the untapped lever
+(fuses kernels -> attacks the launch bound directly; `half=True` on a `.pt` is a **no-op**,
+measured 4.0 vs 4.1ms -- you only get fp16 for real via TRT).
+
+### Crop-tracking: measured, it does NOTHING. Do not propose it again.
+The idea (crop to the subject so the cup is bigger on the model's canvas) is mechanically
+sound and was tested twice. **It works exactly as theorized and buys nothing**, because the
+cup's pixel size was never the binding constraint:
+
+| P07 cam_4, 485 frames, vs research cache | cup found | cup size on canvas | ms |
+|---|---|---|---|
+| full frame @640 (shipping) | 354 (73%) | 15.6px | 4.2 |
+| task-region crop @640      | 358 (**74%**) | **20.1px** | 4.7 |
+
+The crop makes the cup **29% bigger** and finds **4 more frames out of 485.** The misses are
+**occlusion** -- the hand wraps the cup at the lips -- and a larger picture of a hidden cup
+is still a hidden cup. (Earlier variant, person-crop@640 vs full@1280, was also a null: cup
+26.0px vs 26.4px.) Cropping *below* 640 is worse than useless: inference there is
+launch-bound and flat, so you shrink the cup for zero speed gain.
+
+**The lesson is about where the errors live, not about crops.** We reached for a resolution
+fix twice for a problem that was never resolution.
+
+### Two videos, and they answer different questions
+- `*_MODELVIEW_640.mp4` -- the clip **at 640x360, the actual model input**, with that ONE
+  camera's raw 2D detections. Use it to judge the DETECTOR. (Cup is a median **15px** here;
+  cam_4 finds it in 73% of frames.)
+- `*_phases_640.mp4` -- full-res, but the markers are the **3D fused tracks reprojected**
+  through that camera's calibration. They come from all 10 cameras + the KF+RTS, so they
+  appear even on frames this camera missed. Use it to judge the **3D + phases**; a marker
+  off the cup means the NUMBER is wrong, not just the picture (the dumb-player rule).
+
+### Still open
+- **Everything above rests on ONE rep** (P07_drinking_left_20240124_142730). Needs a cohort run.
+- `max_trunk_displacement` = 4.8mm vs an expected 10-40mm -- the shoulder-midpoint proxy
+  barely moves. A tracking issue, not a windowing one.
+- **TensorRT** is the one unmeasured speed lever (fuses kernels -> attacks the launch bound).
+  Only worth doing if 25fps@10cams ever stops being enough -- it currently is.

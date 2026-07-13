@@ -47,6 +47,13 @@ TASK_KP = ["nose", "left_eye", "right_eye", "left_ear", "right_ear",
 # low-confidence joint never gets triangulated as if it were solid.
 MIN_KP_CONF = 0.30
 
+# Match the model's TRAINING resolution (stock COCO yolo*-pose nets are trained at 640).
+# This used to be 1280, which cost ~2x the time for nothing: the person is large in frame
+# and was already detected at 100% coverage, so there was no accuracy to gain -- while the
+# CUP net at 1280 was catastrophically off-distribution (8% recall vs 64% at 640, see
+# cup_detect.DEFAULT_IMGSZ). Upsampling past the training size is not free detail.
+DEFAULT_IMGSZ = 640
+
 
 @dataclass
 class FramePose:
@@ -77,7 +84,7 @@ def _pick_person(result):
 
 
 def extract_pose(clip: str | Path, model_path: str = "yolo11n-pose.pt",
-                 device: str | int = 0, imgsz: int = 1280,
+                 device: str | int = 0, imgsz: int = DEFAULT_IMGSZ,
                  progress_every: int = 60) -> list[FramePose]:
     """Run YOLO-pose over every frame of `clip`; return one FramePose per frame.
 
@@ -157,7 +164,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-o", "--out", type=Path, help="output JSON (default: <clip>.pose.json)")
     ap.add_argument("--model", default="yolo11n-pose.pt")
     ap.add_argument("--device", default=0)
-    ap.add_argument("--imgsz", type=int, default=1280)
+    ap.add_argument("--imgsz", type=int, default=DEFAULT_IMGSZ)
     args = ap.parse_args(argv)
 
     out = args.out or args.clip.with_suffix(".pose.json")

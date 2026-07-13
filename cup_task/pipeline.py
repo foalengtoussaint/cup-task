@@ -134,7 +134,8 @@ def main(argv=None) -> int:
     ap.add_argument("--stem", help="which rep (default: all reps found)")
     ap.add_argument("-o", "--out", type=Path, default=Path("out"))
     ap.add_argument("--cup-model", default=cup_detect.DEFAULT_MODEL)
-    ap.add_argument("--pose-model", default="yolo11n-pose.pt")
+    ap.add_argument("--pose-model", default=str(Path(__file__).resolve().parents[1]
+                                                / "models" / "yolo26n-pose.pt"))
     ap.add_argument("--device", default="0")
     a = ap.parse_args(argv)
 

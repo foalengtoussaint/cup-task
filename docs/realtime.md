@@ -1,87 +1,183 @@
-# Real-time detection: measurements and architecture
+# Real-time: what the rig actually does, and why
 
-**Question:** can the cup + body-keypoint detection run in real time?
-**Answer:** yes. On real rig footage (1920×1080 @ 60 fps) the model processes a
-frame in **~8.7 ms** (median), i.e. **~95 fps** — 1.6× faster than the cameras
-record. One model pass yields person box + 17 body keypoints + cup box.
+Measured **2026-07-13** on an **RTX 3060 Ti (8GB)**, 1920x1080 @ 60fps source, up to 10
+cameras. Every number here was measured on this machine; none is quoted from a spec sheet.
 
-## What "real-time" means here
+> **This supersedes the earlier version of this file**, which claimed "~95fps, real-time ✔"
+> from a single-camera test at `imgsz=1280`. That was wrong twice over: it never asked how
+> many cameras the GPU must serve *at once*, and 1280 turns out to be a resolution at which
+> the cup detector barely works at all (see below). A per-camera fps with no camera count is
+> not a real-time claim.
 
-The cameras record at **60 fps**, so a frame arrives every **16.7 ms**. To keep
-up live, the model must finish each frame in under that. It does, with headroom.
+**Decode is excluded from the budget throughout.** Reading an mp4 costs ~2ms/frame, but a
+live camera hands you the frame already decoded -- you pay that in a capture thread, in
+parallel, not in the inference budget. (Whether ten simultaneous USB streams *can* keep up
+is a capture question we have NOT measured. It may well be the real bottleneck.)
 
-## Measured framerate
+---
 
-Measured with `scripts/realtime_demo.py` on `P07_drinking_right` (498 timed
-frames, 5-frame GPU warmup discarded), merged model
-`runs/pose/runs/cup_head_frozen_p3/weights/best.pt`, imgsz 1280, single GPU.
+## The answer
 
-| metric | value | notes |
+**cup detector + yolo26n-pose, imgsz 640, batched across cameras, both nets on separate CUDA
+streams:**
+
+| cameras | 1 | 2 | 4 | 6 | 8 | **10** |
+|---|---|---|---|---|---|---|
+| **fps** | 173 | 119 | 65 | 42 | 32 | **26** |
+| ms/frame | 5.8 | 8.4 | 15.5 | 23.6 | 31.7 | 37.8 |
+
+With **yolo26s-pose** (better keypoints, see the end): 10 cameras -> **19 fps**.
+
+### 26fps at 10 cameras is ENOUGH. 60fps was never a real requirement.
+
+`score.py` lowpasses hand position at **4 Hz** before differentiating it. By Nyquist,
+~12-15fps already fully samples everything downstream -- frames beyond that are *smoothed
+away before any measure sees them*. Running at 60fps would buy data the filter then
+discards. (The research pipeline's robustness study reached the same conclusion from the
+other side: the whole thing survives 15fps.)
+
+---
+
+## The three findings behind those numbers
+
+### 1. `imgsz=1280` was a bug: 2x slower AND 8x worse
+
+The detectors defaulted to `imgsz=1280`. The research pipeline (`cache_dets_model.py:49`)
+passes **no imgsz at all** -- ultralytics' default **640**, which is also the **training**
+size. Measured on P07 cam_4 against the research cache:
+
+| imgsz | cup found | agrees w/ research <10px | ms |
+|-------|-----------|--------------------------|-----|
+| **640** | **64%** | **100%** | **4.3** |
+| 960   | 62%       | 94%                      | 5.5 |
+| 1280  | **8%**    | 47%                      | 9.0 |
+| 1920  | **0%**    | --                       | 16.1|
+
+**Upsampling past the training size is OFF-DISTRIBUTION, not free detail.** The detector
+learned its size priors at 640; at 1280 the cup arrives at twice the scale it ever saw and
+the model stops finding it. There was no speed/accuracy trade being made -- 1280 was **worse
+on both axes at once**.
+
+End-to-end: **cup 3D coverage 76% -> 91%.** Much of what we had been calling "the cup is
+occluded 24% of the time" was *this bug*. The real occlusion is the remaining 9% -- her hand
+wraps the cup at her lips, visible in the render, and no detector fixes that.
+
+### 2. The GPU is LAUNCH-bound, not compute-bound
+
+Inference time vs imgsz, batch=1, either net:
+
+    imgsz   128   512   640  1024  1280  1920
+    ms      2.8   2.9   3.2   4.3   6.6  13.3
+            ^------- FLAT -------^   ^-- compute-bound --^
+
+**A 25x cut in pixel count (128 vs 640) changes inference by 4%.** The cost is per-*call*
+overhead -- ~200 CUDA kernel launches, the Python round-trip, the sync -- not arithmetic. A
+640x640 image briefly occupies a few hundred of the card's 4864 cores; the rest is ceremony.
+The knee is ~640-1024.
+
+Two consequences, both tested rather than assumed:
+
+- **BATCHING across cameras is the main lever**, because it is the only thing that amortizes
+  a fixed per-call cost across more images. 10 cameras cost **4.6x** one camera, not 10x.
+- **CROP-TRACKING IS A NULL. Do not propose it again.** The idea (crop to the subject so the
+  cup is bigger on the model's canvas) is mechanically sound, was tested twice, works exactly
+  as theorized, and buys nothing:
+
+  | | cup found | cup size on canvas |
+  |---|---|---|
+  | full frame @640 | 354/485 (73%) | 15.6px |
+  | task-region crop @640 | 358/485 (**74%**) | **20.1px** |
+
+  A **29% bigger cup finds 4 more frames out of 485**, because the misses are *occlusion*,
+  not resolution. Cropping *below* 640 is worse than useless: you shrink the cup for zero
+  speed gain, since inference there is flat.
+
+### 3. Use separate CUDA STREAMS, not just threads
+
+Two Python threads calling `predict()` both submit into the **same default CUDA stream**, so
+their kernels still serialize *on the device*; all threading overlaps is one net's CPU work
+(letterbox, H2D copy) with the other's GPU work. A `torch.cuda.Stream` **each** lets them
+interleave:
+
+| cams | serial | threads | **streams** | streams gain |
+|---|---|---|---|---|
+| 1  | 8.3ms  | 6.6  | **5.8**  | **1.42x** |
+| 4  | 20.2   | 17.8 | **15.5** | 1.30x |
+| 10 | 45.2   | 41.2 | **38.6** | 1.17x |
+
+**The gain decays with batch size (1.42x -> 1.17x), and that decay CONFIRMS the launch-bound
+diagnosis by its shape:** at batch=1 the GPU idles between small kernels and a second stream
+fills the gaps; at batch=10 it is genuinely computing and there are no gaps left to fill.
+
+Output verified **bit-identical** (same detection md5s, same phase intervals). Concurrency
+that moved a number would be a bug, not a speedup.
+
+**Gotcha:** `torch.cuda.stream()` is **thread-local**. The context must be entered INSIDE the
+worker thread. Set it on the main thread, submit to a pool, and you silently get the default
+stream back -- i.e. you measure your own bug and conclude streams don't work.
+
+---
+
+## Levers not taken
+
+| lever | expected | status |
 |---|---|---|
-| source framerate (the bar) | **60.0 fps** (16.7 ms) | must beat this |
-| **model inference** | **94.6 fps** | p50 **8.7 ms**, p95 27.6 ms |
-| end-to-end (+ decode/draw/encode) | 48.0 fps | demo I/O overhead, not the model |
-| **verdict** | **REAL-TIME ✔** | model 1.6× faster than source |
+| **TensorRT** | 2-3x (fuses kernels -> attacks the launch bound *directly*) | **untried.** The one real lever left |
+| merged net | ~1.5x over streams | not worth it *for speed*: streams already recover most of the "one launch sequence instead of two" argument. Its appeal is **architectural** (shared backbone, bit-identical frozen keypoint head), not throughput |
+| `half=True` on a `.pt` | nothing | **measured no-op** (4.0 vs 4.1ms). Ultralytics still runs the fp32 graph; real fp16 needs a TRT export |
+| lower imgsz | nothing | flat below 640 (launch-bound), and 640 is the training size |
+| crop-tracking | nothing | **measured null** (see above) |
 
-- **Model inference** is the real number: how fast the network runs. 8.7 ms
-  median → ~95 fps. Even the p95 worst frame (27.6 ms ≈ 36 fps) stays above 30.
-- **End-to-end** (48 fps) includes reading the MP4, drawing the overlay, and
-  re-encoding to MP4 — none of which exist in a live deployment (a live camera
-  delivers decoded frames; you'd render to screen, not re-encode a file). It's
-  reported only for honesty; it is *not* the system's live rate.
+TensorRT is worth pulling only if 26fps stops being enough. It currently is enough.
 
-Overlay video with the live FPS HUD: `out/realtime_p07.mp4`.
-Reproduce: `python scripts/realtime_demo.py CLIP.mp4 --json out/rt.json`.
+---
 
-## Architecture: what runs live vs. after
+## Which pose model (n / s / m / x)
 
-The system is deliberately split. **Detection is live; the 3D/scoring pipeline
-is offline.** This is the right split — per-frame detection is cheap and
-must stream; multi-camera fusion and scoring want all the frames first and are
-not latency-critical.
+| | 10-cam fps | wrist 3D jitter |
+|---|---|---|
+| **yolo26n** | **26** | 4.37mm |
+| **yolo26s** | **19** | **3.55mm** |
+| yolo26m | 11 | 3.49mm |
+| yolo26x | ~6 | 3.27mm |
 
-```
-  LIVE (per camera, per frame, ~95 fps)        OFFLINE (after capture)
-  ┌───────────────────────────────┐            ┌──────────────────────────────┐
-  │  frame ─► ONE model pass ─►    │            │  per-cam 2D tracks            │
-  │    • person box               │  detections│    │                          │
-  │    • 17 body keypoints  ──────────────────► │    ▼ multi-view triangulation │
-  │    • cup box                  │  (logged)  │  3D cup + 3D keypoints         │
-  │                               │            │    │  (consensus gate)         │
-  └───────────────────────────────┘            │    ▼ phase detection           │
-                                               │  reach / lift / drink / place  │
-   runs on each camera independently           │    ▼ scoring                   │
-   at capture time                             │  task-quality metrics          │
-                                               └──────────────────────────────┘
-```
+**Jitter is the only defensible criterion**, and the reason is specific: `score.py`
+*differentiates* hand position, so a constant offset in a keypoint **cancels**, while noise
+gets **amplified** into bogus `peak_velocity` and phantom movement units. `n -> s` is a real
+**19% noise cut**. `s -> m -> x` is not (3.55 -> 3.49 -> 3.27 -- gaps too small to defend on
+one rep).
 
-- **Live half** — one YOLO-pose model per camera. Detects the person +
-  upper-body keypoints (nose/eyes/ears/shoulders/elbows/wrists/hips) and the cup
-  in a single forward pass. ~95 fps at 1080p, so it streams in real time on each
-  of the rig cameras. Keypoints are the mocap-free replacement for the QTM head
-  marker (mouth is a nose→eye/ear proxy).
-- **Offline half** — takes the logged per-camera 2D detections and fuses them:
-  DLT triangulation with a consensus gate (drop the worst-reprojecting camera
-  until the remaining ones agree, require ≥3), giving jitter-reduced 3D tracks
-  for the cup and keypoints. From the 3D cup + mouth-proxy trajectory it segments
-  the drink phases and computes the task-scoring metrics.
+**Every other metric we tried turned out to measure the RIG, not the model:**
 
-## Why the model is a single merged network
+- **Reprojection residual is not model quality.** It is dominated by camera *distance*
+  (r = **-0.905** between distance and px error: far cameras look good because each pixel
+  covers more mm). The honest unit is **mm at the joint's depth**, where the pooled wrist
+  residual is **11.4mm**, not "6.2px".
+- **There is no objective wrist.** COCO's "wrist" is an annotation convention, not a physical
+  landmark. Different nets learn slightly different conventions, so "distance to yolo26x" is
+  **disagreement, not error** -- and x, being the same architecture on the same data, shares
+  the family's biases anyway. It is a sharper ruler of the same make, not ground truth.
+- **Per-camera confidence must NEVER weight the DLT.** Two distinct effects, easily conflated:
+  - *Within* a camera, confidence is a valid per-frame quality signal (8/10 cameras show
+    r = -0.3 to -0.64 between confidence and 2D jitter -- less sure really is shakier).
+  - *Across* cameras it is **actively misleading**: corr(median confidence, median jitter) =
+    **+0.56** (s) / **+0.79** (x). The more confident a camera is on average, the *shakier*
+    it is. Weighting cameras by confidence would up-weight the worst ones.
 
-Person + keypoints + cup come from **one** model, not three:
-- The backbone/neck is shared (one forward pass → all outputs), which is what
-  keeps it at ~95 fps instead of 3× slower.
-- The keypoint branch is **frozen** during cup training, so adding cup detection
-  left the keypoints bit-identical to the base pose model (Δ = 0). The cup was
-  learned on top without disturbing what already worked.
-- Held-out validation (participants never trained on) confirmed the shared
-  frozen head generalizes (3.6–9.3 px reprojection), whereas a fully separate
-  cup head overfit the training participant (22–44 px). The merged frozen model
-  is the shipped one.
+  A per-camera signal cannot see a *cross-camera* disagreement -- the same structural lesson
+  as the consensus gate being redundant for pose.
 
-## Bottom line for the supervisor
+### OPEN: cam_4, and a metric that may be lying
 
-The real-time requirement is met: **~95 fps model on 60 fps footage, single pass
-for person + keypoints + cup.** The heavier work (3D fusion, phase, scoring) is
-intentionally offline because it needs the whole recording and isn't
-latency-bound — but the *detection* that feeds it runs live on every camera.
+cam_4 is the worst camera on the task wrist (**20.9mm** vs cam_8's 7.5mm) and stays worst
+after the distance correction, identically across **all four** pose models. Its
+confidence<->error correlation is *inverted* (**+0.669** within-camera, where every other
+camera is negative), and so is its confidence<->jitter (+0.46 vs everyone else's -0.4).
+
+**But on inspection, cam_4's own 2D prediction looks BETTER than the reprojected consensus.**
+If that is right, cam_4 is *correct* and the other nine are dragging the triangulated point
+off the true wrist -- and the reprojection residual is *penalising the one camera that can
+see*. Every consistency metric in this document silently assumes the consensus is truth.
+
+Settling this needs an **independent** reference (MeTRAbs multicam 3D -- different
+architecture, different training), not another statistic derived from the cameras under test.

@@ -10,13 +10,25 @@ pipeline runs offline (per trial) for now.
 
 ## Pipeline
 
+Run the whole thing on one rep's clips:
+
+```bash
+python -m cup_task.pipeline CLIPDIR --calib calibration.toml -o out/
+```
+
 | Stage | Module | Status |
 |-------|--------|--------|
-| Cup detection | `cup_task.cup_detect` | TODO (port existing seg model) |
+| Cup detection | `cup_task.cup_detect` | ✅ drink_study `clean3d_refill` seg model |
 | Body/hand keypoints | `cup_task.pose_keypoints` | ✅ YOLO-pose, upper body |
-| 3D triangulation | `cup_task.triangulate` | TODO (reuse drink_study calib) |
-| Phase segmentation | `cup_task.segment` | TODO (port segment_cup_only) |
+| 3D triangulation | `cup_task.triangulate` | ✅ multi-view DLT + consensus gate |
+| Phase segmentation | `cup_task.segment` | ✅ ported; reproduces research exactly (40/40 reps) |
+| Full pipeline | `cup_task.pipeline` | ✅ clips → 2D → 3D → phases, cached |
 | iMOVE metrics | `cup_task.score` | TODO (spec on iMOVE Docker) |
+
+Segmentation is the **base** geometric method (the same one the research pipeline's
+*truth* uses). Two known improvements are measured but not yet ported — a TCN gap-fill
+of the occluded cup track, and a head-distance feature channel. See
+[docs/WORKLOG.md](docs/WORKLOG.md) for what was measured and what is still assumed.
 
 ## Keypoints
 

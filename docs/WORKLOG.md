@@ -225,13 +225,33 @@ Both nets, decode excluded (a live camera hands you the frame):
 fully samples everything downstream. Frames beyond that are smoothed away regardless.
 The 60fps target was a requirement we did not actually have.
 
-Threading the two nets (they are independent; 2 threads overlap one's CPU phase with the
-other's GPU phase) gives **1.30x at 640**. Note this weakens the case for the merged net:
-its speed argument was "one launch sequence instead of two", but threading already recovers
-much of that for free -- the merged net's real appeal is architectural (shared backbone,
-bit-identical keypoint head), not throughput. **TensorRT** remains the untapped lever
-(fuses kernels -> attacks the launch bound directly; `half=True` on a `.pt` is a **no-op**,
-measured 4.0 vs 4.1ms -- you only get fp16 for real via TRT).
+### Concurrency: use separate CUDA STREAMS, not just threads
+Two Python threads calling `predict()` both submit into the **same default CUDA stream**, so
+the two nets' kernels still serialize *on the device* -- all you overlap is one net's CPU
+work (letterbox, H2D copy) with the other's GPU work. Giving each net its **own
+`torch.cuda.Stream`** lets the kernels actually interleave:
+
+| cams | serial | threads | **streams** | streams gain | fps |
+|---|---|---|---|---|---|
+| 1  | 8.3  | 6.6  | **5.8**  | **1.42x** | 171 |
+| 2  | 11.5 | 10.3 | **8.4**  | 1.36x | 119 |
+| 4  | 20.2 | 17.8 | **15.5** | 1.30x | **64** |
+| 10 | 45.2 | 41.2 | **38.6** | 1.17x | **26** |
+
+**The gain decays monotonically with batch (1.42x -> 1.17x)** -- which *confirms the
+launch-bound diagnosis by its shape*: at batch=1 the GPU idles between small kernels and a
+second stream fills the gaps; at batch=10 it is genuinely computing and there are no gaps
+left. Bonus: 4 cameras now clears 60fps (64.5, was 51.9).
+
+**Gotcha:** `torch.cuda.stream()` is **thread-local**. The context must be entered INSIDE
+the worker thread -- set it on the main thread and submit to a pool and you silently get the
+default stream back, i.e. you measure your own bug.
+
+This further weakens the merged net's *speed* case (its argument was "one launch sequence
+instead of two", and streams already recover much of that for free) -- its real appeal is
+architectural, not throughput. **TensorRT** remains the untapped lever (fuses kernels ->
+attacks the launch bound directly; `half=True` on a `.pt` is a **no-op**, measured 4.0 vs
+4.1ms -- you only get fp16 for real via TRT).
 
 ### Crop-tracking: measured, it does NOTHING. Do not propose it again.
 The idea (crop to the subject so the cup is bigger on the model's canvas) is mechanically

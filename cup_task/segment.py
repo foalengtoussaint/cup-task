@@ -130,12 +130,103 @@ def _sigmoid(x):
     return 1.0 / (1.0 + np.exp(np.clip(-x, -30, 30)))
 
 
+# ---------------------------------------------------------------- cup-motion onset
+
+# Grasp detection for refine_grasp_with_pose(): the wrist->cup distance PLATEAUS at the
+# grasp. These bound "flat" and "for long enough" -- no threshold on the distance itself.
+GRASP_FLAT_MMPS = 40.0     # |d(wrist->cup)/dt| below this = the distance has stopped changing
+GRASP_FLAT_S = 0.25        # ...and must stay flat this long to count as held, not passed through
+
+
+def refine_grasp_with_pose(seg: dict, cup_xyz, hand_xyz, mouth_xyz=None, fps=FPS,
+                           flat_mmps=GRASP_FLAT_MMPS, flat_s=GRASP_FLAT_S) -> dict:
+    """Fix the cup-motion ONSET by finding the GRASP in the wrist->cup distance.
+
+    THE BUG THIS FIXES: `segment_cup_only`'s onset gate is unsigned cup SPEED > 15 mm/s.
+    A cup sitting still on the table has a triangulation-jitter floor of ~30-50 mm/s, so
+    the gate fires on NOISE. Measured on P07: it declared cup-motion at 0.97s while the cup
+    was demonstrably still on the table (visible in the render); the real lift began ~1.7s.
+    Everything downstream inherits that -- the reach window collapses to its fast tail and
+    time-to-peak-velocity lands at ~93%, a pure artifact of the crop.
+
+    THE SIGNAL: while REACHING, the wrist->cup distance falls. The instant the hand GRASPS
+    the cup, the two become one rigid body, so that distance STOPS CHANGING and stays flat
+    -- through the lift, the drink, and the return. So the grasp is where the derivative
+    goes to ~zero AND STAYS there. On P07 it falls 399->150mm and then sits at ~150mm from
+    ~1.4s onward, forever.
+
+    Crucially this needs NO THRESHOLD ON THE DISTANCE ITSELF. The plateau value (~150mm
+    here) is just this person's wrist-joint-to-cup-centroid grip offset -- it is not zero
+    and it is not knowable in advance, which is exactly why an absolute "within Xmm" gate
+    is hopeless (the wrist starts only ~400mm away and never leaves a 120mm ball; a fixed
+    radius fires at frame 0 and gates nothing). A plateau is scale-free: it works whether
+    the cup starts near the hand or far from it, and it does not care how fast the reach was.
+
+    mouth_xyz is accepted but unused (kept so callers don't have to change).
+    """
+    cup = _butter_lp(_interp_nan_xyz(np.asarray(cup_xyz, float)), fps)
+    hand = _butter_lp(_interp_nan_xyz(np.asarray(hand_xyz, float)), fps)
+    T = min(len(cup), len(hand))
+    cup, hand = cup[:T], hand[:T]
+
+    d_wc = np.linalg.norm(hand - cup, axis=1)
+    v_wc = np.gradient(_median_smooth(d_wc, 11)) * fps
+
+    # The grasp ENDS the one big approach. Take the first closing run that travels a real
+    # DISTANCE -- a negative slope alone is not enough.
+    #
+    # Measured on P07: the wrist->cup distance has NINE closing runs, and they separate
+    # completely. The reach is one unbroken run covering 247mm = 95% of the whole span
+    # (399 -> 139mm). Every other run travels 0-10mm (1-4% of span): those are the hand
+    # adjusting its GRIP while already holding the cup. After the reach the distance
+    # plateaus at ~150mm and never leaves until the cup is set down.
+    #
+    # So: require the run to close >=30% of the span. The margin is enormous (95% vs <=4%,
+    # anything from ~5% to ~90% picks out exactly the reach), and unlike "just take the
+    # first run" it stays correct if a fidget happens to precede the reach, or if a
+    # participant fumbles the grasp and genuinely approaches twice.
+    span = float(d_wc.max() - d_wc.min())
+    need = max(int(flat_s * fps), 3)
+    closing = [(s, e) for s, e in _runs(v_wc < -flat_mmps)
+               if e - s >= need and (d_wc[s] - d_wc[e - 1]) >= 0.3 * span]
+    if not closing:
+        return seg
+    onset = closing[0][1]                  # end of the FIRST real approach = the grasp
+
+    gs, ge = seg["grasp"]
+    if onset <= gs or onset >= ge:
+        return seg                          # cup-only already agreed, or the fix is nonsense
+    out = dict(seg)
+    out["grasp"] = (onset, ge)
+    phase = seg["phase"].copy()
+    phase[gs:onset] = P_REST_PRE            # what cup-only called "motion" here was jitter
+    out["phase"] = phase
+    out["intervals"] = _intervals(phase)
+    return out
+
+
 # ---------------------------------------------------------------- cup-only
 
 def segment_cup_only(xyz, fps=FPS, *, fwd_on=FWD_ON, back_off=BACK_OFF,
                      drink_speed=DRINK_SPEED, drink_disp_pad=DRINK_DISP_PAD,
-                     butter_hz=BUTTER_HZ, min_phase=MIN_PHASE) -> dict:
-    """Phases from the 3D cup track alone. xyz: (T,3) mm, NaN where untracked."""
+                     butter_hz=BUTTER_HZ, min_phase=MIN_PHASE,
+                     mouth_xyz=None, drink_frac=DRINK_FRAC) -> dict:
+    """Phases from the 3D cup track. xyz: (T,3) mm, NaN where untracked.
+
+    If `mouth_xyz` is given the drink dwell is detected ANATOMICALLY -- the cup coming
+    close to the MOUTH -- instead of by the displacement proxy. Prefer it. The proxy
+    ("cup is near its furthest point from where it started") only works because the mouth
+    usually IS the furthest point; it is geometric happenstance, not anatomy, and it
+    breaks whenever the cup is parked somewhere unusual. The mouth rule is van Andel's
+    actual definition (drink = face-to-glass distance below a fraction of steady state)
+    and it self-normalises per trial, so it needs no absolute millimetre threshold.
+
+    Measured on P07 the two agree exactly (both 3.08-4.20s), so this is about robustness
+    elsewhere, not about fixing that rep. NOTE both rules read the SAME cup track, which
+    is linearly interpolated through the occluded apex (cup_conf = 0.00 during the whole
+    dwell) -- neither rule can be better than the track it reads. That is the real ceiling
+    here, and the fix for it is the consensus->KF->RTS filter, not the dwell rule.
+    """
     xyz = np.asarray(xyz, float)
     T = len(xyz)
     phase = np.full(T, P_REST_PRE, dtype=np.int8)
@@ -166,8 +257,23 @@ def segment_cup_only(xyz, fps=FPS, *, fwd_on=FWD_ON, back_off=BACK_OFF,
     in_win[grasp_start:grasp_end] = True
 
     peak_disp = disp[in_win].max() if in_win.any() else 0.0
-    near_peak = disp > (peak_disp - drink_disp_pad)
-    drink_runs = [(s, e) for s, e in _runs(in_win & near_peak & (speed < drink_speed))
+    if mouth_xyz is not None:
+        # ANATOMICAL: drink = the cup is near the MOUTH and nearly still. van Andel fire
+        # the drink phase when face-to-glass distance drops below 15% of steady state;
+        # since no head reference point ever actually reaches the glass (the mouth proxy
+        # sits on the face, not the lips), apply that 15% to the rest->closest EXCURSION,
+        # which fires on the same physical event regardless of the reference offset.
+        mouth = _butter_lp(_interp_nan_xyz(np.asarray(mouth_xyz, float)), fps, butter_hz)
+        n = min(T, len(mouth))
+        d_cm = np.full(T, np.inf)
+        d_cm[:n] = np.linalg.norm(filled[:n] - mouth[:n], axis=1)
+        finite = np.isfinite(d_cm)
+        steady = np.percentile(d_cm[finite], 90)
+        closest = np.percentile(d_cm[finite], 5)
+        near = d_cm < closest + drink_frac * (steady - closest)
+    else:
+        near = disp > (peak_disp - drink_disp_pad)      # displacement proxy (see docstring)
+    drink_runs = [(s, e) for s, e in _runs(in_win & near & (speed < drink_speed))
                   if e - s >= min_phase]
 
     phase[grasp_start:grasp_end] = P_FWD
@@ -229,7 +335,8 @@ MURPHY_PHASE_NAMES = ["rest_pre", "reaching", "forward_transport", "drinking",
 
 
 def to_murphy_phases(seg: dict, hand_xyz, cup_xyz, fps=FPS,
-                     dir_thr_mmps: float = 30.0, min_run: int = 5) -> list:
+                     dir_thr_mmps: float = 30.0, min_run: int = 5,
+                     leave_rest_mm: float = 30.0, lookback_s: float = 3.0) -> list:
     """Split our 5 phases into the container's 7, adding `reaching` and `returning`.
 
     The Murphy measures are scoped to windows we don't otherwise produce, and the
@@ -263,13 +370,27 @@ def to_murphy_phases(seg: dict, hand_xyz, cup_xyz, fps=FPS,
     out = []
     for name, s, e in seg["intervals"]:
         if name == "rest_pre" and e > s:
-            # reaching = last sustained run of "closing on the cup" before cup-motion onset
-            runs = [(a, b) for a, b in _runs(v_hc[s:e] < -dir_thr_mmps) if b - a >= min_run]
-            if runs:
-                a, b = runs[-1]
-                if s + a > s:
-                    out.append(("rest_pre", s, s + a))
-                out.append(("reaching", s + a, e))
+            # Reach onset is POSITION-primary (this is what the container does, and the
+            # reason matters): walk BACKWARDS from cup-motion onset while the hand is still
+            # DISPLACED FROM REST. Distance-from-rest grows monotonically as the arm
+            # extends, so the walk never stalls. A VELOCITY-based walk does stall -- the
+            # approach is not monotonic in speed (P07 dips to -16mm/s mid-reach), which
+            # truncates the window to its fast tail and then peak-velocity timing lands at
+            # ~95% of the reach, a pure artifact of the crop.
+            lo = max(s, e - int(lookback_s * fps))
+            away = (d_rest > leave_rest_mm) & np.isfinite(d_rest)
+            a = e
+            while a > lo and away[a - 1]:
+                a -= 1
+            if a == e:   # hand never marked away-from-rest -> fall back to direction runs
+                runs = [(x, y) for x, y in _runs(v_hc[lo:e] < -dir_thr_mmps)
+                        if y - x >= max(int(0.1 * fps), 3)]
+                if runs:
+                    a = lo + runs[-1][0]
+            if e - a >= min_run:
+                if a > s:
+                    out.append(("rest_pre", s, a))
+                out.append(("reaching", a, e))
                 continue
         if name == "rest_post" and e > s:
             # returning = leading run of "heading back to rest" after the cup is placed
@@ -284,16 +405,36 @@ def to_murphy_phases(seg: dict, hand_xyz, cup_xyz, fps=FPS,
     return out
 
 
-def track_confidence(track: list[dict], min_cams: int = 3) -> tuple[np.ndarray, np.ndarray]:
+def track_confidence(track: list[dict], min_cams: int = 3,
+                     smooth: bool = False, fps: float = FPS
+                     ) -> tuple[np.ndarray, np.ndarray]:
     """(xyz, conf) from a triangulate.triangulate_target() track.
 
     conf = agreement x tightness:
       - agreement: how many cameras survived the gate, saturating at min_cams
       - tightness: how well they agreed, from the median reprojection error
                    (3px -> 1.0, 28px -> 0.15)
-    A frame with no 3D at all gets conf 0, which is the point: the fusion must be able
-    to tell "the cup is here and I'm sure" from "the cup is here-ish because I coasted".
-    This is what collapses during the occluded mouth dwell and lets the pose take over.
+
+    smooth=True runs the consensus-anchored KF+RTS (triangulate.kf_rts_smooth).
+
+    IT IS OFF BY DEFAULT FOR SEGMENTATION, AND THAT IS DELIBERATE. The KF wins on
+    trajectory CLEANLINESS (274 -> 354 of 355 reps, measured) but it is WRONG at the
+    DWELL, which is a different question. Verified by eye on P07: with the KF the drink
+    phase ends at 3.78s, and the video plainly shows the cup still at her lips; the plain
+    linear fill ends it at 4.20s, exactly as the cup leaves her mouth.
+
+    The reason is structural, not a tuning miss. The cup is occluded (conf = 0) through
+    the whole dwell, so the KF is coasting on a CONSTANT-VELOCITY model -- whose inductive
+    bias is "things keep moving". A dwell is precisely "things stop". So the filter coasts
+    the cup off the lips, the near-and-slow test fails, and the dwell gets truncated by
+    ~0.4s. Use the KF where you want a clean trajectory (position reporting); do NOT use it
+    to decide dwell boundaries.
+
+    THE CONFIDENCE IS NEVER SMOOTHED. A filled frame keeps conf = 0 whatever the fill. The
+    filter invents a plausible position, it does not observe one, and a consumer must be
+    able to tell "the cup is here and I saw it" from "the cup is probably here because I
+    coasted". Laundering an invented position into a confident one is how a confident-wrong
+    failure gets made.
     """
     T = len(track)
     xyz = np.full((T, 3), np.nan)
@@ -306,6 +447,9 @@ def track_confidence(track: list[dict], min_cams: int = 3) -> tuple[np.ndarray, 
         if px is not None:
             tight = float(np.clip(1.0 - (px - 3.0) / 25.0, 0.15, 1.0))
             conf[i] = min(n / float(min_cams), 1.0) * tight
+    if smooth and np.isfinite(xyz).all(1).sum() >= 2:
+        from cup_task.triangulate import kf_rts_smooth
+        xyz = kf_rts_smooth(xyz, fps=fps)
     return xyz, conf
 
 

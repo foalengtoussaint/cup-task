@@ -95,13 +95,35 @@ def fuse_3d(json_dir: Path, calib: Path, out: Path) -> dict:
 
 
 def phases_from_3d(tracks: dict, fps=FPS) -> dict:
-    """Segment the drink task from the 3D cup track (the verified base method)."""
-    cup_track = tracks["targets"].get("cup")
-    if not cup_track:
+    """Segment the drink task: cup-only gate, then fix the grasp onset with the pose.
+
+    The cup-only onset gate fires on triangulation jitter (a still cup has a ~30-50mm/s
+    noise floor vs a 15mm/s gate), so the pose refinement is not optional -- without it the
+    reach window is truncated and every reach-scoped measure is wrong.
+    """
+    t = tracks["targets"]
+    if not t.get("cup"):
         raise SystemExit("no cup 3D track -- cannot segment")
-    cup, _ = segment.track_confidence(cup_track)
+    cup, _ = segment.track_confidence(t["cup"])
     seg = segment.segment_cup_only(cup, fps=fps)
+
+    if t.get("mouth") and (t.get("left_wrist") or t.get("right_wrist")):
+        mouth, _ = segment.track_confidence(t["mouth"])
+        hand, _ = segment.track_confidence(t[dominant_wrist(t)])
+        seg = segment.refine_grasp_with_pose(seg, cup, hand, mouth, fps=fps)
     return seg
+
+
+def dominant_wrist(targets: dict) -> str:
+    """Which wrist did the task: the one with the larger 3D motion range."""
+    def rng(key):
+        tr = targets.get(key)
+        if not tr:
+            return 0.0
+        x, _ = segment.track_confidence(tr)
+        x = x[np.isfinite(x).all(1)]
+        return float(np.linalg.norm(x.max(0) - x.min(0))) if len(x) else 0.0
+    return "right_wrist" if rng("right_wrist") >= rng("left_wrist") else "left_wrist"
 
 
 def main(argv=None) -> int:

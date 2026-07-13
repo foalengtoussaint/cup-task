@@ -42,6 +42,66 @@ REPROJ_PX = 30.0      # a cam is an inlier if it reprojects within this many px
 # pose frames on a rig with fewer cameras, for no accuracy gain. See docs/WORKLOG.md.
 
 
+def kf_rts_smooth(cons: np.ndarray, fps: float = 60.0,
+                  q: float = 200.0 ** 2, r: float = 30.0 ** 2) -> np.ndarray:
+    """Consensus -> constant-velocity KF -> RTS smoother. Fills gaps, kills jitter.
+
+    THIS REPLACES LINEAR INTERPOLATION, and the difference is not cosmetic. The cup is
+    OCCLUDED for ~24% of frames -- and not at random: it is occluded precisely at the mouth,
+    during the drink, which is the part we are trying to measure. Something has to invent
+    those positions. Drawing a straight line through them puts kinks in the trajectory
+    exactly where the interesting curvature is.
+
+    Measured in the research pipeline over 355 reps (trajectory-cleanliness):
+        consensus + linear interp   : 274/355 clean
+        consensus -> KF -> RTS      : 354/355 clean
+    The KF wins because a constant-velocity model coasts through a gap the way an arm
+    actually moves, and the RTS backward pass then uses the frames AFTER the gap to correct
+    the coast -- so the filled segment is consistent with both sides, not just extrapolated.
+
+    NO GATING. An earlier pipeline fed the KF raw 2D detections behind a Mahalanobis gate;
+    one bad detection kicked the state, and then the gate rejected every TRUE detection as
+    "too far" and it coasted away to metres. Feeding the CONSENSUS in as a direct 3D
+    measurement with no gate makes divergence impossible: every consensus frame pulls the
+    state back. It was the gating that was harmful, not the filter.
+
+    cons: (T,3), NaN where no consensus. Returns (T,3) smoothed, gaps filled.
+    """
+    cons = np.asarray(cons, float)
+    T = len(cons)
+    dt = 1.0 / fps
+    F = np.eye(6); F[:3, 3:] = dt * np.eye(3)
+    H = np.zeros((3, 6)); H[:, :3] = np.eye(3)
+    Q = np.zeros((6, 6))
+    Q[:3, :3] = q * dt ** 3 / 3 * np.eye(3); Q[:3, 3:] = q * dt ** 2 / 2 * np.eye(3)
+    Q[3:, :3] = q * dt ** 2 / 2 * np.eye(3); Q[3:, 3:] = q * dt * np.eye(3)
+    R = r * np.eye(3)
+
+    valid = np.isfinite(cons).all(1)
+    idx = np.flatnonzero(valid)
+    if len(idx) < 2:
+        return np.full((T, 3), np.nan)
+
+    x = np.zeros(6); x[:3] = cons[idx[0]]
+    P = np.diag([50, 50, 50, 500, 500, 500.0]) ** 2
+    xp, Pp, xu, Pu = [], [], [], []
+    for t in range(T):
+        x = F @ x; P = F @ P @ F.T + Q                     # predict (= the gap fill)
+        xp.append(x.copy()); Pp.append(P.copy())
+        if valid[t]:                                        # update, ungated
+            y = cons[t] - H @ x
+            S = H @ P @ H.T + R
+            K = P @ H.T @ np.linalg.inv(S)
+            x = x + K @ y; P = (np.eye(6) - K @ H) @ P
+        xu.append(x.copy()); Pu.append(P.copy())
+
+    xs = [None] * T; xs[-1] = xu[-1]                        # RTS backward pass
+    for t in range(T - 2, -1, -1):
+        C = Pu[t] @ F.T @ np.linalg.inv(Pp[t + 1])
+        xs[t] = xu[t] + C @ (xs[t + 1] - xp[t + 1])
+    return np.array([s[:3] for s in xs])
+
+
 def _cam_key_from_clip(clip_name: str) -> str | None:
     """`P07_..._142730.4.mp4` -> 'cam_4'. Returns None if no .N. suffix."""
     m = re.search(r"\.(\d+)\.mp4$", clip_name)

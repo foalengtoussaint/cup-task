@@ -59,6 +59,14 @@ def kf_rts_smooth(cons: np.ndarray, fps: float = 60.0,
     actually moves, and the RTS backward pass then uses the frames AFTER the gap to correct
     the coast -- so the filled segment is consistent with both sides, not just extrapolated.
 
+    It also moves the DWELL BOUNDARIES the right way, checked frame-by-frame on the raw
+    video (P07): drink onset KF 2.90s vs linear 3.08s (at 2.90s the cup is already at her
+    lips); drink offset KF 3.78s vs linear 4.20s (at 3.78s it has tilted off them). Linear
+    is late at both ends because a straight line between the last sighting before the
+    occlusion and the first after CUTS THE CORNER of the cup's arc to the mouth -- the
+    chord sits farther from the face than the true path, so "near the mouth" fires late
+    and clears early.
+
     NO GATING. An earlier pipeline fed the KF raw 2D detections behind a Mahalanobis gate;
     one bad detection kicked the state, and then the gate rejected every TRUE detection as
     "too far" and it coasted away to metres. Feeding the CONSENSUS in as a direct 3D

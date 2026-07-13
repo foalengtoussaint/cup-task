@@ -424,7 +424,7 @@ def to_murphy_phases(seg: dict, hand_xyz, cup_xyz, fps=FPS,
 
 
 def track_confidence(track: list[dict], min_cams: int = 3,
-                     smooth: bool = False, fps: float = FPS
+                     smooth: bool = True, fps: float = FPS
                      ) -> tuple[np.ndarray, np.ndarray]:
     """(xyz, conf) from a triangulate.triangulate_target() track.
 
@@ -433,20 +433,23 @@ def track_confidence(track: list[dict], min_cams: int = 3,
       - tightness: how well they agreed, from the median reprojection error
                    (3px -> 1.0, 28px -> 0.15)
 
-    smooth=True runs the consensus-anchored KF+RTS (triangulate.kf_rts_smooth).
+    smooth=True (DEFAULT) runs the consensus-anchored KF+RTS (triangulate.kf_rts_smooth)
+    instead of filling occlusion gaps with a straight line. It is better at BOTH dwell
+    boundaries, verified frame-by-frame on the raw video (P07):
 
-    IT IS OFF BY DEFAULT FOR SEGMENTATION, AND THAT IS DELIBERATE. The KF wins on
-    trajectory CLEANLINESS (274 -> 354 of 355 reps, measured) but it is WRONG at the
-    DWELL, which is a different question. Verified by eye on P07: with the KF the drink
-    phase ends at 3.78s, and the video plainly shows the cup still at her lips; the plain
-    linear fill ends it at 4.20s, exactly as the cup leaves her mouth.
+        drink onset   KF 2.90s / linear 3.08s -- at 2.90s the cup is ALREADY at her lips
+        drink offset  KF 3.78s / linear 4.20s -- at 3.78s the cup has tilted off the lips
 
-    The reason is structural, not a tuning miss. The cup is occluded (conf = 0) through
-    the whole dwell, so the KF is coasting on a CONSTANT-VELOCITY model -- whose inductive
-    bias is "things keep moving". A dwell is precisely "things stop". So the filter coasts
-    the cup off the lips, the near-and-slow test fails, and the dwell gets truncated by
-    ~0.4s. Use the KF where you want a clean trajectory (position reporting); do NOT use it
-    to decide dwell boundaries.
+    Linear interpolation is LATE at both ends, and the reason is geometric: the cup is
+    occluded for the whole dwell, so a straight line drawn between the last sighting
+    before and the first sighting after CUTS THE CORNER of the cup's arc to the mouth.
+    The chord sits farther from the face than the real path, so the "near the mouth" test
+    fires late and clears early. The constant-velocity KF follows the arc.
+
+    (I first had this backwards -- I misread a single frame at 3.78s as "cup still at the
+    lips", never checked the onset at all, and built a tidy story about a constant-velocity
+    model being unable to represent a dwell. The frames say otherwise. Look at both ends
+    before condemning a filter.)
 
     THE CONFIDENCE IS NEVER SMOOTHED. A filled frame keeps conf = 0 whatever the fill. The
     filter invents a plausible position, it does not observe one, and a consumer must be

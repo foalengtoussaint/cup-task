@@ -101,11 +101,21 @@ def _wrist_point(fr: dict, side: str) -> np.ndarray | None:
     return np.array(kps[k][:2], dtype=float) if k in kps else None
 
 
+def _trunk_point(fr: dict) -> np.ndarray | None:
+    """Upper-back proxy = shoulder midpoint. The Murphy trunk-displacement measure wants
+    an upper-back site; COCO has no spine, and the shoulder midpoint is the closest rigid
+    stand-in that both shoulders vote on (so one bad shoulder can't swing it far)."""
+    kps = fr.get("kps", {})
+    pts = [kps[k][:2] for k in ("left_shoulder", "right_shoulder") if k in kps]
+    return np.mean(pts, axis=0) if len(pts) == 2 else None
+
+
 POINT_FN = {
     "cup": ("cup", _cup_point),
     "mouth": ("pose", _mouth_point),
     "left_wrist": ("pose", lambda fr: _wrist_point(fr, "left")),
     "right_wrist": ("pose", lambda fr: _wrist_point(fr, "right")),
+    "trunk": ("pose", _trunk_point),
 }
 
 

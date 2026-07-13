@@ -224,6 +224,66 @@ def _hysteresis(E, on=E_ON, off=E_OFF, min_run=MIN_DRINK_FR):
     return [(s, e) for s, e in _runs(m) if e - s >= min_run]
 
 
+MURPHY_PHASE_NAMES = ["rest_pre", "reaching", "forward_transport", "drinking",
+                      "back_transport", "returning", "rest_post"]
+
+
+def to_murphy_phases(seg: dict, hand_xyz, cup_xyz, fps=FPS,
+                     dir_thr_mmps: float = 30.0, min_run: int = 5) -> list:
+    """Split our 5 phases into the container's 7, adding `reaching` and `returning`.
+
+    The Murphy measures are scoped to windows we don't otherwise produce, and the
+    distinction is load-bearing, not cosmetic:
+
+      reaching  = the EMPTY-HANDED approach: the tail of rest_pre where the hand is
+                  moving TOWARD the cup, BEFORE the cup itself starts moving. It is NOT
+                  a synonym for forward_transport (which begins at cup-motion onset).
+                  peak_velocity and time-to-peak are measured inside THIS window, and the
+                  container's own comment records that conflating the two "doubled the
+                  effective window and shifted peak-velocity timing".
+      returning = after the cup is back on the table: the hand travelling home to rest.
+                  total_movement_time ends here.
+
+    Detected by DIRECTION of travel (sign of the smoothed derivative of hand->cup and
+    hand->rest distance), not by speed magnitude -- a slow reach still counts.
+    """
+    hand = _butter_lp(_interp_nan_xyz(np.asarray(hand_xyz, float)), fps)
+    cup = _butter_lp(_interp_nan_xyz(np.asarray(cup_xyz, float)), fps)
+    T = min(len(hand), len(cup))
+    hand, cup = hand[:T], cup[:T]
+    gs, ge = seg["grasp"]
+
+    d_hand_cup = np.linalg.norm(hand - cup, axis=1)
+    v_hc = np.gradient(_median_smooth(d_hand_cup, 11)) * fps      # <0 = closing on the cup
+
+    rest_pos = np.median(hand[:max(int(0.5 * fps), 10)], axis=0)
+    d_rest = np.linalg.norm(hand - rest_pos, axis=1)
+    v_rest = np.gradient(_median_smooth(d_rest, 11)) * fps        # <0 = heading home
+
+    out = []
+    for name, s, e in seg["intervals"]:
+        if name == "rest_pre" and e > s:
+            # reaching = last sustained run of "closing on the cup" before cup-motion onset
+            runs = [(a, b) for a, b in _runs(v_hc[s:e] < -dir_thr_mmps) if b - a >= min_run]
+            if runs:
+                a, b = runs[-1]
+                if s + a > s:
+                    out.append(("rest_pre", s, s + a))
+                out.append(("reaching", s + a, e))
+                continue
+        if name == "rest_post" and e > s:
+            # returning = leading run of "heading back to rest" after the cup is placed
+            runs = [(a, b) for a, b in _runs(v_rest[s:e] < -dir_thr_mmps) if b - a >= min_run]
+            if runs:
+                a, b = runs[0]
+                out.append(("returning", s, s + b))
+                if s + b < e:
+                    out.append(("rest_post", s + b, e))
+                continue
+        out.append((name, s, e))
+    return out
+
+
 def track_confidence(track: list[dict], min_cams: int = 3) -> tuple[np.ndarray, np.ndarray]:
     """(xyz, conf) from a triangulate.triangulate_target() track.
 

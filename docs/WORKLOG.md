@@ -51,6 +51,35 @@ holds. Decode is only 1.9ms/fr; batching buys ~0 (GPU already saturated per-fram
 Caveat: `model.predict(source=<path>)` adds ~2x overhead -- feed it cv2-decoded frames.
 **An offline batch job's wall-clock says nothing about the live rate.** Don't conflate.
 
+### Consensus gate: needed for the CUP, redundant for POSE (measured)
+The reprojection gate in `triangulate.py` (drop cams >30px, require >=3) is load-bearing
+for the cup. Tested whether it does anything for pose keypoints -- 11 reps, one per
+participant, yolo26s-pose wrists triangulated with vs without the gate, scored against
+MeTRAbs multicam 3D:
+
+| | plain DLT | consensus gate |
+|---|---|---|
+| median error | 16.8mm | 16.6mm |
+| coverage | 100% | 100% |
+| good@50 / @100 | 100% / 100% | 100% / 100% |
+
+**The gate fires on 24% of frames and moves the median by -0.32mm** (~2% of a 17mm signal
+= noise). Helped 3 reps, hurt 1, did nothing on 7. It **never once killed a frame**
+(`kills 0%` on all 11) -- there is no tail to cut.
+
+WHY, and this is the transferable bit: a **cup** FP is a *different object* (the cam_10
+side-desk glass) -- it sits elsewhere in the world, reprojects far from consensus, gate
+catches it. A **pose** error is the *right person's slightly-wrong joint* -- a wrist off
+by 20px, still broadly in the right place, so it reprojects plausibly, sails through a
+30px gate, and gets included anyway. The gate cannot see the error it would need to catch.
+Meanwhile a 10-cam DLT already averages that jitter out.
+
+So: not harmful, just **redundant for pose**. Keep it (shared with the cup, ~free), but
+it is NOT load-bearing there -- and mind that `MIN_CAMS=3` would start *killing* pose
+frames on a low-camera rig for no accuracy gain. Caveat: the reference is MeTRAbs's own
+multicam triangulation -- the best 3D pose available and independent of the YOLO
+detections under test, but not mocap.
+
 ### NOT ported (deliberately, for now)
 The research pipeline's best dwell result (`drink_dwell/`, proxy21 ~85ms vs base17 ~123ms
 LOPO) is **kinematics + occlusion + head-distance** on a TCN-gap-filled cup track. Two

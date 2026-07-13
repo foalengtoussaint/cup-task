@@ -32,6 +32,15 @@ from cup_task.kalman_3d import CamCalib, load_calibration, project, triangulate_
 MIN_CAMS = 3          # >=3 agreeing cams — the hard floor from the robustness study
 REPROJ_PX = 30.0      # a cam is an inlier if it reprojects within this many px
 
+# The gate above is load-bearing for the CUP and REDUNDANT for POSE. Measured (11 reps,
+# wrists vs MeTRAbs 3D): it fires on 24% of frames and moves the median 16.8 -> 16.6mm,
+# never killing a frame. A cup FP is a DIFFERENT OBJECT (the side-desk glass) — it sits
+# elsewhere in the world, reprojects far off, and the gate catches it. A pose error is the
+# right person's slightly-wrong joint: still roughly in place, so it reprojects plausibly
+# and passes the gate anyway, while a 10-cam DLT already averages the jitter out.
+# Don't bother tightening this to "improve" pose — and note MIN_CAMS would start DROPPING
+# pose frames on a rig with fewer cameras, for no accuracy gain. See docs/WORKLOG.md.
+
 
 def _cam_key_from_clip(clip_name: str) -> str | None:
     """`P07_..._142730.4.mp4` -> 'cam_4'. Returns None if no .N. suffix."""

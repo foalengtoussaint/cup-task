@@ -51,6 +51,29 @@ holds. Decode is only 1.9ms/fr; batching buys ~0 (GPU already saturated per-fram
 Caveat: `model.predict(source=<path>)` adds ~2x overhead -- feed it cv2-decoded frames.
 **An offline batch job's wall-clock says nothing about the live rate.** Don't conflate.
 
+### First end-to-end run (P07_drinking_left_20240124_142730, 10 cams)
+Raw video -> phases, no hand-holding:
+
+    rest_pre           0.00-0.97s
+    forward_transport  0.97-3.08s
+    drinking           3.08-4.20s   <- 1.12s dwell
+    back_transport     4.20-7.78s
+    rest_post          7.78-8.08s
+
+The 3D coverage is the finding, and it validates the architecture on our own data:
+
+| target | 3D coverage |
+|---|---|
+| **cup** | **367/485 (76%)** |
+| mouth | 485/485 (100%) |
+| wrists | 485/485 (100%) |
+
+**The cup vanishes on ~24% of frames while the pose holds at 100%** -- the hand and body
+wrap around the cup exactly when it matters (the sip), and the mouth proxy never blinks.
+This is the occlusion story from the research pipeline reproducing itself on the first run,
+and it is precisely why (a) the TCN gap-fill exists and (b) a head-distance channel earns
+its keep. Do not read the 1.12s dwell as validated -- this rep has no ground truth.
+
 ### Consensus gate: needed for the CUP, redundant for POSE (measured)
 The reprojection gate in `triangulate.py` (drop cams >30px, require >=3) is load-bearing
 for the cup. Tested whether it does anything for pose keypoints -- 11 reps, one per

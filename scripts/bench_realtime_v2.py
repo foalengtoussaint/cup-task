@@ -26,6 +26,7 @@ sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 
 
 _UET = None
+_UETB = {}
 
 
 def _shared_uetrack():
@@ -35,6 +36,14 @@ def _shared_uetrack():
         from uetrack_wrap import UETrackB
         _UET = UETrackB()
     return _UET
+
+
+def _batched_uetrack(ncam):
+    """A batched N-camera UETrack (one shared model, N states, one forward per rig-frame)."""
+    from uetrack_wrap import UETrackBatch
+    if ncam not in _UETB:
+        _UETB[ncam] = UETrackBatch(ncam)
+    return _UETB[ncam]
 
 
 def _sample_frames(n_frames):
@@ -78,8 +87,8 @@ def bench_live(cam_counts, n_frames, device="0"):
     # UETrack: one shared model; measure a per-frame update
     from uetrack_wrap import UETrackB
 
-    print(f"\n{'cams':>5} {'pose fps':>9} {'pose ms/fr':>11}  {'track fps':>10} {'track ms/fr':>12}",
-          flush=True)
+    print(f"\n{'cams':>5} {'pose fps':>9} {'pose ms/fr':>11}  {'trk seq':>9} {'trk batched':>11} "
+          f"{'speedup':>8}", flush=True)
     rows = []
     for ncam in cam_counts:
         # ---- POSE: batch ncam frames in one forward (the right way to amortize launch cost) ----
@@ -94,29 +103,75 @@ def bench_live(cam_counts, n_frames, device="0"):
         pose_dt = (time.perf_counter() - t0) / reps        # seconds per FRAME-SET (all cams, 1 frame)
         pose_fps = 1.0 / pose_dt                            # frame-sets per second = live fps
 
-        # ---- TRACK: ONE shared UETrack model (1.3GB); per-camera cost = ncam sequential updates.
-        # (The tracker thread's OOM lesson: never instantiate one model per camera. UETrack holds
-        # per-track state internally, so a true multi-cam deployment keeps ncam lightweight state
-        # dicts and swaps them; here we measure the per-update cost x ncam, which is the throughput.)
-        trk = _shared_uetrack()
-        trk.init(frames[0][:, :, ::-1], (900, 700, 60, 60))
+        # ---- TRACK (sequential): ONE shared model, ncam sequential updates = one rig-frame ----
+        seqtrk = _shared_uetrack()
+        rgb0 = frames[0][:, :, ::-1].copy()
+        seqtrk.init(rgb0, (900, 700, 60, 60))
         torch.cuda.synchronize()
         t0 = time.perf_counter()
-        treps = min(n_frames, 120)
+        treps = min(n_frames, 100)
         for i in range(treps):
-            im = frames[i % n_frames][:, :, ::-1]
-            for _c in range(ncam):                          # ncam updates = one rig-frame
-                trk.update(im)
+            rgb = frames[i % n_frames][:, :, ::-1].copy()
+            for _c in range(ncam):
+                seqtrk.update(rgb)
         torch.cuda.synchronize()
-        track_dt = (time.perf_counter() - t0) / treps      # sec per rig-frame (all cams updated)
-        track_fps = 1.0 / track_dt
-        print(f"{ncam:5d} {pose_fps:9.1f} {pose_dt*1000:11.2f}  {track_fps:10.1f} {track_dt*1000:12.2f}",
-              flush=True)
-        rows.append((ncam, pose_fps, track_fps))
+        seq_dt = (time.perf_counter() - t0) / treps
+        seq_fps = 1.0 / seq_dt
+
+        # ---- TRACK (batched): ncam states, ONE batched forward per rig-frame ----
+        btrk = _batched_uetrack(ncam)
+        for c in range(ncam):
+            btrk.init(c, rgb0, (900, 700, 60, 60))
+        torch.cuda.synchronize()
+        t0 = time.perf_counter()
+        for i in range(treps):
+            rgb = frames[i % n_frames][:, :, ::-1].copy()
+            btrk.update([rgb] * ncam)
+        torch.cuda.synchronize()
+        bat_dt = (time.perf_counter() - t0) / treps
+        bat_fps = 1.0 / bat_dt
+        print(f"{ncam:5d} {pose_fps:9.1f} {pose_dt*1000:11.2f}  {seq_fps:9.1f} {bat_fps:11.1f} "
+              f"{bat_fps/seq_fps if seq_fps else 0:8.1f}x", flush=True)
+        rows.append((ncam, pose_fps, seq_fps, bat_fps))
         torch.cuda.empty_cache()
-    print("\n(pose = batched YOLO-pose across cams, 1 forward/frame; track = UETrack update per cam/frame.\n"
-          " Live fps = frame-sets/sec: the whole rig advancing one frame. 60fps capture => need >=60.)",
+    print("\n(pose = batched YOLO-pose across cams; trk seq = ncam sequential UETrack updates; "
+          "trk batched = ONE\n batched forward across cams. Live fps = rig advancing one frame; "
+          "60fps capture => need >=60.)", flush=True)
+
+    # ---- SIMULTANEOUS pose + cup on two CUDA streams (both batched) ----
+    print(f"\n{'cams':>5} {'pose only':>10} {'cup only':>10} {'SIMULTANEOUS':>13}  (both batched, 2 streams)",
           flush=True)
+    for ncam in cam_counts:
+        batch = [frames[i % n_frames] for i in range(ncam)]
+        btrk = _batched_uetrack(ncam)
+        for c in range(ncam):
+            btrk.init(c, frames[0][:, :, ::-1].copy(), (900, 700, 60, 60))
+
+        def _pose():
+            pose_model.predict(batch, verbose=False, device=f"cuda:{device}")
+
+        def _cup():
+            btrk.update([frames[0][:, :, ::-1].copy()] * ncam)
+
+        reps = 40
+        torch.cuda.synchronize(); t0 = time.perf_counter()
+        for _ in range(reps): _pose()
+        torch.cuda.synchronize(); p = 1.0 / ((time.perf_counter() - t0) / reps)
+        torch.cuda.synchronize(); t0 = time.perf_counter()
+        for _ in range(reps): _cup()
+        torch.cuda.synchronize(); c = 1.0 / ((time.perf_counter() - t0) / reps)
+        sp = torch.cuda.Stream(); sc = torch.cuda.Stream()
+        torch.cuda.synchronize(); t0 = time.perf_counter()
+        for _ in range(reps):
+            with torch.cuda.stream(sp): _pose()
+            with torch.cuda.stream(sc): _cup()
+            torch.cuda.synchronize()
+        both = 1.0 / ((time.perf_counter() - t0) / reps)
+        print(f"{ncam:5d} {p:9.1f} {c:9.1f} {both:12.1f}", flush=True)
+        torch.cuda.empty_cache()
+    print("\n(SIMULTANEOUS = pose + cup on separate CUDA streams. On a small GPU both are "
+          "compute-bound so\n they contend rather than fully overlap; ~half the min of the two "
+          "individual rates.)", flush=True)
     return rows
 
 

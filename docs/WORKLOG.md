@@ -1838,3 +1838,19 @@ collision is irrelevant regardless of load order.
 
 **Follow-up (user asked, planned):** benchmark RTMPose + BlazePose alongside YOLO-pose (neither installed;
 rtmlib + mediapipe pip-installable; speed-only first — both use non-COCO-11 layouts).
+
+## 2026-07-21 (cont.) >>> BATCHED UETrack + simultaneous pose+cup
+
+User asked: is UETrack batched, and simultaneous pose+cup fps. Before, UETrack ran one backbone forward
+PER camera (sequential) = the scale bottleneck; pose was already batched.
+
+**Built `UETrackBatch`** (scripts/uetrack_wrap.py) + `cup_track.track_cup_3d_batched`: N per-camera
+states, ONE batched forward_encoder per rig-frame (batching search/template/anno/text_src). Correctness:
+N=1 == sequential to 0.000px over 533 frames; N>=2 <=2px (bounded GPU matmul-order numerics, << 30px
+gate). Speedup end-to-end: 1cam 1.0x, 5cam 1.8x (36->64fps), 10cam 2.1x (19->41fps). Backbone alone is
+4-5x but the per-camera crop stays sequential CPU-side -> ~2x end-to-end (honest deployable number).
+
+**Simultaneous pose+cup** (both batched, 2 CUDA streams): 1/5/10cam = 72/37/22 fps. ~half the min of
+the two individual rates -- both compute-bound on the 7.6GB GPU so streams contend, don't overlap.
+Real-time (>=60fps): comfortable at 1-2 cams; 5 cams borderline (37fps); 10 cams needs a bigger/second
+GPU. Benchmark: scripts/bench_realtime_v2.py --what live. (Corrected an inverted speedup label mid-run.)

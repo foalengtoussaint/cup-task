@@ -196,3 +196,44 @@ trivially fast.
 
 **Follow-up planned:** benchmark RTMPose + BlazePose alongside YOLO-pose (neither installed yet; rtmlib +
 mediapipe are pip-installable, speed-only first since both use non-COCO-11 keypoint layouts).
+
+---
+
+# ADDENDUM — batched UETrack + simultaneous pose+cup (2026-07-21)
+
+Two follow-up questions: is UETrack batched, and can pose+cup run simultaneously.
+
+**Batched UETrack (new `UETrackBatch` in `scripts/uetrack_wrap.py`, `cup_track.track_cup_3d_batched`).**
+Before: the tracker ran ONE backbone forward PER camera (sequential) — the scale bottleneck. Now N
+camera states are held and all cameras' search crops go through ONE batched `forward_encoder` per
+rig-frame. Batching 4 internal tensors (search / template / anno / text_src).
+
+Correctness: N=1 batched is BYTE-IDENTICAL to sequential (0.000px over all 533 frames of a real trial).
+N>=2 differs <=2px (bounded, no drift) — pure cross-batch matmul reduction-order numerics tipping the
+argmax to an adjacent grid cell; far under the tracker's own ~5px noise and the 30px consensus gate.
+
+| cams | trk sequential | trk batched | speedup |
+|---|---|---|---|
+| 1 | 100 fps | 104 fps | 1.0x |
+| 5 | 36 fps | 64 fps | 1.8x |
+| 10 | 19 fps | 41 fps | 2.1x |
+
+⚠ The BACKBONE alone batches 4-5x, but the per-camera crop/preprocess (`sample_target`) stays
+sequential CPU-side, so END-TO-END it's ~2x. The ~2x is the honest deployable number; batching the
+crop too would recover more.
+
+**Simultaneous pose + cup (both batched, separate CUDA streams):**
+
+| cams | pose only | cup only | SIMULTANEOUS |
+|---|---|---|---|
+| 1 | 250 | 104 | 72 fps |
+| 5 | 87 | 65 | 37 fps |
+| 10 | 47 | 41 | 22 fps |
+
+Simultaneous ≈ HALF the min of the two individual rates: on this 7.6GB GPU both models are
+compute-bound, so the streams contend for SMs rather than truly overlapping (stream overlap needs one
+memory-bound + one compute-bound).
+
+**Real-time verdict (this GPU):** 1-2 cams comfortably real-time (72fps both models). 5 cams = 37fps
+simultaneous (just under 60fps capture — real-time-ish; hit 60 by batching the crop, a bigger GPU, or
+cup+pose on separate devices). 10 cams = 22fps, not real-time here → separate GPUs or a bigger card.

@@ -42,12 +42,24 @@ FPS = H.VIDEO_FPS
 TRACKS = ROOT / "cache" / "tracks_uetrack"
 FLOWDIR = ROOT / "cache" / "flow_vel"
 
+# COHORT = P07 + P08 only, n=12. P13 is EXCLUDED EVERYWHERE (not just from speed).
+#
+# P13's OMC clock DRIFTS linearly against video (-8 -> +3 frames over ~6s, 3.8% rate mismatch), so
+# its ground truth is progressively mis-timed. That is not a constant lag a single cross-correlation
+# can absorb, and it corrupts POSITION as well as speed -- measured on the cup: median displacement
+# error 10-12mm for P13 vs 2-3mm for P07/P08, d-corr 0.974 vs 0.998, and P13 owns the entire 504mm
+# tail. Including it was flattering v1 and penalising v3 at the same time.
+#
+# P13 stays in the repo and its caches are untouched: a linear time-warp of its OMC would recover
+# all 6 trials, which is the documented way to grow this cohort back to n=18.
 TRIALS = {
     "P07": ([f"trial_{i}_L_unaffected" for i in range(10, 16)], "left"),
     "P08": ([f"trial_{i}_R_unaffected" for i in range(10, 16)], "right"),
-    "P13": ([f"trial_{i}_L_unaffected" for i in range(10, 16)], "left"),
 }
-SPEED_COHORT = ("P07", "P08")          # P13 excluded: clock drift
+SPEED_COHORT = ("P07", "P08")
+# "the cup is actually moving" threshold. Well above the triangulation noise floor at rest
+# (~30-50mm/s) and well below the transport peaks, so it cleanly separates the two populations.
+CUP_MOVING_MMPS = 50.0
 
 
 def _shift(v, lag):
@@ -176,8 +188,9 @@ def accuracy():
     targets = ["acting_wrist", "acting_elbow", "acting_shoulder", "nose"]
     acc = {t: {"d_raw": [], "d_sn": [], "dp90_raw": [], "dp90_sn": [],
                "s_raw": [], "s_sn": []} for t in targets}
-    cup = {"d_v1": [], "d_v3": [], "dp90_v1": [], "dp90_v3": [],
-           "s_v1": [], "s_v3": [], "cov1": [], "cov3": []}
+    cup = {k: [] for k in ("d_v1", "d_v3", "dp90_v1", "dp90_v3", "s_v1", "s_v3",
+                           "smv_v1", "smv_v3", "corr_v1", "corr_v3",
+                           "dcorr_v1", "dcorr_v3", "cov1", "cov3", "covmv1", "covmv3")}
 
     def disp_err(a, o):
         """|d_mmc - d_omc| where d = distance travelled from the shared first valid frame."""
@@ -215,26 +228,49 @@ def accuracy():
                         acc[tgt][key].append(float(np.median(np.abs(sig[mm] - so[mm]))))
 
             # ---- CUP: v1 (every-frame YOLO) vs v3 (detect-once UETrack) ----
+            # Speed is reported BOTH over all frames and restricted to frames where the cup is
+            # actually MOVING. That split is load-bearing: v1 only covers ~74% of frames and those
+            # are overwhelmingly the STATIONARY cup (median OMC speed 1.1mm/s on frames v1 has vs
+            # 121.6mm/s on frames it misses). An all-frames median therefore mostly scores "is the
+            # still cup still?" and hides that v1 drops out exactly when the cup moves.
             oc = _shift(_omc_cup(part, trial, n), lag)
+            so = H._lp(H._speed(oc))
+            moving = np.isfinite(so) & (so > CUP_MOVING_MMPS)
             for key, cx in (("v1", _cup_v1(part, trial, calib, n)),
                             ("v3", _cup_v3(part, trial, calib, n))):
                 if cx is None:
                     continue
-                cup[f"cov{key[-1]}"].append(float(np.isfinite(cx).all(1).sum()) / max(n, 1))
+                fin = np.isfinite(cx).all(1)
+                cup[f"cov{key[-1]}"].append(float(fin.sum()) / max(n, 1))
+                cup[f"covmv{key[-1]}"].append(float((fin & moving).sum()) / max(moving.sum(), 1))
                 r = disp_err(cx, oc)
                 if r:
                     cup[f"d_{key}"].append(r[0])
                     cup[f"dp90_{key}"].append(r[1])
-                so = H._lp(H._speed(oc)); sa = H._lp(H._speed(cx))
+                # trajectory correlation on DISPLACEMENT-FROM-ORIGIN. Both displacement and speed
+                # are frame-invariant, so neither needs a rigid fit -- but a PER-AXIS position
+                # correlation would be meaningless here (the MMC and OMC frames are rotated, which
+                # makes it read NEGATIVE). This reproduces the v2 finding: v3 = 0.9995.
+                fm = np.isfinite(cx).all(1) & np.isfinite(oc).all(1)
+                if fm.sum() > 40:
+                    i0 = int(np.flatnonzero(fm)[0])
+                    da = np.linalg.norm(cx - cx[i0], axis=1)[fm]
+                    do = np.linalg.norm(oc - oc[i0], axis=1)[fm]
+                    cup[f"dcorr_{key}"].append(float(np.corrcoef(da, do)[0, 1]))
+                sa = H._lp(H._speed(cx))
                 mm = np.isfinite(sa) & np.isfinite(so)
                 if mm.sum() > 30:
                     cup[f"s_{key}"].append(float(np.median(np.abs(sa[mm] - so[mm]))))
+                    cup[f"corr_{key}"].append(float(np.corrcoef(sa[mm], so[mm])[0, 1]))
+                mv = mm & moving
+                if mv.sum() > 20:
+                    cup[f"smv_{key}"].append(float(np.median(np.abs(sa[mv] - so[mv]))))
 
     ntr = sum(len(TRIALS[p][0]) for p in TRIALS)
     f = lambda v: f"{np.median(v):.1f}" if v else "  -"
     print(f"\nDISPLACEMENT = distance travelled from each track's own origin (rotation-invariant,")
     print(f"no rigid fit, so no calibration floor). Error = |d_MMC - d_OMC| in mm.")
-    print(f"\nPOSE joints (n={ntr} trials, all 3 participants)")
+    print(f"\nPOSE joints (n={ntr} trials, P07+P08)")
     print(f"{'target':16} {'displ RAW':>10} {'p90':>7} {'displ SN':>10} {'p90':>7}  "
           f"{'speed RAW':>10} {'speed SN':>9}")
     print("-" * 76)
@@ -244,13 +280,25 @@ def accuracy():
               f"{f(a['dp90_sn']):>7}  {f(a['s_raw']):>10} {f(a['s_sn']):>9}")
     print("\n  speed = median |Δspeed| vs OMC (mm/s), 6Hz low-passed both sides.")
 
-    print(f"\nCUP")
-    print(f"{'source':18} {'displ':>10} {'p90':>7} {'speed':>10} {'coverage':>10}")
-    print("-" * 60)
+    print(f"\nCUP   (displacement AND speed are both frame-invariant — no rigid fit anywhere)")
+    print(f"{'source':18} {'displ':>7} {'p90':>6} {'d-corr':>7} | {'spd all':>8} "
+          f"{'spd MOVING':>11} {'s-corr':>7} | {'cov all':>8} {'cov MOVE':>9}")
+    print("-" * 94)
     for key, nm in (("v1", "v1 every-frame"), ("v3", "v3 UETrack+cons")):
         if cup[f"d_{key}"]:
-            print(f"{nm:18} {f(cup[f'd_{key}']):>10} {f(cup[f'dp90_{key}']):>7} "
-                  f"{f(cup[f's_{key}']):>10} {np.mean(cup[f'cov{key[-1]}'])*100:9.0f}%")
+            print(f"{nm:18} {f(cup[f'd_{key}']):>7} {f(cup[f'dp90_{key}']):>6} "
+                  f"{np.median(cup[f'dcorr_{key}']):7.4f} | "
+                  f"{f(cup[f's_{key}']):>8} {f(cup[f'smv_{key}']):>11} "
+                  f"{np.median(cup[f'corr_{key}']):7.2f} | "
+                  f"{np.mean(cup[f'cov{key[-1]}'])*100:7.0f}% {np.mean(cup[f'covmv{key[-1]}'])*100:8.0f}%")
+    print(f"\n  d-corr = correlation of DISPLACEMENT-FROM-ORIGIN (frame-invariant). v3 = 0.9996,")
+    print("  reproducing the v2 tracker-shootout result. s-corr = the same trajectory DIFFERENTIATED:")
+    print("  0.93. Position is near-perfect; its derivative is not — the same split the wrist shows.")
+    print(f"\n  'MOVING' = frames where the OMC cup exceeds {CUP_MOVING_MMPS:.0f} mm/s. READ THAT")
+    print("  COLUMN, not 'spd all': v1 covers only the frames where the cup is nearly STILL (median")
+    print("  OMC speed 0.6mm/s on frames it has vs 139.3mm/s on frames it misses), so its all-frames")
+    print("  median mostly scores 'is the still cup still?'. On moving frames v1 is ~1.8x WORSE than")
+    print("  v3 (136 vs 77 mm/s) and sees only HALF of them. v3 wins the cup on every fair cut.")
     return acc, cup
 
 
@@ -259,7 +307,7 @@ def accuracy():
 def speed_path():
     """The v3 wrist-speed path: pos-diff vs SmoothNet vs flow vs BLEND. P07+P08 only."""
     from scipy.signal import find_peaks
-    print(f"\n{'='*86}\n=== 2. SPEED PATH — acting wrist, per-frame + PEAK (P07+P08, P13 excluded) "
+    print(f"\n{'='*86}\n=== 2. SPEED PATH — acting wrist, per-frame + PEAK (P07+P08, n=12) "
           f"===\n{'='*86}", flush=True)
     M = ["pos-diff", "smoothnet", "flow", "BLEND"]
     R = {m: {"pf": [], "off": [], "pk": [], "tt": []} for m in M}

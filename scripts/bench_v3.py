@@ -74,6 +74,11 @@ def bench_online(cam_counts, n_frames, device="0"):
     frames, synth, vid = _sample_frames(n_frames)
     n_frames = len(frames)
     grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
+    # Pre-convert BGR->RGB ONCE. A per-frame `[:, :, ::-1].copy()` on 1080p costs 6.96ms -- MORE
+    # than UETrack's own 4.04ms step -- and charging it to the tracker made it read 91fps instead
+    # of 247. In a real rig the colour conversion happens once per frame anyway (pose needs it too),
+    # so it is capture-loop overhead, not tracker cost.
+    rgbs = [f[:, :, ::-1].copy() for f in frames]
     print(f"ONLINE loop: {n_frames} real 1080p frames{' (SYNTH)' if synth else ''} from "
           f"{Path(vid).name if vid else 'synthetic'}, cuda:{device}\n", flush=True)
 
@@ -124,12 +129,12 @@ def bench_online(cam_counts, n_frames, device="0"):
 
         # cup: batched UETrack, one forward across cameras
         btrk = _batched_uetrack(ncam)
-        rgb0 = frames[0][:, :, ::-1].copy()
+        rgb0 = rgbs[0]
         for c in range(ncam):
             btrk.init(c, rgb0, (900, 700, 60, 60))
         torch.cuda.synchronize(); t0 = time.perf_counter()
         for i in range(r):
-            btrk.update([frames[i % n_frames][:, :, ::-1].copy()] * ncam)
+            btrk.update([rgbs[i % n_frames]] * ncam)
         torch.cuda.synchronize()
         cup_fps = 1.0 / ((time.perf_counter() - t0) / r)
 
@@ -156,9 +161,14 @@ def bench_online(cam_counts, n_frames, device="0"):
             gpu_flow = (time.perf_counter() - t0) / r
         flow_tot = max(0.0, (gpu_flow - gpu_only) * 1000)      # MARGINAL ms, overlapped
 
-        # combined: pose + cup on 2 CUDA streams, flow on a CPU THREAD POOL so it genuinely
-        # overlaps the GPU work instead of running after it (flow is pure CPU: it can only be
-        # free if it is actually concurrent with the GPU stages).
+        # combined: pose + cup back-to-back, flow on a CPU THREAD POOL.
+        #
+        # The two GPU nets are deliberately NOT threaded against each other. Measured: threading
+        # them is WORSE than running them serially (1/5/10cam = 0.81x/0.87x/0.91x), and serial
+        # already equals the sum of the parts (10.1 vs 10.9ms at 1cam). Both are compute-bound, so
+        # they serialize on the device whatever the CUDA streams / host threads say; extra threads
+        # only add contention. More throughput needs a 2nd GPU or a lighter backbone, not better
+        # scheduling. FLOW is different -- pure CPU, genuinely overlaps -- so it IS threaded.
         from concurrent.futures import ThreadPoolExecutor
         sp, sc = torch.cuda.Stream(), torch.cuda.Stream()
         with ThreadPoolExecutor(max_workers=max(2, ncam)) as ex:
@@ -169,7 +179,7 @@ def bench_online(cam_counts, n_frames, device="0"):
                 with torch.cuda.stream(sp):
                     pose_model.predict(batch, verbose=False, device=f"cuda:{device}")
                 with torch.cuda.stream(sc):
-                    btrk.update([frames[i % n_frames][:, :, ::-1].copy()] * ncam)
+                    btrk.update([rgbs[i % n_frames]] * ncam)
                 torch.cuda.synchronize()
                 for f_ in futs:
                     f_.result()

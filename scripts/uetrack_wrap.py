@@ -137,9 +137,15 @@ class UETrackBatch:
         boxes = boxes.view(len(active), 4)                            # (N,4) normalized
         result = [None] * self.n
         H, W = rgbs[active[0]].shape[:2]
+        # ONE GPU->CPU transfer for the whole batch. A per-camera .tolist() inside the loop below
+        # costs N separate device syncs, each stalling the pipeline right after the batched forward
+        # -- i.e. it re-serialises the batch we just built. Profiling put that single line at ~50%
+        # of UETrack's per-frame CPU time (118ms of 230ms over 20 rig-frames at 5 cams). Scale by
+        # search_size here too, so the loop is pure Python arithmetic with no device traffic.
+        scaled = (boxes * self._t.params.search_size).tolist()        # [[cx,cy,w,h], ...]
         for i, c in enumerate(active):
             st = self.states[c]
-            pred = (boxes[i] * self._t.params.search_size / rf[c]).tolist()   # cx,cy,w,h
+            pred = [v / rf[c] for v in scaled[i]]                     # cx,cy,w,h
             # map back with THIS camera's own prev state (map_box_back reads self.state)
             self._t.state = st["state"]
             new = clip_box(self._t.map_box_back(pred, rf[c]), H, W, margin=10)

@@ -1954,3 +1954,39 @@ better peak (10% vs 12%) -- correlation-era "RAFT looks great" was misleading. D
 crop averages the neighborhood, loses precise point velocity; full-frame RAFT OOMs the 7.6GB GPU. Tuning
 LK didn't help. ⇒ FastFlowNet skipped (deep flow doesn't help here; not a capacity problem). Plain PyrLK
 is cheapest AND best. NOT yet wired into cup_task (probe only).
+
+## 2026-07-21 (cont.) >>> flow-speed: peak vs off-peak, and the WINNING fusion (metrics: docs/SPEED_METRICS.md)
+
+Deep dive on wrist-SPEED accuracy (user: SmoothNet's speed isn't perfect). Full metrics table lives in
+docs/SPEED_METRICS.md; the narrative + corrections here.
+
+**Per-frame vs Murphy metrics DISAGREE — and that flipped the winner.** Per-frame |Δspeed|: pure flow
+6.8 wins (halves SmoothNet 13.5). But the pipeline outputs PEAK velocity + time-to-peak, and on the
+PEAK, pure flow is the WORST (61mm/s over-shoot from motion blur) while SmoothNet is best (20mm/s).
+Decomposition: flow clean off-peak (+0.4 bias) / blurred at peak (+61); SmoothNet phantom-speed at rest
+(+8) / accurate at peak (+13.6). Complementary, non-overlapping failure regimes.
+
+**The WINNING fusion = speed-weighted BLEND** (which I'd earlier WRONGLY dismissed by scoring it on
+per-frame instead of peak): `wb=sigmoid((flow_speed-350)/120); blend=(1-wb)*flow+wb*smoothnet`. Slow →
+flow, fast → SmoothNet. Gets peak 19.7 + off-peak 4.7 + best worst-case timing (max 133ms vs 233-333ms
+for the others = HALF). Beats/ties every method on every Murphy metric. ⚠ 350/120 hand-set, need tuning.
+Other fusions FAIL: KF-prior (over-smooths velocity, 16.6/peak 68), flow-integrate→SmoothNet (10.9/peak
+45). Lesson (again): the METRIC determines the winner; I kept defaulting to per-frame when the pipeline
+needs peak+timing.
+
+**Flow method: PyrLK wins** (cheapest 0.5ms + effectively best). DIS ties per-frame but 5x slower; RAFT
+(deep, wrist-crop) LOSES; tuned-LK no help. ALL flows over-shoot the peak → fundamental to flow-tri, not
+algorithm. FastFlowNet skipped.
+
+**KEY CORRECTIONS this thread (user drove all of them):**
+1. Metric: use ABSOLUTE mm/s speed error, not correlation (speed is frame-invariant; corr hid magnitude).
+2. Caching: cache the per-clip flow (cache/flow_vel/) — was re-decoding video every run.
+3. P13 = LINEAR CLOCK DRIFT (−8→+3fr, 3.8% rate mismatch), NOT desync/miscalib — EXCLUDED as bad GT.
+   User's eye caught it from the shape traces (out/p13_speed_traces.png). Uniform-across-cams shift can
+   only be OMC-vs-video lag, not inter-cam desync.
+4. time-to-peak medians are frame-quantized (33/50ms = 2/3 frames) — report MEAN + MAX, not median.
+5. Re-scored earlier fusions on PEAK not per-frame → post-hoc blend un-dismissed (it's the winner).
+
+**NEXT: try POINT TRACKING as a speed method** (e.g. CoTracker/PIPs/TAPIR — track the wrist point
+directly through time as an alternative to per-frame optical flow; may avoid flow's blur over-shoot at
+the peak while keeping the direct-motion advantage).

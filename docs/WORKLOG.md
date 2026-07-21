@@ -1916,3 +1916,41 @@ rig. RTMPose's 75% coverage = per-camera keypoints disagree across views (verifi
 so its numbers are a LOWER BOUND -- a proper person-crop version might improve. BlazePose self-detects
 (fair as-is). Even granting RTMPose the caveat, YOLO's margin is large enough that the conclusion holds.
 VERDICT: keep YOLO-pose for the rig; no reason to switch. (Speed already favored YOLO 80 vs 5-6 fps@5cam.)
+
+## 2026-07-21 (cont.) >>> optical flow for wrist-SPEED accuracy (metric: absolute mm/s, not correlation)
+
+User idea: SmoothNet's speed isn't perfect; can optical flow help? Our speed = differentiate triangulated
+position (amplifies jitter). Flow measures pixel VELOCITY directly (no differentiation). Per cam: PyrLK
+the YOLO wrist pixel t->t+1 -> 2D pixel velocity; triangulate {p} and {p+flow} -> 3D velocity from the
+FLOW FIELD, never differencing positions across time. scripts/flow_velocity_probe.py.
+
+⚠ METRIC CORRECTED (user): speed is rotation/translation-invariant SCALAR, so ABSOLUTE |Δspeed| mm/s is
+the honest metric; correlation only measures shape + HID the magnitude error. Also added CACHING
+(cache/flow_vel/<clip>__<method>.npy) after the user flagged I was re-decoding video every run.
+
+RESULT (median |Δspeed| vs OMC, moving frames, n=18):
+| signal | |Δspeed| mm/s | peak err |
+|---|---|---|
+| pos-diff | 48.6 | 31% |
+| smoothnet (was best) | 15.0 | 4% |
+| flow (PyrLK) | 9.8 | 12% |
+| FUSE (PyrLK + SmoothNet, speed-weighted) | 8.5 | 4% |
+
+**Fused flow ~HALVES SmoothNet's wrist-speed error: 15.0 -> 8.5 mm/s.** Much clearer than correlation
+implied (0.984->0.991 looked marginal). Fusion = trust flow at low/med speed (best shape), SmoothNet's
+magnitude at the fast peak (flow OVER-estimates the peak +10-20% = motion blur, verified by SIGNED error;
+my earlier "PyrLK window too small -> underestimate" was WRONG). PyrLK cost 0.5ms/wrist/cam = negligible.
+
+FLOW-METHOD SHOOTOUT (user: tuned-LK, DIS, deep FastFlowNet/EdgeFlowNet). **Plain PyrLK WINS:**
+| method | flow mm/s | fuse mm/s |
+|---|---|---|
+| PyrLK plain | 9.8 | 8.5 |
+| tuned-LK (win11/6lvl/eig-gate) | 9.5 | 9.4 |
+| RAFT-small (deep, 256px wrist crop) | 18.1 | 12.3 |
+| DIS (dense variational) | 9.3 | 8.4 |
+
+RAFT (a STRONGER deep model than FastFlowNet) LOSES on absolute error (18.1 vs 9.8) despite a marginally
+better peak (10% vs 12%) -- correlation-era "RAFT looks great" was misleading. Dense deep flow on a small
+crop averages the neighborhood, loses precise point velocity; full-frame RAFT OOMs the 7.6GB GPU. Tuning
+LK didn't help. ⇒ FastFlowNet skipped (deep flow doesn't help here; not a capacity problem). Plain PyrLK
+is cheapest AND best. NOT yet wired into cup_task (probe only).

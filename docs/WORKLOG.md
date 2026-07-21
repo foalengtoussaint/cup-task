@@ -1888,3 +1888,31 @@ scripts/bench_pose_models_multi.py. fps = rig-frames/sec (all cams, one frame):
 - YOLO-pose is a stateless multi-person detector with native predict([N imgs]) = true GPU batch, so it
   wins decisively on THIS rig (80fps@5cam real-time). Keep YOLO for the live rig; RTMPose only worth
   revisiting on a CUDA-12 env for the offline/accuracy question.
+
+## 2026-07-21 (cont.) >>> pose-model ACCURACY: YOLO wins that too
+
+Followed the speed comparison with accuracy, using the metrics we already have (jitter / OMC speed-corr /
+reproduction). Cached RTMPose (90/90) + BlazePose (partial, stopped at 46/90 once the trend was clear)
+per-camera on DELTA clips -> our .pose.json schema (keypoints mapped to COCO-11, full coverage verified)
+-> SAME triangulation + OMC comparison as YOLO. Scripts: cache_pose_altmodels.py,
+accuracy_pose_models_delta.py (--matched for the fair shared subset). compare_pose_omc_delta gained a
+DETS_SUBDIR override so alt models reuse the whole harness.
+
+MATCHED subset (10 trials all 3 models cached = P07 all + P08 t10-12), median:
+
+| model | jitter | OMC corr | reprod mm | wrist cov |
+|---|---|---|---|---|
+| yolo | 13299 | +0.934 | 32.2 | 100% |
+| rtmpose | 35944 | +0.717 | 41.0 | 75% |
+| blazepose | 37069 | +0.742 | 34.4 | 99% |
+
+**YOLO-pose wins accuracy decisively AND consistently** -- ~2.7x lower jitter, +0.93 vs +0.72-0.74 OMC
+corr, best reproduction, full coverage. Matches the earlier detector lesson: multi-view CONSISTENCY
+matters more than single-image benchmark accuracy, and YOLO's stateless multi-person detection suits the
+rig. RTMPose's 75% coverage = per-camera keypoints disagree across views (verified NOT low conf: median
+0.837; triangulation rejects them).
+
+⚠ Caveat kept for the record: RTMPose fed a FULL-FRAME person bbox (top-down models prefer a tight crop),
+so its numbers are a LOWER BOUND -- a proper person-crop version might improve. BlazePose self-detects
+(fair as-is). Even granting RTMPose the caveat, YOLO's margin is large enough that the conclusion holds.
+VERDICT: keep YOLO-pose for the rig; no reason to switch. (Speed already favored YOLO 80 vs 5-6 fps@5cam.)

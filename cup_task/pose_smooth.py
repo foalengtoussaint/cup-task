@@ -98,8 +98,16 @@ def smooth_track(track: list[dict], min_len: int = WINDOW) -> list[dict]:
     with torch.no_grad():
         for s in range(0, T - WINDOW + 1):
             win = filled[s:s + WINDOW]                          # (window,3)
-            x = torch.from_numpy(win.T[None]).float().to(m._device)   # (1,3,window)
-            y = m(x)[0].cpu().numpy().T                         # (window,3)
+            # CENTRE each window on its own mean before the net, and add the mean back after.
+            # The pretrained h36m model was trained on ROOT-RELATIVE poses (metres, near the
+            # origin); our world coordinates sit ~1.5m out, which is off-distribution and makes the
+            # net's learned bias land as a CONSTANT TRANSLATION of the track (measured: 84mm on the
+            # P07 wrist). Centring is exactly offset-covariant -- a temporal filter must never move
+            # the track's position -- and drops that to 1.9mm. Do NOT centre on another joint (the
+            # old root-subtraction bug): that propagates the root's gaps into every joint.
+            off = win.mean(0)
+            x = torch.from_numpy((win - off).T[None]).float().to(m._device)   # (1,3,window)
+            y = m(x)[0].cpu().numpy().T + off                   # (window,3)
             acc[s:s + WINDOW] += y
             cnt[s:s + WINDOW] += 1
     out = (acc / np.maximum(cnt[:, None], 1)) * 1000.0          # back to mm

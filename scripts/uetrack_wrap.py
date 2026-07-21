@@ -12,9 +12,12 @@ from pathlib import Path
 from types import SimpleNamespace
 
 UE = Path(__file__).resolve().parents[1] / "external" / "UETrack"
-CKPT = Path("/tmp/claude-1000/-home-imove-Documents-object-tracking/"
-            "25d11f20-b722-49a2-b616-7d5262e468ad/scratchpad/uetrack_ckpts/uetrack/"
-            "checkpoints/uetrack_base.tar")
+# Weights live in the REPO (models/trackers/uetrack/), not a scratchpad: an earlier version pointed
+# at a session temp dir which was cleaned up, silently breaking every tracker run. Re-fetch with
+# huggingface_hub from "kangben258/UETrack" if these are ever missing.
+_MODELS = Path(__file__).resolve().parents[1] / "models" / "trackers" / "uetrack"
+CKPT = _MODELS / "checkpoints" / "uetrack_base.tar"
+PRETRAIN = _MODELS / "pretrained_models" / "fast_itpn_tiny_1600e_1k.pt"
 
 
 class UETrackB:
@@ -27,6 +30,11 @@ class UETrackB:
         _t.load = lambda *a, **k: _orig(*a, **{**k, "weights_only": False})
         from lib.config.uetrack.config import cfg, update_config_from_file
         update_config_from_file(str(UE / "experiments" / "uetrack" / f"{cfg_name}.yaml"))
+        # Point the backbone at the repo copy regardless of what the YAML says -- the config ships
+        # an absolute path, so a moved/cleaned checkpoint dir would otherwise fail deep inside the
+        # model builder with a bare FileNotFoundError.
+        if PRETRAIN.exists():
+            cfg.MODEL.ENCODER.PRETRAIN_TYPE = str(PRETRAIN)
         from lib.test.tracker.uetrack import UETrack
         p = SimpleNamespace(cfg=cfg, checkpoint=str(checkpoint or CKPT),
                             template_factor=cfg.TEST.TEMPLATE_FACTOR,

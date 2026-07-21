@@ -151,6 +151,56 @@ def phases_from_3d(tracks: dict, fps=FPS) -> dict:
     return seg
 
 
+def wrist_speed_v3(json_dir: Path, tracks: dict, calib: Path, wrist: str,
+                   flow_dir: Path | None = None) -> "np.ndarray | None":
+    """v3 wrist SPEED = blend(PyrLK flow speed, SmoothNet position speed).
+
+    Flow is measured ONLINE (see docs/PIPELINE_V3.md) -- live, the frames are already in hand. This
+    offline entry point replays it from cached per-camera flow when present, and falls back to
+    decoding the clips only if it must. Returns None when there is no flow to work with, in which
+    case the caller should use the SmoothNet speed alone.
+    """
+    from cup_task import flow_speed as FS
+    from cup_task import speed_blend
+    from cup_task.kalman_3d import load_calibration
+
+    track = tracks["targets"].get(wrist)
+    if not track:
+        return None
+    X = np.array([t["X"] if t.get("X") else [np.nan] * 3 for t in track], dtype=float)
+    n = len(X)
+
+    # per-camera wrist pixels from the cached pose JSONs
+    px: dict[str, np.ndarray] = {}
+    for pj in sorted(json_dir.glob("*.pose.json")):
+        cam = f"cam_{pj.name.split('.')[1]}"
+        frames = json.loads(pj.read_text())["frames"]
+        p = np.full((len(frames), 2), np.nan)
+        for i, fr in enumerate(frames):
+            k = fr.get("kps", {}).get(wrist)
+            if k and k[2] > FS.CONF_THR:
+                p[i] = k[:2]
+        px[cam] = p
+
+    flow_dir = flow_dir or (json_dir / "flow")
+    flow: dict[str, np.ndarray] = {}
+    for cam, p in px.items():
+        f = flow_dir / f"{cam}__pyrlk.npy"
+        if f.exists():
+            v = np.load(f)
+            if len(v) == len(p):
+                flow[cam] = v
+    if not flow:
+        return None
+
+    cams = load_calibration(calib, target_size=(1920, 1080))
+    sp_flow = FS.speed_from_cached_flow(px, flow, cams, n)
+
+    d = np.linalg.norm(np.diff(X, axis=0), axis=1) * FPS
+    sp_sn = np.r_[np.nan, d]
+    return speed_blend.blend(sp_flow, sp_sn)
+
+
 def dominant_wrist(targets: dict) -> str:
     """Which wrist did the task: the one with the larger 3D motion range."""
     def rng(key):

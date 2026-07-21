@@ -1865,3 +1865,26 @@ CEILING on this GPU; the earlier "4-5x backbone" was vs a cold-warmup baseline (
 Crop-batching KEPT anyway = correctness win: N>=2 batched now matches sequential to 0.004px (was 2.1px
 from mixed per-cam upload); N=1 still 0.000px. More tracker throughput needs bigger GPU / lighter
 backbone / cameras-across-devices, not more batching.
+
+## 2026-07-21 (cont.) >>> pose-model speed: YOLO vs RTMPose vs BlazePose
+
+User asked to compare RTMPose + BlazePose vs YOLO-pose. Installed rtmlib + mediapipe.
+scripts/bench_pose_models_multi.py. fps = rig-frames/sec (all cams, one frame):
+
+| model | device | 1cam | 5cam | 10cam |
+|---|---|---|---|---|
+| YOLO-pose (batched) | GPU | 243 | 80 | 44 |
+| RTMPose (top-down)  | CPU | 26 | 5 | 3 |
+| BlazePose (1-person)| CPU | 29 | 6 | 3 |
+
+**⚠ NOT apples-to-apples, and the caveat IS the finding:**
+- RTMPose is CPU-ONLY here: onnxruntime-gpu needs CUDA 12, env is CUDA 11.8 (torch's). Tried
+  ort-gpu 1.16.3/1.17.1 -> execstack + librt.so.1 load errors; reverted to CPU ort 1.23.2 (env intact,
+  torch/YOLO/UETrack/SmoothNet all verified working). RTMPose's 5fps@5cam is an ENV limit, not the
+  model -- on a CUDA-12 box RTMPose-GPU would be competitive.
+- BlazePose CANNOT batch by design: MediaPipe is a stateful single-person graph (det on frame1 -> ROI
+  tracker predicts next frame's crop = frame-to-frame dependency), single-person, and the .task runtime
+  is a fixed C++ graph with no exposed batch dimension. So 10 cams = 10 sequential detect() calls.
+- YOLO-pose is a stateless multi-person detector with native predict([N imgs]) = true GPU batch, so it
+  wins decisively on THIS rig (80fps@5cam real-time). Keep YOLO for the live rig; RTMPose only worth
+  revisiting on a CUDA-12 env for the offline/accuracy question.

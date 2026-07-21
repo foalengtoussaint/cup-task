@@ -1990,3 +1990,21 @@ algorithm. FastFlowNet skipped.
 **NEXT: try POINT TRACKING as a speed method** (e.g. CoTracker/PIPs/TAPIR — track the wrist point
 directly through time as an alternative to per-frame optical flow; may avoid flow's blur over-shoot at
 the peak while keeping the direct-motion advantage).
+
+## 2026-07-21 (cont.) >>> point-tracking (CoTracker/TAPNext) as a speed method — negative result
+
+User idea: could a point tracker (track the wrist through time) beat YOLO+flow for pose speed? Full
+results in docs/SPEED_METRICS.md (point-tracking section). Summary:
+
+CoTracker3 single-seed DRIFTS after ~2s (good 0-1.3s @ 0-4px, then 12px@2s, 28px@3.3s). Re-seeding from
+YOLO every 30fr keeps it accurate. But CT-reseed(30) is a 2D SMOOTHER not a better detector: same
+position as YOLO (4mm displacement, re-seed anchors it), 4x smoother (jitter 0.65 vs 2.5mm), SmoothNet-
+level speed (16mm/s, loses to flow 8). Every combination fails: as speed method (=SmoothNet), 2D->
+SmoothNet/blend (double-smoothing, worse), flow-seeded-from-CT (median peak 56<64 BUT p90 297>127, MAX
+665>162 = catastrophic tail when CT drifts within a window). User's p90/p95 check caught the tail-risk
+the median hid. TAPNext++ = 28fps bf16 (6fps 5-cam) = too slow. VERDICT: point-tracking doesn't beat
+YOLO+flow — a strong per-frame detector beats tracking-from-seed. Weights kept for future revisit.
+
+Also this session: TAPNext speed was mis-measured at 13fps (fp32) -> 28fps with bf16 autocast (user
+caught it). And a methods lesson reinforced repeatedly: CHECK THE TAIL (p90/p95/max) and use ABSOLUTE
+error not correlation, or you get fooled (correlation hid speed magnitude; median hid CT drift-risk).

@@ -81,3 +81,41 @@ P13 trials; P07/P08 are stable (lag ±1). This is a ground-truth alignment defec
 so P13 can't be used to judge speed methods. (Confusingly first mis-labeled as desync then miscalib;
 the drifting-lag test — best-local-lag in a sliding window — is what nailed it. A uniform-across-cameras
 shift can only be an OMC-vs-video global lag, not inter-camera desync.)
+
+---
+
+## Point-tracking as a speed method — TESTED, doesn't help (2026-07-21)
+
+Tried CoTracker3 + TAPNext++ to see if temporal point-tracking beats YOLO+flow. Cohort P07+P08.
+
+**CoTracker3 (drift-vs-time):** perfect for the first ~1.3s (0-4px vs YOLO), then drifts — 12px@2s,
+28px@3.3s. So single-seed tracking a point through a 10s repetitive drink task drifts badly. RE-SEEDING
+from YOLO every 30 frames (before drift sets in) keeps it in the accurate regime.
+
+**CoTracker-reseed(30) = a 2D temporal smoother, NOT a better detector:**
+- DISPLACEMENT (raw, no low-pass): 4-6mm vs OMC = SAME as YOLO (re-seed anchors position to YOLO).
+- JITTER (raw 3D 2nd-diff): 0.65mm vs YOLO's 2.5mm = ~4x SMOOTHER.
+- SPEED |err|: 16 mm/s = SmoothNet-level (14), LOSES to flow (8).
+So it cleans velocity via smoothing (same as SmoothNet) but doesn't track a more accurate position.
+
+**Every way to combine CoTracker with the pipeline — none helps:**
+| combination | result |
+|---|---|
+| CoTracker-reseed speed alone | 16 mm/s (= SmoothNet, loses to flow 8) |
+| SmoothNet/blend ON CoTracker-2D input | WORSE (SN 17 vs 14, blend 7.9 vs 6.8) = double-smoothing |
+| flow SEEDED from CoTracker pixel | median peak 56 vs 64 (better) BUT p90 297 vs 127, MAX 665 vs 162 |
+
+The flow-seed case is the trap: median LOOKS better, but p90/p95/max are catastrophic — when CoTracker
+drifts within a window, the flow seed lands off-wrist and velocity blows up (665 mm/s). YOLO's fresh
+per-frame detection is jittery but NEVER drifts, so no catastrophic tail. **Always check the tail (p90/
+p95/max), not just the median** — the median hid CoTracker's drift risk.
+
+**TAPNext++ (the anti-drift model):** loads clean (PL checkpoint → extract `state_dict` + strip
+`tapnext.` prefix; 194M params). Speed: fp32 = 13fps, **bf16 autocast = 28fps/point** (→ ~6fps for a
+5-cam rig). Locked to 256x256 (pos-emb). Too slow for real-time; base TAPNext is same architecture so no
+faster. Not evaluated for accuracy (disqualified on speed + CoTracker already showed point-tracking
+doesn't beat YOLO+flow).
+
+**VERDICT: point-tracking doesn't beat YOLO+flow here.** A strong per-frame detector (YOLO) beats
+tracking-from-a-seed when you have one — the tracker only wins where there's no detector. Weights kept
+(TAPNext++ 2.5GB, CoTracker cache) for future revisit. scripts/pointtrack_probe.py, ctreseed_batch.py.

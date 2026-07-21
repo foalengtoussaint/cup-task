@@ -287,3 +287,1554 @@ fix twice for a problem that was never resolution.
   barely moves. A tracking issue, not a windowing one.
 - **TensorRT** is the one unmeasured speed lever (fuses kernels -> attacks the launch bound).
   Only worth doing if 25fps@10cams ever stops being enough -- it currently is.
+
+---
+
+## 2026-07-16 — DELTA cohort: independent OMC validation set (found, one trial imported)
+
+Goal: the existing OMC validation (`cache/qtm_omc/`) uses mocap **cup + head only**. Find an
+**independently annotated** OMC set to (a) re-run the cup->head validation on a cohort we did
+not tune on, and (b) extend it to the arm. Found it on SMB `research_analyzed_dataset/DELTA`.
+
+### What DELTA is — and the ID trap
+DELTA / iDrink is a **different rig AND different participants** from the BRIO cup-task set.
+The IDs collide (there is a "P14" in both) but they are **not the same people**. Everything is
+namespaced under `cache/delta/`, and nothing BRIO transfers: no `qtm_align` sync, no BRIO
+calib, no reused lags. Treat it as a from-scratch cohort that happens to share a schema.
+
+Its OMC C3Ds are **fully annotated — 46 points**: `cluster_cup_1..4`, head, and the whole
+upper-body arm chain (shoulder/elbow/wrist/hand/fingers/thumb L+R, chest, hips) @ 100 Hz, mm.
+That is the point — the cup+head we had was a subset. Videos are per-trial per-camera cut
+clips (1920x1080 @ 60fps) that join 1:1 to the C3D **on trial number** (the side/cond suffix
+sometimes disagrees). 15 participants have clean video (10-cam P14/15/17/19, 7-cam P07, rest
+5-cam); calib is BRIO-format but **translations are in METRES, not mm**. Full inventory +
+per-participant download plan in `cache/delta/README.md`. Imported ONE test trial (P14
+`trial_1_R_unaffected`) to prove the path before bulk.
+
+### FINDING: pose transfers, the cup detector does NOT
+Ran batched cup+pose on the P14 test trial (10 cams x 710 frames, imgsz 640, yolo26s-pose +
+`cup_clean3d_refill.pt` — the SAME weights validated on BRIO):
+
+| | measured |
+|---|---|
+| pose (person recall) | **99–100 % every camera** — yolo26-pose generalizes to DELTA cleanly |
+| cup recall | **poor** — best 49 % (cam1), most 5–21 %, **cam4 = 0 %** (BRIO was ~64 %+/cam) |
+
+It is a **miss** problem, not confident-wrong: when the cup net fires, confidence is fine
+(median 0.30–0.42, max to 0.78) — it just fails to fire, and never on cam4. That reads as a
+genuine **domain gap** (DELTA cup / backgrounds / viewpoints are off-distribution for a
+BRIO-finetuned detector), not a threshold to lower. Consequence: the MMC cup track on DELTA
+will be gappy (triangulation needs >=2-3 agreeing cams), so **the cup is the transfer
+bottleneck; the pose is not.** The OMC cup (from the C3D) is unaffected — only the
+camera-detected cup is weak. Open: finetune cup on DELTA (OMC cup C3D + calib = free 2D labels
+by projection) / validate only on high-recall cams / render cam4 first to see WHY it misses.
+
+### Batched detector with separate CUDA streams
+`detect_rep.py` ran each clip serially (~70–90 fps/clip, ~2 min for the trial). Wrote
+`scripts/detect_rep_batched.py`: decode each camera once via NVDEC, run **both** nets on the
+same frame batches, on **separate CUDA streams** (realtime.md finding #3 — two threads on the
+default stream overlap only CPU work; a stream each lets the kernels interleave). Measured on
+the trial: serial-nets 48.8 s -> streams 41.6 s (~1.17x, exactly the doc's predicted gain at
+batch=10, where two nets leave few idle gaps). Output verified **byte-identical** across all
+20 JSONs (concurrency that moved a detection would be a bug, not a speedup).
+
+### Decode is ~2/3 of the offline wall-clock — and it VANISHES live
+Measured decode alone (NVDEC, 10 cams x 710 frames, no inference): **27.0 s of the 41.6 s**.
+So the 41.6 s is offline **cache** time, not the doc's inference-only fps budget: it includes
+H.264 decode + the cam1 720p->1080p upscale + JSON serialize. **Live, the file-decode cost is
+not incurred at all** — a sensor emits raw frames, handed over in a capture thread in parallel;
+there is no encoded stream to decode. Strip decode and inference is ~15 s, in line with the
+26/19 fps @ 10-cam budget. The live bottleneck is a *different, still-unmeasured* one: whether
+10 simultaneous camera streams (USB/CSI bandwidth, grab sync) can feed frames at 60 fps.
+
+### Still open
+- Cup transfer must be resolved before any DELTA cup->head comparison is meaningful.
+- **cam1 is 720p** while its calib says 1080p (all other 9 are 1080p). `staged/` upscales cam1
+  to 1080p; do this per DELTA participant — check each camera's real resolution.
+- DELTA video<->c3d **sync from scratch** (no qtm_align): reuse the BRIO cup-speed
+  cross-correlation method (re-confirmed accurate this session via the distance + zero-bias
+  onset argument on the lag=176 P11 case; a visual overlay was deemed unnecessary).
+
+---
+
+## 2026-07-16 (cont.) — DELTA pose comparison + Murphy scoring + the jitter fix
+
+Continued the DELTA cohort work (see the 2026-07-16 entry above and `cache/delta/README.md`).
+Established: **pose transfers, cup does not; the mocap-free weak point is the velocity/smoothness
+measure family; and a FAST skeleton fix (bone-lock) recovers most of it.**
+
+### MMC-vs-OMC pose comparison is possible (frames differ; no P14 mapping to reuse)
+The DELTA OMC C3D is in the mocap LAB frame (mm); our MMC triangulates to the CALIB-camera world
+(metres). Not reconciled, and DELTA's own Pose2Sim video pipeline only ran the 5-cam participants
+(P07/P08/P10-P12), never P14 — so there is no ready-made lab->world transform to reuse. Two paths:
+frame-INVARIANT signals (distances/angles/speeds — no alignment) and ABSOLUTE mm (needs one rigid
+Kabsch, reproduced from the BRIO biomech align). Fixed two metres-vs-mm bugs: (1) `triangulate.py`
+rounds X to 1 decimal = 0.1 mm in BRIO but **100 mm** in DELTA metres, quantising the wrist to a
+100 mm grid -> scale calib translations x1000 (`_load_calib_mm`); (2) `np.roll` sync-shift is
+circular, wrapping the far end onto the near end and fabricating a phantom 3669 mm/s peak -> shift
+with NaN-fill.
+
+### Signals transfer; scoring needed real segmentation + a truncation fix
+Frame-invariant signal agreement (P14 sip 1): reach |wrist-nose| corr **0.992 / 8 mm**, elbow
+angle 0.909 / 5.6 deg, shoulder flexion 0.937, trunk disp 0.951; wrist SPEED the weak one (0.508
+raw). The trial is ONE complete reach-drink-return (sip 1) + a TRUNCATED sip 2. Scoring needed:
+drink detection by cup->HEAD distance not the displacement proxy (distinguishes a sip from a
+set-down); cut to the first complete cycle at BOTH cup AND wrist at rest (the hand returns ~1 s
+AFTER the cup — that gap IS the `returning` phase, cutting at cup-return alone drops it); and a
+gap-fill before `score._smoothed_xyz` (its filtfilt has no NaN handling — 3 missing frames NaN'd
+the whole speed signal). Segment the CANONICAL way: pipeline.py's `segment_cup_only` ->
+`refine_grasp_with_pose` -> `to_murphy_phases`.
+
+### All 15 Murphy scalars, MMC vs OMC (9 position-derived + 6 angle-derived)
+Protocol is 17; the container's dataclass exposes 15. Computed ALL 15 (the 6 angle ones from raw
+points — NOT the ported set; production takes them from the MuJoCo qpos IK fit). Complete-cycle
+result: total_movement_time exact (5.25 s), positions/angles/durations transfer (~6-8 deg offsets,
+mostly OMC-marker-vs-COCO convention). **Everything DIFFERENTIATED degrades from keypoint jitter:**
+peak_velocity 13 % low, movement_units 2 vs 1 (the phantom = a jitter min at the start of the
+return, traced frame-by-frame), peak_elbow_angular_velocity 37 % HIGH. (`shoulder_abduction` proxy
+has a sign flip -> absolute off-scale, Δ still valid.) Renders: `out/measures_*`,
+`out/movement_units_*` (per-phase MU with the scorer's exact rule so picture==number).
+
+### Smoothing: three-way, no single winner; then the real fix
+none / KF-only / KF+RTS on the joint tracks (`--smooth`). timing -> KF+RTS (exact); peak MAGNITUDE
+-> KF-only (RTS's backward pass is what flattens peaks; causal KF keeps them, and is the
+real-time-realistic option); movement units -> none help (KF-only WORST at 4, its lag phase-shifts
+jitter into fake oscillations). OMC always sits BETWEEN too-spiky (none/kf) and too-smooth (kfrts).
+Render `out/kfrts_*`. Also confirmed KF+RTS was run PER-KEYPOINT (no skeleton constraint); it
+didn't distort bones but can't fix the real cause.
+
+### The real cause + the FAST fix (validated a user hypothesis)
+The jitter is NOT random noise: the COCO "wrist" is a semantic label, so as the arm rotates each
+camera places the keypoint on a DIFFERENT physical part of the wrist -> rays miss a stable joint
+-> the triangulated wrist wanders -> **forearm length wobbles 25.7 mm std on a 207 mm bone (12 %)**.
+Temporal smoothing can't fix a non-zero-mean, pose-correlated error (hence the slow pipeline's IK
+fit). **bone-lock** (`--bonelock`): hold upperarm/forearm at MEDIAN length, keep observed joint
+directions, re-place elbow/wrist. O(T), no optimiser. Attacks the wander at its source instead of
+low-passing, so real peaks survive:
+
+    peak_elbow_ang_vel  37 % high -> 4 % low        peak_velocity  13 % low -> 3 % low
+
+Full-set tally vs baseline: **4 better (all velocity/timing), 7 same, 1 WORSE**
+(elbow_extension_reaching 7.9->11.7 deg — re-placing the elbow along a noisy DIRECTION shifts its
+angle). So a strong NET win but NOT strictly dominant; it helps DERIVATIVE measures far more than
+STATIC angles, and the residual static-angle gap is the convention offset it can't touch.
+bone-lock ALONE beats bone-lock+KF (KF re-adds lag). This is the fast stand-in for the slow IK fit.
+Rerun log of all variants (orbit to see the wander): `out/mmc_P14.rrd`.
+
+### Open
+- ALL of the above is ONE trial (P14 sip 1) — directional, needs a cohort run to confirm.
+- bone-lock's elbow-extension regression: try locking forearm only, or not re-placing the elbow
+  direction; or a proper (still fast) bone-length-constrained least-squares.
+- cup detector still doesn't transfer to DELTA (separate blocker for any cup-driven measure).
+
+### Faster skeleton fixes explored: chain vs whole-skeleton PBD vs HYBRID (the winner)
+The first bone-lock was a CHAIN (shoulder anchors, elbow placed from it, wrist from the elbow), so
+every upstream correction is dumped downstream -- that leak is what shifted the elbow angle. Tried
+three more, all fast:
+  * **v2** -- forearm direction from the ORIGINAL elbow, so the elbow angle is preserved exactly.
+    Kills the elbow-extension regression (+7.9, = baseline) but then does NOT fix
+    peak_elbow_ang_vel (+56.6, no help). The tension is real and clarifying:
+    **peak_elbow_ang_vel IS the derivative of the elbow angle** -- preserve the angle and you
+    preserve its jitter. You cannot geometrically denoise a derivative while keeping its integral
+    untouched. The angular-vel jitter is DIRECTIONAL (bone-pointing wobble), not just length.
+  * **PBD** (`--pbd`) -- constraint projection over the WHOLE skeleton (arm + shoulder span +
+    pelvis + torso sides), each bone at median length, correction DISTRIBUTED over both endpoints,
+    no anchor, 8 Gauss-Seidel iters. Forearm-length std 25.7 -> 0.0mm.
+  * **HYBRID** (`--hybrid`) -- PBD on the TORSO + chain-lock on the ARM. **Best.**
+
+| measure | none | v1 chain | PBD whole | HYBRID |
+|---|---|---|---|---|
+| peak_velocity | -84 | -18 | **-95 (worse!)** | **-1.3 (exact)** |
+| peak_elbow_ang_vel | +56.6 | -6.8 | +9.6 | **+0.1 (exact)** |
+| max_trunk_displacement | -15.5 | -15.5 | **+5.4** | +4.8 |
+| shoulder_flexion_reaching | -6.0 | -6.0 | -2.9 | -3.3 |
+
+**The two halves need OPPOSITE treatments, and that is the finding.** TORSO wants PBD: it
+stabilises the reference frame the shoulder angles and trunk displacement are measured against,
+and it is what finally fixed **max_trunk_displacement (-15.5 -> +4.8)** -- a gap every arm-only
+variant left stuck and which we had written off as "proxy mismatch". It was skeleton
+inconsistency. ARM wants the CHAIN, not PBD: whole-skeleton PBD makes peak_velocity WORSE than
+baseline (-95 vs -84) because distributing corrections pulls the WRIST around and damps its speed;
+the chain leaves the wrist free at the end so real speed survives.
+
+HYBRID tally vs baseline: **6 better, 2 same, 4 worse.** peak_velocity -84 -> -1.3 mm/s and
+peak_elbow_ang_vel +56.6 -> +0.1 deg/s are essentially EXACT. Cost: the abduction measures regress
+(-1.8 -> +6.7) and elbow_extension slightly (7.9 -> 9.0). (The abduction proxy has a known
+sign-convention flaw, so those are the least trustworthy numbers in the set.) All O(T) vector
+math -- no optimiser, no body model. Still ONE trial; a cohort run must confirm before any of this
+is trusted, and the median bone lengths need checking across trials/participants.
+
+### The full picture: all 13 measures x 7 variants -- NO variant wins across the board
+
+```
+measure                            OMC    none      kf   kfrts v1chain v2indep    PBD  HYBRID
+---------------------------------------------------------------------------------------------
+total_movement_time                5.2   +0.0*   +0.0*   +0.0*   +0.0*   +0.0*   +0.0*   +0.0*
+peak_velocity                    623.6  -84.4   -56.2  -200.8   -18.0   -34.9   -95.2    -1.3*
+time_to_peak_velocity              0.2   +0.1    +0.1    +0.0*   -0.0    -0.0    -0.0    -0.0
+time_to_peak_velocity_percent     21.8   +9.1    +7.3    +0.0*   -3.6    -3.6    -1.8    -3.6
+number_of_movement_units           1.0   +1.0*   +3.0    -1.0*   +1.0*   +2.0    +1.0*   +1.0*
+max_trunk_displacement            32.9  -15.5   -15.7   -16.7   -15.5   -15.5    +5.4    +4.8*
+elbow_extension_reaching          74.7   +7.9*   +8.7   +16.3   +11.7    +7.9*   +9.2    +9.0
+shoulder_flexion_reaching         45.8   -6.0    -5.1    -6.9    -6.0    -6.0    -2.9*   -3.3
+shoulder_flexion_drinking         43.9   -7.8    -7.4*   -8.3    -7.8    -7.8    -8.9    -9.0
+shoulder_abduction_reaching      -20.1   -5.3    -4.4*   -6.0    -5.3    -5.0    -4.8    -6.7
+shoulder_abduction_drinking      -21.5   -1.8    -1.0*   -1.7    -1.8    -2.0    +5.9    +6.7
+peak_elbow_ang_vel               153.7  +56.6   +46.1   -30.3    -6.8   +56.6    +9.6    +0.1*
+interjoint_coordination            1.0   -0.1    -0.2    -0.0*   -0.1    -0.1    -0.1    -0.1
+```
+(* = closest to OMC. Delta from OMC, 0 = perfect.)
+
+**The measures split into FAMILIES that want different treatments** -- HYBRID wins the 3 headline
+ones (peak_velocity, peak_elbow_ang_vel, max_trunk_displacement); kfrts wins timing +
+interjoint; **kf wins shoulder_flexion_drinking and BOTH abductions -- exactly where HYBRID is
+WORST**; and plain baseline/v2 win elbow_extension (every geometric fix hurts it). A production
+choice would either compute each measure from its own best-processed track (legitimate -- they are
+independent) or accept HYBRID's trade.
+
+**`number_of_movement_units`: NOTHING fixes it.** OMC=1; none/v1/PBD/HYBRID->2, kfrts->0, kf->4,
+v2->3 -- every variant off by >=1. It stays the genuine mocap-free casualty. The rule is also
+brittle in its own right: the amplitude threshold tests the max's ABSOLUTE speed, not the wiggle
+size, so a **7 mm/s dip** followed by the main 770 mm/s peak counts as a unit; and the `break`
+tests only the FIRST max after each min, so a dip followed by a small bump is rejected even when a
+big peak follows immediately. Fragile by construction, not just under jitter.
+
+### How HYBRID works (recorded because the WHY is the transferable part)
+* **Torso -> PBD (distributed).** Torso bones form a closed quad (sh<->sh, hip<->hip, R-sh<->R-hip,
+  L-sh<->L-hip). Median length per bone over the trial; then per frame per bone,
+  `corr = ((|d|-L)/|d|)*d`, and **each endpoint moves HALF, opposite ways**. Iterate 8x -- required
+  because the bones SHARE joints (fixing the shoulder span moves both shoulders and breaks the
+  shoulder->hip bones). The 50/50 split means **no anchor**, so no joint absorbs the whole error ->
+  stable trunk frame -> fixes max_trunk_displacement.
+* **Arm -> chain-lock.** Shoulder (now stable) anchors; elbow re-placed along its observed
+  direction at median Lu; wrist along its direction from the new elbow at median Lf.
+* **Why the arm must NOT use PBD:** in the chain the wrist KEEPS ITS DIRECTION, so only the RADIAL
+  distance is clamped -- and during a reach nearly all wrist speed is TANGENTIAL, which passes
+  through untouched. Only the radial in-and-out (the fake wander) is removed. Surgical. PBD instead
+  nudges the wrist by half of every constraint error plus corrections propagating from the torso,
+  8x over, perturbing the tangential motion too -- which is why whole-skeleton PBD makes
+  peak_velocity WORSE than baseline (-95 vs -84). **PBD for stability, chain for speed.**
+
+### CORRECTION: HYBRID makes frame-level JITTER worse -- the geometric fix needs TEMPORAL consistency
+Spotted by eye on the render ("I feel like it increases the jitter"), then measured. Correct. The
+per-frame geometric fix is **memoryless**: it re-places a joint along whatever direction that
+single frame observed, at a fixed radius, so direction noise is baked in at FULL LEVER ARM. Jerk
+(median |3rd difference|, mm -- peels off velocity+acceleration, leaves jitter):
+
+    joint            raw    HYBRID   HYB+temp    OMC
+    right_wrist     6.17   10.30      6.26      0.10
+    right_elbow     6.42    9.27      6.39      0.08
+    right_shoulder  3.59    6.31      6.31      0.05
+
+**Why the measures improved anyway, and why that is uncomfortable:** score.py computes them AFTER a
+4Hz lowpass, so frame-level jitter never reaches them. Bone-lock removed the radial wander that
+distorted the peak -> the SMOOTHED trajectory improved while the RAW trajectory got noisier. **We
+were optimising a number that could not see the damage being done.** Lesson: check a jitter metric
+alongside the measures, and look at the render -- the eye caught what every scalar missed.
+
+**Fix: smooth the DIRECTION, not the position** (`--hybridt`, `_smooth_dir`: lowpass the unit
+direction at 8Hz, re-normalise, then place the joint). Keeps the bone rigid and the real swing,
+removes the angular wobble. Costs almost nothing:
+
+    peak_velocity      -84 -> -1.3 (hybrid) -> -9.9 (hyb+temp, still 8x better than baseline)
+    peak_elbow_ang_vel +56.6 -> +0.1 -> -1.8
+    time_to_peak_%     +9.1 -> -3.6 -> +1.8 (temporal is BETTER)
+    shoulder_abduction_reaching  -5.3 -> -6.7 -> -8.6 (worse)
+
+**Prefer `--hybridt`.** Two residuals stay honest: the SHOULDER is still worse than raw (6.31 vs
+3.59) because the torso PBD is still memoryless and needs the same treatment; and even fixed we
+only get BACK TO raw's jitter, never below. **OMC jerk is 0.05-0.10 -- mocap is ~60x smoother than
+any variant we have.** Neither geometry nor this smoothing closes that gap.
+
+### ...AND THE CORRECTION TO THAT CORRECTION: the temporal smooth is POINTLESS (measures already lowpass)
+Challenged with "there's no measure that improves with the temp, and what's the point if we already
+have temporal smoothing" -- both correct. **score.py ALREADY lowpasses at 4Hz (`_smoothed_xyz`)
+before computing every measure.** Right-wrist jerk (mm):
+
+    variant      raw track    AFTER score.py's 4Hz lowpass
+    raw               6.17         0.0852
+    HYBRID           10.30         0.1042
+    HYB+temp          6.26         0.1035
+    OMC               0.10         0.0169
+
+**The 4Hz lowpass erases the entire difference** -- the raw-track gap I was "fixing" (10.30 vs
+6.26) collapses to 0.1042 vs 0.1035, a **0.7%** difference. Consequently NO measure meaningfully
+improves with `--hybridt`, and peak_velocity (-1.3 -> -9.9) and peak_elbow_ang_vel (+0.1 -> -1.8)
+get WORSE: smoothing at 8Hz then 4Hz is double-smoothing = the same peak-flattening as KF+RTS.
+**Use `--hybrid`; `--hybridt` is kept only as a recorded negative result.**
+
+**The real finding is a RENDER/METRIC MISMATCH, not a jitter problem.** HYBRID's jitter increase is
+COSMETIC -- it never reaches a measure. It looked alarming only because
+`render_mmc_jitter_delta.py` draws the RAW 3D while every measure reads the 4Hz-SMOOTHED 3D, i.e.
+**the video shows something no measure ever sees** -- a dumb-player violation (the render must draw
+what the numbers are computed from). The fix is to the RENDER, not to add smoothing the pipeline
+already applies. Two process lessons: (1) I "fixed" a metric that could not see the damage, then
+"fixed" damage that no metric could see -- check where in the chain a number is actually consumed
+before optimising it; (2) an eye-catch is a reason to MEASURE, not a reason to immediately patch.
+
+Residual that IS real: **OMC jerk 0.05-0.10 vs raw MMC ~6 (~60x smoother); even after the 4Hz
+lowpass, 0.017 vs 0.085 (~5x).** Nothing we tried closes that gap.
+
+### Skeleton-aware smoother (hybrid -> smooth -> hybrid): beautiful jitter, ZERO measure gain
+Idea (user's): "smoothing + a second iteration", and "a smoothing that takes into account the
+skeleton and doesn't treat each point as independent". Both correct in mechanism, and the
+composition works spectacularly ON THE TRACK:
+
+    variant                      forearm-len std   wrist jerk
+    raw                             25.75 mm          6.17
+    hybrid                           0.000 mm        10.30   (projection INJECTS jitter)
+    hybrid x2 (no smooth between)    0.000 mm        10.30   (2nd pass = literal NO-OP, 1e-6mm --
+                                                              the chain projection is exact in one
+                                                              step; the SMOOTH is what makes
+                                                              iterating mean anything)
+    hybrid -> smooth@12Hz -> hybrid  0.000 mm         1.10   (9x better, peak UNCHANGED 687->687)
+    hybrid -> smooth@4Hz  -> hybrid  0.000 mm         0.11   (= OMC's 0.10, but peak 687->651)
+
+Per-point smoothing alone breaks the bones; projection alone bakes in per-frame direction noise.
+Composing fixes both -- the smooth kills the high-freq jitter, the 2nd projection restores
+rigidity, and since its INPUT is now smooth it re-injects nothing. That IS a skeleton-aware
+smoother: the projection re-couples the joints the per-point filter treated independently. At 12Hz
+it is free (jitter is >12Hz; real motion and the peak live <4Hz).
+
+**BUT: it does not improve a single measure.**
+
+    measure                HYBRID   hyb2@12
+    peak_velocity           -1.28    +1.49   (wash, both ~exact)
+    peak_elbow_ang_vel      +0.10    +2.30   (slightly WORSE)
+    max_trunk_displacement  +4.79    +7.50   (WORSE)
+    shoulder_flex_drinking  -9.00    -8.40   (slightly better)
+    ...rest same
+
+**Same trap as the previous entry, walked into twice:** score.py lowpasses at 4Hz, so the >12Hz
+jitter never reached the measures -- neither the jitter HYBRID injects (so the earlier alarm was
+misplaced too) nor the jitter this removes. **USE PLAIN `--hybrid`.** `--hybrid2` is kept because
+it has real value for (a) the RENDER -- a rigid, mocap-smooth skeleton is what a clinician should
+see, and it fixes the dumb-player mismatch (the video currently draws raw 3D no measure reads) --
+and (b) any future consumer that does not lowpass.
+
+**Transferable lesson: check WHERE a number is consumed before optimising it.** Two rounds of
+excitement (a 60x jitter win landing exactly at the mocap floor) over a quantity nothing
+downstream reads.
+
+### COHORT (n=11) OVERTURNS THE SINGLE-TRIAL CONCLUSION -- HYBRID's "exact" was luck
+Processed 10 more P14 R_unaffected trials (video + c3d, ~40s/trial batched) and re-ran the
+comparison. **Everything concluded from trial_1 alone was wrong, in both directions.**
+
+    measure                        none          HYBRID        v1chain      (bias +/- trial noise)
+    peak_velocity            -41.9 +/-40.6   -88.7 +/-49.1  -107.3 +/-50.3
+    peak_elbow_ang_vel       +69.2 +/-28.8   +36.9 +/-28.5   +27.9 +/-17.4
+    max_trunk_displacement   -21.1 +/- 8.2    -9.0 +/-12.3   -21.1 +/- 8.2
+    elbow_extension (max)     +4.0 +/- 1.9    +3.6 +/- 3.0    +2.8 +/- 1.6
+    shoulder_flexion_reach    -5.8 +/- 1.6    -4.2 +/- 1.9    -5.9 +/- 1.6
+
+**trial_1 gave HYBRID peak_velocity -1.3 and peak_elbow_ang_vel +0.1 -- both LUCK.** Across 11
+trials HYBRID's peak_velocity bias is **-88.7, twice as bad as the -41.9 baseline**: HYBRID does
+not fix peak_velocity, it HURTS it, and plain `none` is the best variant for that measure. The
+entire "HYBRID is the winner" story was built on one unrepresentative trial -- precisely the
+failure the project's own rule ("never conclude from one scalar") exists to prevent.
+
+**What SURVIVES the cohort:**
+* The geometric bone-lock DOES help angular velocity, consistently: +69.2 -> +27.9 (v1chain),
+  and with LOWER trial noise (+/-17.4 vs +/-28.8). Real.
+* **v1chain (the simple arm bone-lock) is the most reliable** -- best elbow_extension
+  (+2.8 +/-1.6), best ang_vel, lowest noise. The elaborate HYBRID/PBD adds noise for little gain.
+* Torso PBD does halve the trunk bias (-21.1 -> -9.0) but adds noise (+/-8.2 -> +/-12.3).
+
+**BIAS vs NOISE at the MEASURE level (the question n=1 cannot answer):** only the shoulder-flexion
+measures are bias-dominated (69%/82% -> would cancel within-subject); everything else is ~half
+trial-to-trial NOISE, which does NOT cancel. The non-cancelling part as a fraction of the clinical
+(affected-vs-unaffected) effect: elbow_extension 35% (best), shoulder_flexion_reach 47%, trunk 69%,
+peak_velocity 83%, shoulder_flexion_drink 95%, peak_elbow_ang_vel 112%, abduction 384%.
+**Nothing is below 35%.** So the "it is just a calibratable bias that cancels" story is much weaker
+than the single trial suggested -- the honest position is that no measure is comfortably usable yet
+on this evidence.
+
+Harness: `scripts/bias_vs_noise_delta.py`. STILL one participant -- the clinical effects are P14's
+own impairment pattern, and the n=11 noise estimates are same-session same-side.
+
+### THE CLINICAL TEST: affected vs unaffected -- 2 SIGN FLIPS, fully explained by L-R bias asymmetry
+Fetched + processed 10 L_affected trials (now 11 unaff + 10 aff, `scripts/affected_vs_unaffected_delta.py`,
+using `--bonelock`/v1chain, the cohort's most reliable variant). Phases from the OMC cup on both
+sides, so cup detection is not a confound. Result:
+
+    measure                     OMC (mocap)          MMC (ours)        verdict
+    total_movement_time     +0.61 (d=+1.59)     +0.47 (d=+1.18)      recovers
+    shoulder_flexion_reach  +2.68 (d=+1.79)     +2.44 (d=+0.84)      recovers
+    number_of_movement_units +0.31 (d=+0.44)    +0.39 (d=+0.30)      recovers (both weak)
+    elbow_extension         -8.83 (d=-3.35)     -1.81 (d=-0.68)      WEAK
+    peak_elbow_ang_vel     -28.08 (d=-3.87)    -13.93 (d=-0.83)      WEAK
+    peak_velocity          -83.16 (d=-1.14)    +17.66 (d=+0.19)      **SIGN FLIP**
+    max_trunk_displacement -13.10 (d=-1.56)     +0.47 (d=+0.12)      **SIGN FLIP**
+
+Cruel pattern: the measures mocap is BEST at (elbow_extension d=-3.35, peak_elbow_ang_vel d=-3.87)
+are the ones we degrade MOST (to -0.68/-0.83). total_movement_time recovers best -- because it
+depends only on PHASE BOUNDARIES, not on any landmark position.
+
+**FULLY EXPLAINED: the left and right arms carry DIFFERENT landmark biases, and comparing arms
+injects that difference into the effect. The arithmetic is exact:**
+
+    measure              true OMC effect   + (L-R bias gap)  = predicted   measured
+    peak_velocity            -83.2            +100.8            +17.6       +17.66  ✓
+    max_trunk_displacement   -13.1             +13.6             +0.5        +0.47  ✓
+    elbow_extension           -8.8              +7.0             -1.8        -1.81  ✓
+    peak_elbow_ang_vel       -28.1             +14.2            -13.9       -13.93  ✓
+    total_movement_time      +0.61              -0.1             +0.5        +0.47  ✓
+
+    => MMC effect = true effect + (left bias - right bias)      [every measure, to 2dp]
+
+The right wrist carries a -98.0 mm/s peak_velocity bias, the left +2.8 -- a **+100.8 artefact,
+LARGER THAN and OPPOSITE TO the real -83.2 effect**, so the impairment is buried and reversed.
+This is deterministic, not noise: no filter, smoother or geometry can touch it.
+total_movement_time survives precisely because its L-R gap is ~0.
+
+**INTERPRETATION -- this was the HARDEST version of the question, and arguably the WRONG one.**
+Comparing a LEFT arm to a RIGHT arm requires the left/right landmark offsets to match; they do not.
+The actual clinical use-case is **the SAME arm over time** (pre vs post therapy), where the
+IDENTICAL bias applies to both timepoints and **cancels exactly** -- the L-R gap does not exist in
+that design. So: **the pipeline cannot do cross-side comparison without per-side landmark
+calibration; this test says nothing against within-side longitudinal use.** That is the design to
+test next, and DELTA cannot answer it (single session per participant).
+
+### CONCURRENT VALIDITY: do the measures CORRELATE across trials? (the test that matters most)
+Everything above measured agreement in ABSOLUTE value. This asks the question that decides
+usefulness: when mocap says trial A > trial B, does MMC agree? If yes, the bias is JUST an offset
+to calibrate and the measure is usable. Computed WITHIN each side (pooling sides would fake a
+correlation out of the group difference).
+
+    measure                    RIGHT r (n=11)   LEFT r (n=9)   verdict
+    total_movement_time            +0.95*          +0.91*      TRACKS
+    elbow_extension_reaching       +0.88*          +0.72*      TRACKS
+    shoulder_flexion_reaching      +0.81*          +0.78*      TRACKS
+    max_trunk_displacement         +0.71*          +0.55       partial
+    peak_velocity                  +0.60*          +0.71*      partial
+    number_of_movement_units       -0.22           -0.37       NOISE
+    peak_elbow_ang_vel             +0.07           -0.54       NOISE
+    (* p<0.05)
+
+**THIS REVERSES THE PESSIMISM of the affected-vs-unaffected test.** That test failed on the L-R
+landmark asymmetry -- an artefact of comparing a LEFT arm to a RIGHT arm. The WITHIN-side
+correlation maps to the real clinical use-case (same arm, pre vs post therapy) and says **3
+measures are usable today with a calibration offset**: total_movement_time, elbow_extension,
+shoulder_flexion_reaching. Best of all, **elbow_extension is mocap's STRONGEST discriminator
+(d=-3.35) AND we track it at r=0.88/0.72** -- the most promising measure in the set.
+
+**THE SHARPEST LESSON OF THE SESSION -- reducing bias != tracking signal.**
+`peak_elbow_ang_vel`: the bone-lock "improved" its bias +69 -> +28, which I reported as a win. But
+its across-trial correlation is **+0.07 / -0.54 -- we do not track it AT ALL.** The fix was
+COSMETIC: it centred the mean while every per-trial value stayed noise. Hours were spent optimising
+biases (bone-lock, PBD, HYBRID, smoothers) without ever checking whether the per-trial values
+CORRELATED. This one 20-line test would have exposed that on day one. **Check concurrent validity
+BEFORE optimising agreement.**
+
+`number_of_movement_units` confirmed dead from a 4th independent angle (r=-0.22/-0.37).
+
+Harness: inline in this entry's run; see `scripts/affected_vs_unaffected_delta.py::_one` for the
+per-trial measure extraction. STILL P14 only.
+
+### FINAL VERDICT ON THE PROCESSING VARIANTS: raw wins. Everything built today was worthless or harmful.
+Concurrent validity r(OMC,MMC) across trials, within-side, by variant (n=11 R + 9 L):
+
+    measure                      raw   bonelock     pbd    hybrid
+    total_movement_time        +0.94     +0.93    +0.93     +0.92
+    elbow_extension_reaching   +0.81     +0.80    +0.77     +0.67
+    shoulder_flexion_reaching  +0.80     +0.80    +0.80     +0.79
+    max_trunk_displacement     +0.63     +0.63    +0.31     +0.38
+    peak_velocity              +0.59     +0.66    +0.73     +0.67
+    peak_elbow_ang_vel         -0.25     -0.24    -0.10     -0.21
+
+**RAW -- no processing at all -- is best or tied-best on 4 of 6 measures.** PBD and HYBRID
+actively DESTROY validity where it existed: max_trunk 0.63 -> 0.31/0.38, and HYBRID drops
+elbow_extension 0.81 -> 0.67. **The single genuine win from the entire day of engineering is PBD on
+peak_velocity (0.59 -> 0.73). One cell.**
+
+So the whole technical arc of this session -- bone-lock (v1/v2), whole-skeleton PBD, HYBRID,
+direction-smoothing, KF, KF+RTS, the skeleton-aware smoother -- was **worthless or harmful by the
+only metric that decides usefulness.** Each was validated against BIAS REDUCTION, which is an
+irrelevant target: `peak_elbow_ang_vel` had its bias "fixed" +69 -> +28 by bone-lock while its
+across-trial correlation is -0.25 (we never tracked it at all). HYBRID, championed hardest and
+written up as "the best variant", is near-worst on almost everything.
+
+**RECOMMENDATION: ship RAW.** Optionally PBD if peak_velocity specifically matters. Delete the
+rest, or keep only as recorded negative results.
+
+**THE META-LESSON, stated for whoever reads this next:** agreement-in-mean and per-trial tracking
+are nearly UNRELATED, and only the second one determines whether a measure is usable. Check
+concurrent validity FIRST -- it is a 20-line test -- and only then consider whether any processing
+is worth building. Hours went into geometry that a single correlation would have pre-empted.
+
+### THE ACTUAL FIX: the ESTIMATORS are broken, not the pipeline. max() is a noise detector.
+Chasing why `time_to_peak_velocity` and `peak_elbow_ang_vel` fail led to the finding that reframes
+the whole day. **Both signals are excellent; both measures are destroyed by their estimator.**
+
+**peak_elbow_ang_vel** (shared phases, n=20):
+
+    statistic    r(OMC,MMC)    OMC    MMC   ratio   OMC d   MMC d
+    max (today)      +0.07    127.0  163.0   1.30   -3.87   -0.46   <- USELESS
+    p99              +0.18    126.6  158.9   1.27   -3.94   -0.67
+    p95              +0.77    122.2  135.2   1.11   -4.19   -2.46
+    p90              +0.85    114.7  118.6   1.03   -5.02   -3.29   <- BEST (ratio 1.03 = unbiased)
+    p75              +0.82     91.9   90.2   0.98   -3.55   -3.25
+    mean             +0.98     57.2   58.1   1.01   -4.44   -5.73   <- r=0.98!
+
+**The p99->p95 jump (r 0.18 -> 0.77) localises the damage: the noise lives in the top ~1-5% of
+samples.** max() is GUARANTEED to select a jitter spike. Skip those few samples and the measure
+works. The MEAN angular velocity tracks at **r=0.98** and the values match (57.2 vs 58.1) -- we
+were always measuring the signal perfectly; `max` was measuring our jitter. (The mean even
+out-discriminates mocap's own max: MMC d=-5.73 vs OMC d=-3.87 -- though it is a different
+construct, average vs peak, so it needs clinical buy-in not just better statistics.)
+
+**time_to_peak_velocity**: the reach velocity profile is a broad bell -- **7.8 frames sit within 5%
+of the max** on a 62-frame window. `argmax` picks ONE arbitrary sample off that plateau, so it
+inherits the plateau width as error (4.8 fr) -- while the real between-trial signal is only 4.6 fr.
+SNR ~= 1 => r caps at 0.70 by arithmetic. Estimator sweep (shared phases):
+
+    argmax +0.64 | parabola +0.66 | centroid>95% +0.73 | centroid>90% +0.75 |
+    centroid>80% +0.86 | centroid_all +0.95
+
+**centroid>80% is the pick** (+0.86, keeps the full signal SD 4.5 fr and the MMC clinical effect:
++0.049 -> +0.050s). `centroid_all` has the best r (0.95) but a shrunken signal SD (3.5) -- more
+reliable about a different, less variable quantity. NOTE the parabola sub-frame fix does NOT help
+(+0.66): it refines within +/-1 frame while the error is a 4-frame slide across a plateau -- the
+obvious precision fix attacks the wrong scale.
+
+**THE LESSON OF THE ENTIRE SESSION:**
+    signal quality was never the problem. The measures' ESTIMATORS were.
+    * max()    on a noisy signal   -> selects for NOISE by construction
+    * argmax() on a flat plateau   -> selects arbitrarily
+Days of geometry (bone-lock v1/v2, PBD, HYBRID, KF, KF+RTS, direction-smoothing, skeleton-aware
+smoother) produced ONE improvement across all measures. Two one-line estimator changes produced
+**+0.78** (peak_elbow_ang_vel: 0.07->0.85) and **+0.22** (time_to_peak: 0.64->0.86).
+**Fix the estimator before touching the pipeline.**
+
+RECOMMENDATION: in score.py / murphy_measures.py, replace `max(angular_velocity)` with p90, and
+`argmax(speed)` with the centroid of the >80%-of-max region. Validate on a 2nd participant.
+
+### RETRACTION: the "estimator fix rescues peak_elbow_ang_vel (0.07->0.85)" headline was POOLED = WRONG
+Asked "does a good correlation mean constant bias and little noise?" -- which exposed two errors.
+
+**1. I published a POOLED correlation.** Pooling affected+unaffected manufactures r out of the
+GROUP DIFFERENCE. I identified this exact trap earlier in the session, warned about it in writing,
+then reproduced it in the estimator sweep. Honest PER-SIDE numbers:
+
+    measure / estimator          POOLED    RIGHT     LEFT   mean(per-side)
+    peak_elbow_ang_vel  max       +0.07    -0.26    -0.42       -0.34
+    peak_elbow_ang_vel  p90       +0.85    +0.69    -0.39       +0.15   <- NOT rescued
+    time_to_peak     argmax       +0.64    +0.68    +0.22       +0.45
+    time_to_peak   centroid       +0.86    +0.91    +0.56       +0.74   <- REAL fix
+    peak_velocity       max       +0.65    +0.87    +0.71       +0.79
+    peak_velocity       p90       +0.87    +0.92    +0.84       +0.88   <- real, modest
+
+So the estimator lesson is REAL but SMALLER than claimed: **one solid fix (time_to_peak +0.29), one
+modest (peak_velocity +0.09), one FAILURE (peak_elbow_ang_vel: -0.34 -> +0.15, still useless; the
+left arm is NEGATIVE).** peak_elbow_ang_vel is the derivative of a jittery angle; nothing rescues
+it. Also note peak_velocity was ALREADY fine per-side (0.79) -- the earlier "0.59" was the
+own-phases run. Docs (README + memory) corrected.
+
+**2. A HIGH r DOES NOT MEAN A CONSTANT BIAS** -- r is invariant to BOTH offset and scale, so it only
+says the scatter about SOME line is small. The SLOPE distinguishes them, and real SCALE errors exist:
+
+    measure                    slope (R/L)   meaning
+    max_trunk_displacement      0.32 / 0.36  we capture only 1/3 of the real trunk range
+    shoulder_flexion_reaching   1.39 / 1.26  we EXAGGERATE the range 26-39%
+    elbow_extension_reaching    0.86 / 0.81  we compress ~15-20%
+
+**max_trunk_displacement has r=0.71 AND slope 0.32** -- it ranks trials correctly while compressing
+magnitude 3x. Clinically serious: trunk displacement IS the compensation measure. An offset needs
+one subtraction; a slope needs a GAIN, and compression means extremes stay under-reported even
+after calibration. (My "slope~1 -> pure offset" verdicts were junk: with n~10 the slope stderr is
+huge, so "not significantly different from 1" is a statement about NO POWER. A slope of 1.39 got
+labelled "pure offset". Report the CI, not a significance verdict.)
+
+### peak_elbow_ang_vel: SETTLED -- NOT RECOVERABLE (and the "mean" is a different measure, not a fix)
+Full per-side breakdown + the proxy checks that decide it (P14, n=11 R / 9 L, all WITHIN side):
+
+    statistic     POOLED   RIGHT    LEFT   mean/side
+    max            +0.07   -0.26   -0.42     -0.34    <- as shipped: selects jitter spikes
+    p90            +0.85   +0.69   -0.39     +0.15    <- my "fix": fails on the AFFECTED arm
+    mean           +0.98   +0.96   +0.64     +0.80    <- tracks... but see below
+    median         +0.86   +0.37   +0.63     +0.50
+    (elbow ANGLE's own range)  +0.83  +0.88  +0.86    <- the SIGNAL is fine
+
+    r(OMC max , OMC p90 )  = +0.87 / +0.87   -> p90 IS a legitimate proxy for the max
+    r(OMC max , OMC mean)  = +0.32 / +0.29   -> the MEAN is a DIFFERENT CONSTRUCT
+    r(MMC mean, OMC max )  = +0.23 / -0.10   -> our mean does NOT recover mocap's max
+
+**Verdict: the measure is well-posed (p90 proxies the max at 0.87 on both sides) but WE CANNOT
+MEASURE IT (+0.69/-0.39).** The mean we CAN measure (0.96/0.64) is nearly INDEPENDENT of the max
+(r~0.3) -- adopting it would SILENTLY SUBSTITUTE a different measure, not fix this one.
+
+**The nastiest part: the AFFECTED arm fails worst.** It moves slower (mean eav 48.3 vs 64.5), so
+the signal shrinks while our noise stays constant -> **the measure degrades most exactly where the
+impairment is greatest.** That is the opposite of what a clinical measure must do, and it means
+peak_elbow_ang_vel cannot be rescued by any estimator on this hardware.
+
+OPPORTUNITY (needs clinical buy-in, not just statistics): **mean elbow angular velocity** is
+well-tracked (r=0.80 per-side) AND highly discriminative (MMC d=-5.73, stronger than mocap's own
+peak at d=-3.87). A plausible NEW mocap-free-native measure -- but it must be justified as its own
+construct, not rebadged as "peak".
+
+### REFRAMING (and un-retraction): WITHIN-HAND r IS THE WRONG CRITERION FOR LOW-VARIANCE MEASURES
+Prompted by: "the inter-hand correlation can also be small just because the measure doesn't change
+much trial to trial". Correct, and it overturns my previous entry. A low within-hand r has TWO
+possible causes -- our noise, OR **the measure barely varying within a hand** (nothing to
+correlate). The diagnostic is mocap's OWN within-hand SD and the implied CEILING on r:
+
+    measure                      OMCsig  ourErr  maxR   gotR |  OMC d   MMC d   verdict
+    total_movement_time            0.39    0.00  1.00  +1.00 |  +1.59  +1.59   works (degenerate)
+    elbow_extension_reaching       2.53    1.56  0.85  +0.81 |  -3.35  -1.86   WORKS
+    peak_elbow_ang_vel  p90        5.34    9.52  0.49  +0.15 |  -5.02  -3.29   **WORKS**
+    peak_elbow_ang_vel  max        7.24   22.17  0.31  -0.34 |  -3.87  -0.46   useless
+    peak_velocity       p90       69.60   35.25  0.89  +0.88 |  -1.23  -0.62   weak
+    shoulder_flexion_reaching      1.50    1.91  0.62  +0.73 |  +1.79  +0.20   we LOSE the signal
+    max_trunk_displacement         7.78    6.05  0.79  +0.63 |  -1.56  +0.12   SIGN FLIP
+    number_of_movement_units       0.64    1.50  0.39  +0.11 |  +0.44  +0.55   no signal in MOCAP
+    time_to_peak__centroid         0.07    0.05  0.83  +0.74 |  +0.45  +0.57   no signal in MOCAP
+
+**UN-RETRACTION: the p90 fix for peak_elbow_ang_vel IS REAL.** Its within-hand r is only +0.15 --
+but the CEILING is 0.49, because mocap's own within-hand SD is just 5.34. Judging it by within-hand
+r was asking a low-variance measure a question it cannot answer. By the criterion that matters --
+**does it detect the impairment** -- p90 gives **d=-3.29 vs mocap's -5.02**, while `max` gives
+**-0.46**. So `max`->p90 turns a useless measure into a working one. (My earlier retraction was
+right about the POOLING error and wrong about the conclusion.)
+
+**AND THE STING: `time_to_peak` has NO CLINICAL SIGNAL EVEN IN MOCAP (OMC d=+0.45).** My proudest
+result of the day -- "centroid fix, r 0.45->0.74" -- improved the reliability of a measure that has
+nothing to detect. `number_of_movement_units` likewise (OMC d=+0.44), now confirmed dead for the
+RIGHT reason.
+
+**METHOD RULE: report BOTH (a) within-hand r AGAINST ITS SNR CEILING, and (b) between-hand d in
+BOTH mocap and MMC.** They answer different questions: (a) can we track trial-to-trial variation,
+(b) can we detect the impairment. A measure can fail (a) and ace (b). And ALWAYS check OMC's own d
+first -- if mocap cannot discriminate with the measure, our error is irrelevant.
+
+================================================================================
+## 2026-07-17 — DELTA camera-quality: desync vs miscalibration, and the cohort
+================================================================================
+
+Big picture: what looked like "the pose/measures don't transfer to DELTA" was almost
+entirely BAD CAMERAS poisoning triangulation, not the pipeline. Corrected the whole
+diagnosis, built (and mostly retired) sync-repair tooling, and characterized the cohort.
+
+### Corrections to earlier claims (all retracted/fixed in
+### object_tracking/docs/context/project_delta_cohort_transfer.md)
+1. "P14 didn't replicate / pose broken on P15/P17/P19" — WRONG. It was bad cameras.
+   robust_triangulate seeds from an all-cam DLT then ejects the worst reprojector
+   (breakdown point 50%). With ~5/10 cams bad (P15), the seed is corrupted and it ejects
+   the GOOD cams -> bimodal 0-or-10 consensus. Restrict to good cams: P15 wrist coverage
+   25->96-100%, reproj 10.8->7.5px, elbow-angle err 24->4deg; concurrent validity
+   elbow_extension P15 0.32->0.95 (matches P14 0.87). REPLICATION RECOVERED.
+2. The "L-R bias" framework was CIRCULAR (algebraic identity a-b+b=a). Retracted.
+3. "cup detector doesn't transfer" was P14-only; COCO teacher yolo26x-seg gets 77%
+   >=3-cam consensus on P14 (our BRIO finetune 8.2%).
+
+### Camera failure modes: DESYNC vs MISCALIBRATION (two different problems)
+- DESYNC = camera shows a different INSTANT. 2D looks fine; disagrees in 3D during MOTION.
+- MISCALIB = 2D right, geometry wrong. High reproj EVEN WHEN STILL.
+- The RELIABLE classifier is REPROJECTION vs a RANSAC consensus, STRATIFIED BY WRIST SPEED
+  (still<3mm/fr vs moving). NOT wrist-speed correlation -- that is VIEWPOINT-CONFOUNDED
+  (P10/P19 cam2 read low-corr but reproject at 16-18px = FINE; a fine camera whose wrist
+  moves toward/away has low apparent 2D speed).
+- Discriminator: desync => low still-reproj + high move-reproj + a CONSISTENT lag (low SD,
+  high r) that explains it. miscalib => high still-reproj, no lag helps (small lag cannot
+  cause large still-reproj).
+
+### RANSAC reference (should have done from the start)
+reaudit_cam_quality.py: per-frame 3D from the LARGEST mutually-agreeing camera subset
+(pairwise-seeded, max-inlier, refit). Survives >50% bad cams where all-cam iterative
+ejection fails. Consensus reached jumped P19 7%->91%, P15 45%->100%, P17 47%->88%.
+VALIDATED against ground truth: P11 came out 0% consensus, matching the study's own
+2024_10_23 calibration_errors.csv (P11 = 57.82px, catastrophic).
+
+### COHORT (10 participants with calib; P24/P25 have NO calib on share) -- usable cams in 1-5
+  P07 5/5, P08 5/5, P15 5/5  (clean now)
+  P13 5/5 after cam2 re-cut (the ONLY true re-cuttable desync in 1-5; +139fr, verified)
+  P10 4/5 (cam4 miscal), P12 3/5 (cam4,5), P14 3/5 (cam4,5; its GOOD cams are 6,7,9,10),
+  P19 3/5 (cam2,5), P17 2/5, P11 0/5 (calib broken).
+=> CLEAN 5-camera cup cohort = P07, P08, P15 now + P13 after one re-cut = 4 participants.
+=> SYNC REPAIR IS DONE. Every other bad camera is MISCALIBRATION -> the lever to grow the
+   cohort is RECALIBRATION (05_Calib_before/ Charuco footage, or bundle adjustment), not sync.
+
+### Sync-repair tooling (built, verified, barely needed)
+- sync_fix_delta.py: per-camera constant-lag estimate + reindex (superseded by re-cut).
+- delta_recut.py --align: MOTION-ENERGY alignment (ported from ~/Downloads/fix_slicing.py
+  align_trial), run at FULL fps (1-frame precision vs the original's 10fps ~6-frame).
+  Downloads uncut LOCALLY first (sequential read ~32MB/s -> ~33s/GB, vs 8MB/s many-small),
+  caches coarse thumbs to cache/delta/_thumbs/*.npy. Verified on P13 cam2: r@lag0 -0.08->0.86,
+  cup consensus (COCO teacher) 4cams 48% -> +fixed-cam2 59% (vs +broken-cam2 32%).
+  KEY: for the CUP, a desynced camera HURTS (48->32) but once synced HELPS (48->59) -- cam2
+  is a high-recall cup viewpoint (teacher 96%). So 5 synced cams > 4 for the cup, as the user
+  argued. But this only mattered for P13 cam2 across the whole cohort.
+- reproj_render_delta.py: diagnostic grid, GREEN=detected wrist vs RED=reprojected RANSAC
+  consensus per cam; gap constant-when-still => miscalib, gap opens-in-motion => desync.
+  (Note: verdict labels read reaudit_cam_quality.json which the last run overwrote to only
+  P07/08/11/12; gap numbers are live/correct regardless. Re-run reaudit --parts <all> to
+  restore full labels.)
+
+### Cup label pool (ready for finetune)
+build_cup_labels_delta.py --usable-cams: reject-then-fill (object_tracking pipeline) with
+COCO teacher, RESTRICTED to sync+calib-clean cams (else fill/refill poison the bad cams).
+P14 pool: 14,728 labels over 7 usable cams (11,725 real / 2,940 fill / 63 refill = 0.4%).
+The 0.4% refill confirms the retained cams genuinely agree. Ready to train yolo26s (user's
+stated student) -- labels are SEG polygons (yolo26n-seg/yolo26s-seg compatible; a merged
+pose+cup detect head would need box labels + a rebuild).
+
+### NEXT (open)
+- Decide: cup finetune on the clean cohort NOW (recommended; deliverable, P14 pool ready)
+  vs recalibrate the miscalibrated cameras first (grows cohort past 4).
+- Recalibration is the real remaining lever (P10/P12/P14/P19 have miscalib cams in 1-5).
+- P24/P25 blocked on missing calibration.
+- data kept: uncut downloads in cache/delta/<P>/uncut/, re-cuts in .../recut/, thumbs in
+  cache/delta/_thumbs/. NO deletes (bigrun.sh's rm was the lesson).
+
+## 2026-07-20  DESYNC/MISCALIB RE-INVESTIGATION -> it was SHUFFLED CUTS (three-signal fingerprint)
+
+The 2026-07-17 "recut vs miscalib" labels were made with too-narrow search windows and a
+reprojection-only test. The user (watching renders) kept correctly flagging cameras I'd
+mislabeled. Full re-investigation converged on a THREE-SIGNAL fingerprint per camera, and a
+NEW root cause the earlier pass never named: the study's CUT CLIPS are placed at the wrong
+time (often a DIFFERENT repetition of the drink task), which masquerades as miscalibration in
+every geometric test.
+
+### Why every single-signal test failed (each confounded a different way)
+- reaudit / lag_probe (reprojection, shift WITHIN the cut clip): a mis-cut clip's correct
+  content is OUTSIDE its window, so no within-clip shift reaches it -> "MISCALIB". Also capped
+  at +-200 fr.
+- uncut_offset_probe (reprojection, shift within +-15s of the uncut): when a camera is
+  miscalibrated, reproj stays high at EVERY offset -> geometry masks any timing dip. And a
+  weak aggregate dip (P12 cam4 +467) was an ARTIFACT of inconsistent per-trial offsets.
+- motion_sync_delta / delta_recut --align (motion energy on 7s clips): repetitive drink motion
+  gives many near-equal xcorr peaks -> scattered, low-q, useless for a constant offset.
+- MEASURED whole-session (74min) motion xcorr is the ONLY periodicity-immune sync test
+  (cam4<->cam5 same-PC lag 0.0 confirmed the user: they're a synced pair).
+
+### The winning tool: cut_placement_audit.py (calibration-free, periodicity-free)
+1. locate2(): each cut clip is a re-encode of its OWN uncut, so slide it over that uncut and
+   take the PIXEL-EXACT match (fine 10fps sequence NCC ~0.999 at the true source vs ~0.986 at
+   any other repetition). The v1 coarse-2fps argmax picked wrong repetitions (put two P13
+   trials at one spot -- impossible); the fine top-k disambiguation fixed it, RE-VALIDATED on
+   P13 (reproduces +1.8s constant on 4/6 trials, exposes 2 trials mis-cut +10/+17s).
+2. whole-session motion xcorr gives the inter-PC recording offset (drift-free).
+3. misplacement = (t_suspect - t_ref) - session_offset. Zero => correct cut.
+   verdict: |mis|<=1s all trials CUTS-OK; constant>1s CONST-OFFSET; varying SHUFFLED.
+
+### Multi-joint + consistency fingerprint (multijoint_reproj.py + scratchpad probes)
+For CUTS-OK cams, decide real-miscalib vs detection-quirk by:
+- multi-joint: geometry error is GLOBAL (all 9 COCO joints, incl static nose/shoulders/hips);
+  a wrist-only error = detection quirk, NOT miscalib (rescued P14 cam2).
+- per-trial: real miscalib repeats the SAME error MAGNITUDE and OFFSET VECTOR every trial.
+- spatial: 4x3 grid, per-cell mean offset vector + COHERENCE = |mean vec|/mean|vec|. ~1.0 =
+  smooth systematic field (geometry); ~0 = random (detection noise). P10 cam4 0.96 (field even
+  sign-flips across image -> "left side fine" was a zero-crossing, not calibration being ok).
+
+### FINAL COHORT (cams 1-5), classified
+              fine        mis-cut(RE-CUT fixes)      real-miscalib(recalib)   now -> after re-cut
+  P07  5/5    1,2,3,4,5   -                          -                        5/5
+  P08  5/5    1,2,3,4,5   -                          -                        5/5
+  P15  5/5    1,2,3,4,5   -                          -                        5/5
+  P13         1,3,4,5     cam2 (+1.8s const, 2 trials shuffled)  -            4/5 -> 5/5
+  P14         1,2,3,4     -                          cam5 (coh .93, 90px)     4/5 (cam2 RESCUED: wrist-only quirk)
+  P17         1,2,3,4     -                          cam5 (coh dominant .88, +also 0.5s clock-desync)  4/5
+  P10         1,2,3,5     -                          cam4 (coh .96)           4/5
+  P12         1,2,3       cam4(shuffled ~+144s+/-), cam5(+144.3s const)  ?(unknown until re-cut)  3/5 -> up to 5/5
+  P19         1,3,4       -                          cam2(mild 24px), cam5(severe 147px)  3/5
+  P11         -           -                          all 5                    0/5
+Cause census of 13 broken cams: 3 mis-cut, 9 miscalib, 1 both (P17 cam5). ZERO classic desync
+in the original sense -- the study's cutter mostly DID compensate clock offsets (P10 +8.5s,
+P11 -8s handled fine); it failed only by SHUFFLING whole repetitions (P12 pc3, P13 cam2) and a
+0.5s residual (P17 cam5).
+
+### STUDY'S OWN DOCS (cache/delta/study_docs/, copied off the share)
+2024_10_23_1138_Calibration_errors.csv = per-participant calibration reprojection error (px):
+  P08 0.85  P07 1.55  P13 2.69  P12 4.90  P15 4.31  P10 5.61  P11 57.82  (5-cam parts + P07/08)
+  P14 3.58  P19 6.34  P17 13.32  (10-cam RMS -- NOT directly comparable to our cam1-5)
+CROSS-CHECK (5-cam participants, directly comparable):
+  * P12 (4.90) + P13 (2.69) have GOOD calibration -> their cam4/5/cam2 errors CANNOT be geometry
+    -> INDEPENDENTLY CONFIRMS the mis-cut diagnosis. Strong external validation.
+  * P11 (57.82) confirms genuinely-broken calibration (all 5, 0/5). 
+  * P10 (5.61) modest 5-cam mean, one bad cam (cam4) diluted.
+IMPLICATION -- recalibration may NOT fix "miscalib" cams: P14 calib was GOOD (3.58 over 10 cams
+  -> cam5 could NOT have been 90px at calib time) yet cam5 reprojects 90px in the task with a
+  coherent frozen field => the CAMERA MOVED between calib and task. There is ONLY 05_Calib_before
+  (no calib_after), so re-running calibration reproduces the SAME extrinsics -- a moved camera is
+  UNRECOVERABLE for 3D. Recalibration only rescues source-bad calibration (P11). Moved cams
+  (likely P14 cam5, P19 cam5, maybe P10 cam4) are stuck for 3D, though their 2D/cup dets may
+  still be usable single-view.
+P13 Notes .txt: "Sync Box bei RPS korrigiert" -- study WAS aware of sync + had a sync box; P13
+  is exactly where we found the cam2 cut shuffle. Only P13 has a notes file.
+
+### NEW SCRIPTS (all in scripts/, cache-only unless noted)
+- cut_placement_audit.py  -- THE classifier (locate2 fine-NCC + whole-session motion offset).
+- multijoint_reproj.py    -- global-vs-wrist-only geometry check (rescued P14 cam2).
+- uncut_offset_probe.py   -- reproj offset sweep (SUPERSEDED for classification; kept: shows
+  the reproj-masking failure mode).
+- motion_sync_delta.py    -- per-clip motion xcorr (SUPERSEDED; periodicity-cursed, documents it).
+- lag_probe_delta.py      -- within-clip reproj sweep (SUPERSEDED).
+Uncuts downloaded (kept): P12 cam3/4/5, P17 cam5(+cam9), P10 cam4, P14 cam2/3/5, P19 cam2/3/5,
+  P11 cam1-5, P13 cam2. Thumbs cached cache/delta/_thumbs/. NO deletes.
+
+### NEXT (revised)
+1. RE-CUT P12 cam4/5 + P13 cam2 from local uncuts at t_ref+session_offset (positions measured &
+   pixel-verified) -> re-detect -> P12 up to 5/5, P13 5/5. (P12 cam5 = single +144.3s shift;
+   cam4 = per-trial; P13 cam2 = +1.8s const w/ 2 trials needing individual placement.)
+2. CUP FINETUNE can start now: P07/P08/P15 (5-cam) + P13/P14/P17/P10 (4-cam) = 7 parts >=4 cams.
+3. Recalibration workstream (05_Calib_before per participant) -- but EXPECT it to fail for moved
+   cams; only P11 is a true recalibration candidate. Verify moved-vs-source by comparing our
+   shipped TOML to a fresh solve from 05_Calib_before.
+
+## 2026-07-20 (cont.)  5-GOOD-CAMERA COHORT WORK SETS BUILT (10L+10R x 5cam)
+
+User: work with participants that have all 5 of cams 1-5 geometrically good (not miscalibrated),
+10 left + 10 right trials each, RE-CUT the mis-cut cams first. Cohort = P07,P08,P15 (already
+clean) + P12,P13 (after re-cut). Excluded: P10/P11/P14/P17/P19 (genuine miscalib cams).
+
+TOOLING (new):
+- recut_from_audit.py: per trial, correct source pos = locate2(ref clip in ref uncut) +
+  session_offset, refined by NARROW-window (+-2s) motion align (periodicity-safe). Writes
+  cache/delta/<P>/recut/. VALIDATED P13 cam2: 167/174/169/170px (broken) -> 9/11/21/8px (recut),
+  incl the 2 shuffled trials. 0 LOW-Q across 20 trials.
+- build_work_set.py: assembles cache/delta/<P>/work/{clips,dets} = 10L+10R x 5cam, correctly
+  timed. Good cams staged from study cut clips SCALED to 1920x1080 (calib res); mis-cut cams via
+  recut_from_audit; detect all 5 per trial (detect_rep_batched). COHORT dict maps good/recut cams.
+
+RESULT (leave-one-out wrist reproj, median px, L-trials/R-trials, cams1-5):
+  P07  10/14  7/10  9/12  8/7  10/18   clean
+  P08  22/11  11/5  13/10 12/7 18/15   clean
+  P13  15/16  12/17 11/13 8/11 20/32   cam2 RE-CUT (validated both hands)
+  P15  16/12  12/9  10/16 12/9 17/22   cam1 720p->1080p fix
+  P12  16/30  19/35 29/24 48/34 26/43  cams4/5 RE-CUT; SOFTER calib (~2-3x, matches CSV 4.90 vs
+                                       P13 2.69); R>L uniformly = AFFECTED arm detection noise
+  proof re-cut works (not just noise): P12 cam4 92->33px, cam5 136->27px on overlapping trial.
+
+TWO DATA BUGS FIXED (both now handled in build_work_set.py):
+  1. SHUFFLED study cut clips (P12 cam4/5, P13 cam2) -> re-cut from uncut.
+  2. 720p cam1 on 10-cam rigs (P14/P15/P17/P19): study cut clip is 1280x720 but calib is 1080p;
+     plain copy -> 347px reproj. FIX: ffmpeg scale=1920:1080 when staging. (P15 rebuilt; bad build
+     preserved at cache/delta/P15/work_bad720cam1/, not deleted.)
+
+STATUS: 5-good-camera cohort READY = P07,P08,P13,P15 (tight ~5-22px) + P12 (soft but usable).
+Each cache/delta/<P>/work/ is self-contained (clips + pose+cup dets), correctly synced.
+NEXT: the actual work on this cohort (cup label pool / pose validation) can start here.
+
+## 2026-07-20 (cont.)  RE-CUT VALIDATION BUG -> corrected cohort (user caught it in the render)
+
+MISTAKE: I validated the per-trial re-cut by the motion-align QUALITY SCORE (peakedness), not by
+REPROJECTION. Bad aligns passed silently. The user spotted cam2 desync in the P13 trial_1 render.
+Per-trial reproj scan (wrist, leave-cam-out RANSAC consensus) revealed:
+  P13 cam2: 19/20 trials good (9-16px), trial_1 = 125px (a single failed align) -> DROP/re-align.
+  P12 cam4: 0/20 good (all 36-53px);  cam5: 5/20 good (rest 27-134px, R-trials worst).
+    -> P12 cam4/5 are NOT re-cuttable. Motion-stratified: still 44/51px == move 65/54px (high WHEN
+    STILL) = MISCALIBRATION (confirmed visually by user via render_wrist_consensus.py). P12 = 3/5
+    (cam1,2,3), matching the ORIGINAL RANSAC audit. My "92->33px re-cut worked" was a
+    rationalization -- 33px is not synced quality (good cams ~10px).
+I also wrongly reported P12 as a 5-good-camera participant and built mixed-5 labels/eval that
+included P12 cam4/5 + P13 trial_1 cam2 -> those are CONTAMINATED and must be rebuilt.
+
+MANDATORY GATE from now on: every re-cut (and every work-set camera-trial) must be REPROJECTION-
+validated -- wrist reproj vs leave-it-out >=3-cam RANSAC consensus, DROP the cam-trial if >~20px.
+Never trust align-q. Tool: the per-trial scan in scratchpad + render_wrist_consensus.py (green=det,
+red=consensus reproj; gap high WHEN STILL => miscalib, high only in MOTION => desync/bad-cut).
+
+CORRECTED 5-good-camera cohort: P07 5/5, P08 5/5, P15 5/5, P13 5/5 (minus trial_1 cam2), P12 3/5.
+Cup-detector findings still stand (domain gap = room+cup; mixed/cross-person works, cross-domain
+fails; per-participant models sharper) but the NUMBERS that used P12 cam4/5 need re-running clean.
+
+## 2026-07-20 (cont.)  REPROJ GATE on work sets + reject classification (desync vs miscalib)
+
+Added a MANDATORY reprojection gate to build_work_set.py (reproj_gate / --gate-only): per
+camera-trial, median wrist reproj vs the leave-it-out >=3-cam RANSAC consensus; >20px ->
+QUARANTINE the clip+dets into work/rejected/ (kept, not deleted) + gate_report.json. This is the
+check I should have run on every re-cut instead of trusting motion-align quality-score.
+
+GATE RESULT (20px), trials with >=3 good cams:
+  P07 20/20 (3 dropped, cam5 borderline)   P15 20/20 (10 dropped, mostly cam5)
+  P08 20/20 (12 dropped, cam1/cam5 affected-side)   P13 19/20 (21 dropped; trial_1 lost cam2)
+  P12 4/20 (78 dropped -- cam1/2/3 also >20px on most trials -> broadly soft, effectively out)
+=> CLEAN 5-good-camera cohort = 4 PARTICIPANTS: P07, P08, P15, P13(-trial_1cam2). P12 = 3/5 at
+best and really only 4 usable trials.
+
+REJECT CLASSIFICATION (classify_rejects.py -- lag-sweep each reject vs leave-it-out consensus):
+  * P13 trial_1 cam2 = DESYNC -73fr -> 8px == RECOVERABLE (the re-cut align landed 73 frames off;
+    correct content IS in the clip). Also trial_41 cam2 +15fr, trial_45 cam2 +33fr. Re-cut fixes.
+  * cam5 across P07/P13/P15 (20-35px, NO lag helps) = miscalib/COMPRESSION (2.5 Mbps camera),
+    not desync -- just over the strict 20px gate. cam5 is a systematic weak camera on 10-cam rigs.
+  * P08 cam1 (20-26px) borderline miscalib.  P12 = collapsed (no-ref) + cam4 genuine miscalib.
+
+*** LESSON (user, emphatically): DESYNC and MISCALIBRATION are INDEPENDENT, CO-OCCURRING failure
+    modes -- NEVER either/or. A camera can be BOTH. "MISCALIB" does not mean "synced". A binary
+    DESYNC-vs-MISCALIB label (my classify_rejects rule) hides the desync on a both-broken camera:
+    the lag-sweep finds the timing offset but reproj floors at the miscalib residual, so it gets
+    stamped MISCALIB. FIX: report BOTH axes -- best-lag frame offset (timing) AND residual reproj
+    at that lag (geometry). Fix desync first, THEN re-check residual miscalib. Saved to memory:
+    docs/context/feedback_desync_miscalib_independent.md. (Same trap as P17 cam5 earlier.)
+
+TODO next: fold lag-recovery INTO the gate (try the lag correction before dropping; re-cut &
+keep if it reaches <15px, only drop if geometry floors high) and relax gate 20->25px (DELTA
+baseline ~10-15px vs BRIO ~3px; most non-desync rejects are cam5 at 20-24px = marginal-usable).
+Then rebuild cup labels/eval clean on the gated 4-participant cohort. Minor: classify_rejects
+prints 1e9 for no-consensus frames -> label them "no-ref" not MISCALIB.
+
+## 2026-07-20  >>> CONTINUATION HANDOFF (compact point) <<<
+
+VERIFIED STATE (do not re-derive):
+* CLEAN 5-good-camera cohort = 4 PARTICIPANTS: P07, P08, P15, P13. P12 is OUT (cam4/5
+  miscalibrated + cam1/2/3 broadly soft >20px; user confirmed miscalib via wrist render).
+* Each of the 4 has cache/delta/<P>/work/ = self-contained 10L+10R x5cam, CORRECTLY SYNCED,
+  ALREADY GATED: work/clips (synced <=20px only) + work/dets (pose+cup json) + work/rejected/
+  (quarantined bad cam-clips, kept not deleted) + gate_report.json.
+  Synced clips kept: P07 97, P08 88, P15 90, P13 79.  Trials with >=3 good cams: P07/P08/P15 20/20,
+  P13 19/20 (trial_1 lost its desynced cam2).
+* SYNC IS VERIFIED by wrist reproj (5-22px) + motion-stratified (still≈move). The gate
+  (reproj vs leave-it-out RANSAC consensus, >20px -> quarantine) is the acceptance test.
+
+NEXT STEP the user asked for: rebuild the cup pipeline on the 4 good participants, SYNCED CLIPS
+ONLY (work/clips is already gated so this is automatic). Exact commands:
+  # 1. labels (reject-then-fill, COCO yolo26x-seg teacher) from the GATED work/clips:
+  for P in P07 P08 P15 P13; do
+    python scripts/build_cup_labels_delta.py --part $P --cams 1 2 3 4 5 \
+      --clips-dir cache/delta/$P/work/clips --out data/delta_cup_4good --vid-stride 15 --stride 1
+  done
+  # 2. trial-stratified split (all 4 rooms/cups in train, held-out TRIALS for val -- NOT
+  #    participant-holdout, which is cross-domain and fails):
+  python scripts/prep_cup_dataset.py --pool data/delta_cup_4good --val-frac 0.15
+  # 3. train (imgsz 640 MANDATORY, batch 8 for the 7.6GB 3060 Ti):
+  python scripts/train_cup_seg.py --data data/delta_cup_4good/cup.yaml --epochs 3 --batch 8 --name cup_seg_4good
+  # 4. 3D cup-tracking eval (the metrics that matter, NOT mAP-vs-teacher):
+  python scripts/eval_cup_3d_delta.py --model runs/segment/runs/cup_seg/cup_seg_4good/weights/best.pt \
+    --parts P07 P08 P15 P13 --max-trials 4 --fstride 4
+
+KEY SCRIPTS (all in cup-task/scripts/):
+  build_work_set.py      -- assembles work/ (stage good cams SCALED to 1920x1080 + re-cut mis-cut
+                            cams) + reproj_gate() [--gate-only re-runs the gate].
+  build_cup_labels_delta.py -- reject-then-fill labels; --clips-dir, --cams, --vid-stride, --only-trials.
+  prep_cup_dataset.py    -- split; --train-parts (participant-holdout), --train-trials, --train-count.
+  train_cup_seg.py       -- yolo26s-seg finetune, imgsz 640.
+  eval_cup_3d_delta.py   -- precision_3d / good-frame% / median-px / per-cam det-rate (ported from
+                            object_tracking run_clean3d_fill). --max-trials --fstride sample.
+  classify_rejects.py    -- lag-sweep each reject: desync (recoverable) vs miscalib.
+  render_wrist_consensus.py / render_cup_consensus.py -- 5-cam grid, GREEN=det RED=consensus-reproj
+                            (the metric-matching render; use to eyeball miscalib-vs-desync).
+  cut_placement_audit.py -- pixel-exact-NCC clip placement + whole-session motion offset.
+  recut_from_audit.py    -- re-cut from uncut at t_ref+offset (BUG: no reproj gate -> use build_work_set gate).
+
+WHAT THE CUP DETECTOR STUDY SHOWED (stands):
+  * pipeline works; 3 epochs enough WHEN training spans the domains. DELTA is multi-domain
+    (per-participant ROOM + CUP COLOR); BRIO was single-rig so 1 participant sufficed.
+  * cross-PERSON generalizes (leave-P08-out: box mAP50 0.52) IF the domain is covered by another
+    participant; cross-DOMAIN fails (P07/P08 model -> P13 green-screen room 0%).
+  * mixed-all-participants (held-out trials) = box mAP50 ~0.49; 3D metrics precision_3d ~86%,
+    median 6-9px clean parts, good-frame ~46% (weak spot = under-detection, esp hard cam3).
+  * per-participant single-trial models are SHARPER on their own participant (precision 94-98%,
+    recover cam3) -- BUT must train on the FULL trial (~1835 imgs), not a stride-5 subsample.
+  * NOTE: mixed-5 + all earlier eval INCLUDED contaminated P12 cam4/5 + P13 trial_1 cam2 -> those
+    numbers need RE-RUNNING clean on the 4-good gated cohort (that's the NEXT STEP above).
+
+OPEN TODO (deferred):
+  * fold lag-recovery INTO the gate: try the lag shift before dropping; P13 trial_1 cam2 is a
+    RECOVERABLE desync (-73fr -> 8px) that a corrected re-cut would restore (+ trial_41 +15, trial_45 +33).
+  * relax gate 20->25px (DELTA baseline ~10-15px; most non-desync rejects are cam5 compression at 20-24px).
+  * classify_rejects: report BOTH axes (timing lag + geometry residual), fix 1e9 -> "no-ref" label.
+  * then: cup-3D / phase / Murphy on the clean cohort (the original deliverable direction).
+
+LESSONS THIS SESSION (also in object_tracking/docs/context/):
+  * DESYNC and MISCALIB are INDEPENDENT co-occurring failures -- never either/or; report timing AND
+    geometry. (feedback_desync_miscalib_independent.md)
+  * VALIDATE re-cuts by REPROJECTION, never by motion-align quality-score (that bug shipped
+    trial_1 cam2 at 125px and mislabeled P12 as 5/5).
+  * study cut clips are SHUFFLED (wrong repetition) on some cams; 10-cam rigs have a 720p cam1 +
+    a 2.5Mbps cam5 (compression -> cam5 is a systematic weak camera).
+
+## 2026-07-20  GATE CORRECTION (user caught it): don't trial-drop NOISY cams, only BROKEN ones
+The 20px reproj gate conflated two different things and over-dropped:
+  * BROKEN (drop): systematically wrong on EVERY frame -> desync/mis-cut/miscalib. P13 trial_1
+    cam2 (125px), P12 cam4 (40px+), P12 broadly. These must be quarantined.
+  * NOISY (KEEP): merely higher-variance detection, ~20-25px. cam5 across P07/P13/P15 = the
+    2.5 Mbps COMPRESSED camera -> noisier, not broken. Dropping the whole camera-trial is wrong:
+    downstream triangulation ALREADY uses per-frame RANSAC consensus that rejects bad frames
+    individually, so a noisy cam5 costs nothing (bad frames auto-rejected, good frames add a view).
+FIX for continuation: raise the trial-gate to ~30-35px (broken-vs-noisy), OR don't trial-drop on
+median at all -- keep all cams and rely on the per-frame RANSAC consensus gate (THR=30px) that the
+3D pipeline already applies. Only hard-quarantine cams that are clearly broken (desync/miscalib,
+median >>30px). So the earlier "P07/P08/P15 lost cam5 on N trials" is an ARTIFACT of the too-strict
+gate, NOT lost data -- re-run build_work_set --gate-only after raising the threshold to restore cam5.
+Net: the 4 good participants are even cleaner than the 20px-gate table implied; cam5 stays.
+
+## 2026-07-20  CORRECTION: cam5 is NOT compressed (I generalized from P19 -- verify, don't assume)
+Claimed cam5 = "2.5 Mbps compressed camera" -> WRONG. That bitrate cap was measured on P19 only
+(P19 cam1 & cam5 = 2.5 Mbps). ffprobe of the SOURCE cut clips for the 4-good cohort shows cam5 is
+actually the HIGHEST bitrate cam: cam5 10-14 Mbps vs cam2 6.5-11.9 (P07 10.0, P08 10.1, P13 14.2,
+P15 14.0). So cam5's slightly-higher wrist reproj (~20-25px) is NOT compression -- likely VIEWPOINT
+(oblique angle/distance -> harder wrist localization) or a marginally looser cam5 calibration. The
+KEEP-cam5 correction still stands (it's noise not broken), but the "compression" reason was
+fabricated by generalizing one P19 measurement. (NB the work/clips are re-encoded crf18 by me, so
+check SOURCE cut clips / uncuts for real bitrate, not work/clips.)
+
+---
+
+## 2026-07-20 >>> 4-GOOD-PARTICIPANT REBUILD: gate, constant-offset recut, 3 experiments
+
+### 1. Gate at 40px + cross-correlation desync detection
+Re-gated P07/P08/P15/P13 at `--gate-px 40` (20px was dropping merely-NOISY cam5; 40 drops only
+broken cam-trials). P07/P08/P15 lose ZERO cam-trials. P13 lost 2, both cam_2 — and the
+cross-correlation lag sweep classified BOTH as recoverable DESYNC, not miscalib
+(trial_1_L −73fr → 9px, trial_45_R +34fr → 14px).
+
+### 2. THE SESSION OFFSET IS A CONSTANT (user's insight, confirmed)
+> "if the uncut is correctly aligned with another uncut, then you just need the timestamp"
+
+MEASURED P13 cam2 vs cam3, n=20 trials over 13 min: **offset = −3.0597s, sd 0.041s (2.5 fr),
+range −3.153…−2.983, NO drift trend.** Spread fully explained by measurement resolution
+(`locate2` resolves t_ref on a 10fps grid = ±3fr, + best-lag noise on a flat reproj curve).
+
+**The per-trial `align_trial` refinement was the bug.** Drink motion is quasi-periodic, so
+motion-energy correlation has near-equal peaks at neighbouring repetitions; the align wanders and
+its self-score `q` ENDORSES the wrong answer confidently (trial_45: 1.15s wrong at q=3.75;
+trial_48: 26fr wrong at q=1.09). The pipeline ALREADY had a constant-offset model
+(`guess = t_ref + off`) — it was just 0.57s wrong, because `off` came from a coarse 2fps motion
+xcorr (r=0.464). Per-trial align was then handed that error and scattered ±26fr "fixing" it.
+
+New: `scripts/constant_offset_recut.py` — estimate the constant by REPROJECTION, average, apply to
+every trial, verify by reprojection. Result: **max |lag| 26fr → 5fr; trial_48 32.4px → 14.6px;
+trial_41 24.1px → 15.5px.** Median barely moved (13.6 → 13.0) and SHOULD NOT — 18/20 were already
+fine. The win is entirely in the tail. Residual ±5fr remains (the 0.1s locate2 grid), harmless
+because reproj is flat over ±7fr. Originals preserved in `work/rejected_preRecut/`.
+
+### 3. ROOM STRUCTURE — CORRECTED BY LOOKING AT THE FOOTAGE
+I twice theorised from pooled numbers and was wrong both times:
+* "P13's cup is 2.8× larger" — pooled median; per-camera it's **cam2 only** (0.131 vs ~0.037),
+  cams 1/3/4 normal and cam5 SMALLER. Not a participant-wide scale shift.
+* "P15 is a different room" — **it is not.** P07/P08/P15 all share ONE room (same dark table,
+  truss, whiteboard, floor). Only **P13** is a different site (white table, green screen, curtains,
+  brighter). Established by rendering a comparison sheet (`p13_vs_others.png`), not by statistics.
+
+So leave-one-out has exactly ONE true new-site test: P13.
+
+### 4. THE THREE EXPERIMENTS (pool 2845 imgs: P07 860 / P08 950 / P13 575 / P15 460)
+All yolo26s-seg, imgsz 640, batch 8, 3 epochs, trial-level splits (0 group overlap verified).
+
+**mAP50 (vs teacher, box):** mixed4 0.717 | leaveP07 0.636 | leaveP08 0.620 | leaveP15 0.596 |
+leaveP13 **0.123** | onetrial P07 0.531 / P08 0.556 / P15 0.728 / P13 0.505
+
+**3D metrics (precision_3d / good_frame% / median_px) — THE ONES THAT DECIDE:**
+| part | leave-one-out | one trial | mixed4 (all) |
+|------|---------------|-----------|--------------|
+| P07  | 81.2% / 40.4% / 3.6px | **97.8% / 61.5% / 6.3px** | 97.8% / 55.6% / 4.6px |
+| P08  | 97.1% / 65.7% / 7.1px | **95.4% / 71.7% / 8.6px** | 98.6% / 66.7% / 7.5px |
+| P15  | 85.2% / 18.3% / 6.2px | **89.6% / 36.0% / 8.7px** | 94.5% / 31.1% / 7.8px |
+| P13  | **0.0% / 0.0% / nan**  | **94.1% / 54.1% / 13.3px** | 94.0% / 50.6% / 27.3px |
+
+**FINDINGS**
+1. **A new ROOM is fatal without data from it: leaveP13 = 0.0% good frames.** Zero. mAP 0.123 was
+   flattering; in 3D the model never gets 3 cameras to agree. A new CUP COLOUR is nearly free
+   (leaveP15 0.596 mAP, same room).
+2. **ONE TRIAL beats the full 4-participant model for EVERY participant** on good_frame%
+   (+6/+5/+5/+3.5 pts) despite 7× less data. For P13 it also HALVES 3D error (27.3 → 13.3px) —
+   so P13's sloppy triangulation was substantially DETECTOR, not the cam2 calibration floor I
+   had blamed.
+3. **mAP RANKED IT BACKWARDS.** mAP put leave-one-out above one-trial for P07 (0.636 vs 0.531) and
+   P08 (0.620 vs 0.556); 3D reverses both. mAP-vs-teacher rewards imitating the teacher on easy
+   frames; good_frame% asks whether ≥3 cams agree. Same models, opposite conclusion.
+4. Trade-off: one-trial models find MORE frames but are slightly LESS precise where things already
+   worked (P07 6.3 vs 4.6px). And **cam3 detects 0% in every one-trial model** while mixed4 gets
+   20-32% — only broad training cracks the hardest camera (cup is 0.007-0.013% of frame there).
+5. mixed4 was **still improving at epoch 3** (0.568 → 0.589 → 0.717). All numbers are a floor.
+
+**PRODUCT ANSWER:** a new clinic needs ~ONE labelled trial — not zero, not a cohort.
+
+### 5. NEXT
+* **mixed4 FINE-TUNED on one trial** (untested; should combine mixed4's cam3 coverage with the
+  one-trial frame yield) — the obvious win.
+* Longer training (3 epochs is undertrained).
+* Scale/colour augmentation for cam3 + P15's cup.
+* **RE-TEST P12 with constant_offset_recut.py** — its "miscalib" verdict came partly from renders
+  of per-trial-align cuts, which we now know scatter ±26fr. Its study calib error was 4.90 (good).
+  May rescue it from 3/5 cams.
+
+Artifacts: models in `runs/segment/runs/cup_seg/{cup_seg_mixed4,cup_seg_leave*,cup_1trialfull4_*}`;
+pools `data/delta_cup_4good`, `data/delta_cup_1trial_*`, `data/delta_cup_1trialmix_*`;
+logs in scratchpad (`train_all.log`, `train_1trial.log`, `eval3d.log`, `p13_offsets.log`).
+
+---
+
+## 2026-07-20 >>> RETRACTION: cam3 "cup too small" was measuring label conventions, not the cup
+
+User pushed back on "drink_study cups are larger / DELTA cam3 cup is below the detection floor."
+Investigating, I was WRONG at the measurement level three times over:
+
+1. First "cam3 = 4.8px" came from LABEL files. But `build_cup_labels_delta.teacher_dets` keeps only
+   the CENTROID (line ~104: discards x1,y1,x2,y2) and the label is a SYNTHETIC SQUARE sized by
+   `apparent_radius_px` = a fixed 35mm world sphere (CUP_R) reprojected per camera. So EVERY label,
+   every camera, real-or-fill, is that sphere-convention size — NOT the cup's pixel extent. All my
+   per-cam label sizes (cam1 51 / cam3 14 / cam5 61 px) are the convention, useless for a size claim.
+2. Then "cam3 real cup = 37px" came from `work/dets/*.cup.json` — but that is `cup_clean3d_refill.pt`
+   (the drink_study model used for the REPROJ GATE), NOT the teacher. Run cross-domain on DELTA it
+   FALSE-POSITIVES on arms / wrist markers / torso stripes at the wide cam3/cam5 views (crop sheet
+   `cam3_cup_crops.png` shows the blue box on a forearm, not a cup). Its 25k cam3 "detections" are
+   mostly not cups.
+3. The teacher (yolo26x-seg COCO) WAS used for labels (confirmed line 42) — that part of the
+   worklog is right. But its box dims were discarded, so we have no teacher-measured cup size.
+
+**RETRACTED:** the earlier claim "cam3 cup is 0.007-0.013% of frame / below the YOLO floor / only
+broad training cracks it" is NOT supported — it measured the sphere convention. cam3's low
+detection rate is real (it shows up in the 3D eval), but the CAUSE is unknown; "too small" is not
+established. Likewise the drink_study-vs-DELTA cup-SIZE comparison is UNSUPPORTED (both sides were
+label-derived / FP-contaminated). The camera-COUNT argument for the good_frame gap (N=10 vs 5,
+binomial ≥3-of-N) still stands — that used detection RATES, not sizes.
+
+**Bigger latent issue surfaced:** the student is trained on 35mm-SPHERE SQUARES, not real cup boxes.
+Cosmetic for 3D (pipeline consumes only the centroid) but NOT for training — the student learns to
+find sphere-squares, which may mismatch the real cup and could be part of the cam3/cam5 weakness.
+Same root as the drink_study "fill box too small" parked note.
+
+**TODO before trusting any size number:** re-run the teacher KEEPING x1..y2 (it already computes
+them), rebuild labels with real boxes, and (a) measure real cup px per cam on BOTH datasets same
+method, (b) test whether real-box labels fix cam3/cam5. Until then, no size claims.
+
+---
+
+## 2026-07-20 >>> ROOT CAUSE of cam3: apparent_radius_px offsets in WORLD-X (bug), not the cup
+
+User: "why would cam3 have a different reprojection size since its not any further from the cup?"
+Correct instinct. Grounded it in the calibration geometry (P08), NOT label files:
+
+* Focals near-identical (~1130-1175px all cams) -> apparent size is pure distance.
+* cam3 distance-to-cup = 1631mm, basically tied with cam1 (1575mm). Predicted apparent size ~24px
+  (2nd largest). It is NOT far and NOT small.
+* `apparent_radius_px` does `Xo[0] += CUP_R` — offsets the cup ONLY along WORLD-X, then measures
+  projected px. NOT rotation-invariant. cam3's optical axis · world-X = **1.00** (it looks straight
+  down world-X), so the offset is fully foreshortened -> projects to **1.9px** (floored to 6). True
+  perp radius = 24.6px. cam1/cam5 (axis·X = 0.01) are unaffected -> code == truth there.
+
+So cam3's 14px "tiny cup" was an ARTIFACT of this axis-aligned offset, not the data. At imgsz 640
+the 6px-floored square is ~2px = below the stride-8 grid -> plausibly why cam3 barely trains and
+detects ~0%. **Not resolution, not distance, not a bad camera — a one-line label-geometry bug**
+affecting every near-world-X camera (cam3 worst; cam2/cam4 partial at axis·X ~0.75-0.79).
+
+**FIX (one line):** offset perpendicular to each camera's viewing ray, or just USE the teacher's
+real box (build_cup_labels_delta already computes x1..y2 at ~line 102 and discards it). Latter also
+answers the size question and gives real-shaped labels.
+
+**Meta:** this whole cam3 thread (4.8px floor / crop idea / "cups larger in drink_study") was me
+reading label numbers without grounding them in geometry. Every size claim from the label files is
+now retracted. The pipeline is a REIMPLEMENTATION of drink_study's run_clean3d_fill (not the same
+code) and — per the user — is performing fine once you account for 5 vs 10 cameras (binomial
+>=3-of-N: P08 one-trial 71.7% good frames ~= a 0.75/cam detector on ~4-5 cams). The cam3 bug is the
+one concrete defect found.
+
+---
+
+## 2026-07-20 >>> cam3 FIX VERIFIED (retraction resolved) + NVDEC wired into labeler
+
+Fixed `apparent_radius_px` in BOTH codebases (build_cup_labels_delta.py + drink_study
+run_clean3d_fill.py): offset CUP_R along the camera IMAGE-X axis `R[0]` (perpendicular to the
+viewing ray, orientation-independent) instead of `Xo[0] += CUP_R` (world-X, foreshortens to ~0 for
+a camera whose optical axis // world-X). This restores the drink_study docstring's stated intent
+("offset along image-x ... fronto-parallel") — it was an implementation bug latent since drink_study,
+harmless there (no BRIO cam looked down world-X) but fatal for DELTA cam3 (axis.X=1.00).
+
+Also wired NVDEC (`scripts/gpu_decode.py`, copied from drink_study lib) into the labeler's frame
+read loop — 213 fps decode, ~2.5min/participant vs CPU timing out. Teacher dets still cached (no
+GPU there).
+
+Rebuilt labels -> data/delta_cup_4good_fix (same 2845 imgs, sizes fixed):
+  per-cam label width @640: cam3 4.8px -> 19.1px (was below the stride-8 grid; now trainable),
+  cam2 9.2->12.6, cam4 8.4->13.7, cam1/cam5 unchanged (were correct).
+
+**3D eval, OLD -> FIX (cam3 det-rate | good_frame%):**
+| model / part | cam3 OLD | cam3 FIX | good% OLD | good% FIX |
+|--------------|----------|----------|-----------|-----------|
+| mixed4 P07   | 26% | 60% | 55.6 | 60.5 |
+| mixed4 P08   | 20% | 69% | 66.7 | 71.2 |
+| mixed4 P15   | 22% | 37% | 31.1 | 35.6 |
+| mixed4 P13   | 32% | 61% | 50.6 | 59.6 |
+| 1-trial P08  | **0%** | **86%** | 71.7 | 78.7 |
+mixed4 mAP50 also 0.717->0.882 box, 0.510->0.820 mask.
+
+**VERDICT: the ~0% cam3 was the label-geometry bug, CONFIRMED and FIXED.** Not resolution, not
+distance, not a bad camera, not too little data (all earlier theories retracted). cam3 is now
+in-family (57-69% mixed4, 86% one-trial). good_frame% +4-9pts everywhere. Trade: median_px slightly
+looser on easy parts (P07 4.6->6.6) since cam3's near-axis weak geometry now joins consensus — good
+deal for the coverage. P13 improved on BOTH (27.3->21.7px, +9% good).
+
+User was right on every push this session: reuse the pipeline (it was faithful, bug was upstream),
+results fine for camera count, and cam3 apparent size shouldn't differ by distance (it doesn't —
+the bug foreshortened it). The whole "cups larger in drink_study / cam3 too small" detour was me
+trusting label numbers over geometry; every size claim from label files was retracted.
+
+---
+
+## 2026-07-20 >>> 1000-img controlled comparison: YOLO-seg vs RF-DETR (+ cup-loss gap analysis)
+
+### Setup (fair by construction)
+Per participant: dense (vid-stride 1) labels for 4 trials spanning BOTH conditions (2 unaffected +
+2 affected — no reason to bias to unaffected; the cup is the same object either way), then
+`--train-count 1000` so every participant trains on EXACTLY 1000 images. Val = held-out trials.
+Same images for both architectures; `yolo_to_coco_cup.py` only re-expresses the YOLO-TXT labels as
+COCO-JSON (RF-DETR can't read YOLO format; both are COCO-*pretrained*, different label *format*).
+NVDEC (`scripts/gpu_decode.py`) wired into the labeler — 213fps decode, ~2.5min/participant.
+
+### 3D metrics (precision_3d / good_frame% / median_px)
+| part | YOLO-seg @640 (12M) | RF-DETR Nano @384 (30M) |
+|------|---------------------|--------------------------|
+| P07  | 98.6 / 72.1 / 5.6px | 94.6 / 73.5 / 6.0px |
+| P08  | 97.1 / 80.5 / 7.7px | 96.0 / 87.8 / 9.1px |
+| P15  | 95.2 / 82.9 / 7.8px | 97.9 / **100.0** / 8.3px |
+| P13  | 92.3 / 63.6 / 20.9px | 94.9 / 65.0 / 19.8px |
+
+⚠ NOT resolution-matched: RF-DETR Nano's config is 384 (must be div by 56, so 640 unavailable).
+It is HANDICAPPED on accuracy and FLATTERED on speed. User chose to accept this and report it.
+
+### Per-frame agreement (agree_yolo_rfdetr.py) — the decisive test
+| part | BOTH | YOLO only | RFDETR only | NEITHER | RF-DETR gain |
+|------|------|-----------|-------------|---------|--------------|
+| P15  | 82.9%| 0.0%      | **17.1%**   | **0.0%**| +17.1 |
+| P08  | 80.3%| 0.2%      | 7.5%        | 12.0%   | +7.3 |
+| P13  | 63.6%| 0.0%      | 1.3%        | **35.0%**| +1.3 |
+| P07  | 70.8%| 1.2%      | 2.7%        | **25.2%**| +1.4 |
+
+1. **RF-DETR STRICTLY DOMINATES** — `YOLO only` is 0-1.2%, i.e. it essentially never catches
+   anything RF-DETR misses. NESTED, not complementary -> an ensemble buys ~1pt max, not worth it.
+2. **Same object**: where both agree, 3D cup points are median 3.2-8.7mm apart. Small real-
+   disagreement tail: P07 3 frames / P13 6 frames (~1-2%) >50mm (max 77mm). NOT confident-wrong.
+3. **The win size is set by how much is RECOVERABLE, not by the model.** P15 had 17.1% recoverable
+   and RF-DETR took all of it. P07/P13 only have 1-3% left because 25-35% is unrecoverable by
+   EITHER -> RF-DETR can't help there.
+
+### Cup-loss GAP analysis (gap_analysis_cup.py) — good_frame% hides the shape
+YOLO 1k, gaps = runs of consecutive frames with no >=3-cam consensus:
+| part | good% | #gaps | median gap | max gap | lost in <=100ms | lost in >500ms |
+|------|-------|-------|------------|---------|-----------------|----------------|
+| P07  | 72.1% | 5     | 1267ms     | 2267ms  | 0%              | **100%** |
+| P08  | 80.5% | 7     | 1333ms     | 2067ms  | 2%              | 96% |
+| P15  | 82.9% | 6     | 1600ms     | 2267ms  | 0%              | 98% |
+| P13  | 63.6% | 5     | **2667ms** | 3000ms  | 0%              | 99% |
+**The loss is NOT scattered blips — it is 5-7 BLACKOUTS of 1.3-2.7s each**, 96-100% of lost time in
+gaps >500ms. Nothing interpolatable. And they sit at **30-60% through the trial = the DRINK APEX**
+(cup at lips, hand wrapping it) — the exact window the Murphy measures need. So chasing
+good_frame% from 80->85 is worthless; the question is why these specific multi-second windows fail.
+
+### Speed (bench_yolo_vs_rfdetr.py; same protocol as bench_streams.py/realtime.md:
+### frames PRELOADED so decode excluded, WARMUP, cuda.synchronize before stopping the clock)
+| cams | YOLO @640 | RF-DETR @384 | ratio |
+|------|-----------|--------------|-------|
+| 1    | 5.7ms / 177fps | 17.4ms / 57fps | 3.1x |
+| 4    | 17.4ms / 58fps | 46.2ms / 22fps | 2.7x |
+| 10   | **41.5ms / 24fps** | **99.5ms / 10fps** | 2.4x |
+RF-DETR is 2.4-3x SLOWER *while running at 2.8x fewer pixels*. At matched resolution, worse still.
+realtime.md's budget: 10 cams, ~12-15fps suffices (score.py lowpasses at 4Hz). RF-DETR's 10fps at
+10 cams is the CUP NET ALONE — add pose and it's under the floor. YOLO's 24fps leaves room for pose.
+
+### VERDICT
+* **KEEP YOLO for the live rig** — 2.4x faster, only one that fits 10 cams + pose.
+* **RF-DETR is the better DETECTOR** (strictly dominates, +17pts on P15) — worth it OFFLINE if an
+  analysis needs P15-grade coverage and can afford 10fps.
+* **The real bottleneck on P07/P13 is not the model.** 25-35% of frames are unrecoverable by either
+  detector because no 3rd camera sees the cup at the drink apex. That is a RIG/CAMERA-PLACEMENT
+  problem. Detector work cannot fix it; moving a camera can.
+
+### Corrections made this session (all mine, all caught by the user)
+* "cups larger in drink_study / cam3 cup too small" — RETRACTED, was measuring the 35mm-sphere
+  LABEL convention and then a cross-domain model's FALSE POSITIVES on arms. Real cause = the
+  apparent_radius world-X foreshortening bug (see previous entry).
+* "physical occlusion, no detector fixes it" — I retracted this on P15 evidence alone (NEITHER=0%),
+  but P07 25.2% / P13 35.0% / P08 12.0% show the ORIGINAL claim was right for 3 of 4. The
+  retraction was itself the overreach. P15 is the exception.
+* Used RFDETRBase (29M) before checking size; no RF-DETR variant is size-matched to yolo26s (~12M)
+  — smallest (Nano) is 30.5M, so RF-DETR always has a capacity advantage in this comparison.
+* pgrep-based wait loop deadlocked on ITSELF (pattern matched the wrapper's own cmdline).
+* Negative-stride crash from `img[:,:,::-1]` — fixed in eval, then had to fix again in the bench.
+
+---
+
+## 2026-07-20 >>> DETECT-ONCE + SIAMESE TRACK beats detect-every-frame on all 4 participants
+
+**User's idea, and I initially built the wrong thing.** Asked for "SiamFC with YOLO detecting once
+at the start", I built per-camera GAP BRIDGING instead (YOLO every frame, tracker patches misses)
+and reported +0.0 as if it were a verdict on the idea. It wasn't -- my gate only ran
+`if Xb is not None`, i.e. only where consensus ALREADY existed, so bridging could never rescue a
+lost frame by construction. Chicken-and-egg: the safety gate required the thing it was meant to
+restore. The +0.0 measured my design flaw, not SiamFC.
+
+**The actual experiment** (`siam_from_first_detection.py`, `siam_percam_drift.py`): per CAMERA, run
+YOLO until it first finds the cup, seed a DaSiamRPN tracker with that box, then the tracker alone
+produces the point for the rest of the trial. No re-detection. Feed into the SAME >=3-cam consensus.
+
+| part | YOLO every frame | detect-once + track | gain |
+|------|------------------|---------------------|------|
+| P08  | 80.5% | **100.0%** | **+19.5** |
+| P07  | 72.1% | **87.0%**  | **+15.0** |
+| P15  | 82.9% | **93.5%**  | **+10.6** |
+| P13  | 63.6% | **70.3%**  | **+6.7**  |
+
+Better AND ~60x cheaper on detection (YOLO once per camera vs every frame). Also beats both
+detectors from the earlier comparison: RF-DETR hit 100% on P15 but at 10fps@10cams; this reaches
+93.5% on P15 with ~1 YOLO call per camera.
+
+**PER-CAMERA: failure is always a MINORITY of cameras, and which ones varies by participant.**
+| part | clean cams (median / %>30px) | failing cams |
+|------|------------------------------|--------------|
+| P08  | c1 7px/0%, c2 4px/0%, c3 4px/0% | c4 7px/**35%**, c5 10px/**24%** |
+| P07  | c3 5px/0%, c5 3px/0%, c2 8px/6% | **c1 176px/64%**, c4 7px/32% |
+| P15  | c1 9px/2%, c2 5px/0% | c3 38px/69%, **c4 117px/74%**, c5 23px/33% |
+| P13  | (none clean) c1 11px/20%, c2 12px/32%, c3 23px/11% | c4 15px/32%, **c5 41px/69%** |
+No fixed "bad camera" -- c1 is flawless on P08 and the WORST on P07. 100% on P08 works because
+>=3-of-5 consensus outvotes whichever cameras are failing; it is NOT "all 5 track correctly".
+
+**DRIFT vs TIME SINCE SEED — it is NOT gradual staleness, it is a DISCRETE CAPTURE EVENT.**
+Profiles (median px, binned by frames since seed):
+  t10 c4: 6 -> 5 -> 5 -> 8 -> 6      (flat, fine all trial)
+  t10 c5: 7 -> 6 -> 22 -> 28 -> **5** (transient bump, RECOVERS)
+  t1  c4: 15 -> 11 -> 26 -> **215 -> 221** (permanent)
+  t2  c4: 7 -> 6 -> 6 -> **124 -> 144**    (permanent)
+  t3  c5: 6 -> 5 -> 6 -> **487 -> 540**    (permanent)
+Flat at 5-7px for HUNDREDS of frames, then a 2-orders-of-magnitude jump in one bin. Some recover,
+some never do. A single unrecovered camera then contributes bad frames for the whole remainder,
+which is what inflates the %>30px numbers.
+
+**=> FIX IS EVENT-TRIGGERED RE-ANCHOR, NOT PERIODIC.** Failures announce themselves (5px -> 487px)
+and the consensus already identifies WHICH camera disagrees per frame. Re-seed that camera from
+YOLO when it exceeds the gate. Periodic re-detection would waste calls during the long flat
+stretches and could still miss the jump. NOT YET BUILT.
+
+**Caching added** (`cache/yolo_dets/<model-hash>__<part>__<trial>__fs<N>.json`): the YOLO-every-
+frame baseline is the expensive part and does not change unless the model does. User caught that I
+was recomputing it every run (same mistake as the earlier 5-cam redetect). Keyed on model hash.
+
+**Also flagged, not done:** DaSiamRPN currently runs 5 sequential single-image ONNX forwards per
+frame (one per camera) -- launch-bound, same regime realtime.md documented for the detectors.
+Batching the 5 cameras' search crops requires driving the ONNX graphs directly (cv2's
+TrackerDaSiamRPN is a closed wrapper with no batch entry point) and reimplementing the
+crop/scale-pyramid logic. Deferred until the accuracy design settles.
+
+**Corrections this session:** I mis-read my own render (claimed the tracker "stalled while the cup
+moved to her mouth"; the consensus marker had not moved either -- it was tracking correctly), and
+argued from that misreading for several turns. User's reading -- "the render worked well, the
+numbers suggest ONE camera drifted" -- was right on both counts.
+
+---
+
+## 2026-07-20 >>> ⚠ RETRACTION: detect-once+track does NOT beat detect-every-frame (OMC says otherwise)
+
+The earlier entry reported detect-once+DaSiamRPN beating YOLO-every-frame by +6.7 to +19.5 pts of
+good_frame%. **That was scored against YOLO's OWN consensus as reference** — it measures AGREEMENT,
+not accuracy. User asked to compare against OMC instead. DELTA c3d files contain a real
+**`cluster_cup_1..4` marker cluster** = genuine cup ground truth (7 of 16 trials have c3d).
+
+Compared trajectory displacement-from-a-COMMON-origin (rotation/translation-free, so no
+mocap-lab↔rig alignment needed), with MATCHED frame sets:
+
+| | YOLO vs OMC | TRACKER vs OMC |
+|---|---|---|
+| **frames BOTH provide** (n=845) | **5.7mm** | **17.4mm** |
+| frames ONLY the tracker provides (n=195) | — | **37.5mm** |
+
+**The tracker is ~3x worse than YOLO even on the easy shared frames**, and the extra coverage it
+buys carries ~37mm error (~6x YOLO's typical). Per-trial the only tie is P08 t10 (3.6 vs 3.5mm);
+elsewhere the tracker is 2-9x worse.
+
+By trial phase, the damage concentrates exactly where the coverage is gained:
+| trial | EARLY 0-0.3 (Y/T) | **DRINK 0.3-0.6 (Y/T)** | LATE 0.6-1 (Y/T) |
+|-------|-------------------|--------------------------|------------------|
+| P08 t10 | 0.6 / 4.0 | **10.1 / 31.9** | 3.6 / 2.8 |
+| P07 t10 | 0.2 / 2.1 | **5.9 / 62.5** | 2.6 / 6.2 |
+| P15 t10 | 1.7 / 5.6 | **16.5 / 28.3** | 3.3 / 16.1 |
+Both are excellent early (0.2-5mm); the apex occlusion is what wrecks the tracker.
+
+**CORRECTED CONCLUSION: detect-once+track is NOT a replacement for detect-every-frame.** It is
+defensible only where YOLO has NOTHING (e.g. P13 t10 drink phase: YOLO no consensus at all, tracker
+14.3mm) and only if downstream tolerates ~15-37mm. Dwell timing might; peak velocity will not. The
+decision should be made on whether the Murphy measures degrade, NOT on frame counts.
+
+**METHOD LESSON (the actual takeaway):** never score a candidate against the incumbent's own output
+and call it accuracy. Good_frame% measured vs YOLO-consensus rewarded a tracker for AGREEING with
+YOLO where YOLO was confident, and gave it free credit for frames nothing could check. Two bugs in
+my first OMC pass compounded it and were only caught on the user's push-back: (a) each series used
+its OWN first valid frame as displacement origin (different origins = spurious offset), (b) the
+medians were over DIFFERENT frame sets (YOLO's excluded exactly the frames it failed on). Both
+fixed above. See [[feedback_dont_claim_definitive]].
+
+---
+
+## 2026-07-21 >>> TRACKER THREAD COMPLETE: detect-once + UETrack-B + greedy>=2 consensus
+
+**Goal:** replace detect-every-frame with detect-once + a modern tracker so the cup is covered
+through the drink apex (where YOLO loses >=3-cam consensus). Full arc, many corrections (all
+user-caught):
+
+**Tracker progression:** cv2 DaSiamRPN (2018, CPU-only, retracted) -> LiteTrack-B4 (ICRA2024, GPU,
+256fps/1cam) -> **UETrack-B (CVPR2026, GPU, 232fps/1cam, best)**. Setup gotchas in
+[[project_litetrack_setup]] + [[project_tracker_shootout_uetrack]] (Fast-iTPN backbone dl,
+weights_only=False, stub lib/train/admin/local.py, ONE shared model + per-cam state swap to avoid
+5x1.3GB OOM). Wrappers scripts/{litetrack,uetrack}_wrap.py.
+
+**KEY RESULTS (n=18 c3d trials, P07/P08/P13 x trial_10-15):**
+1. Detect-once + UETrack traces the cup incl the apex; YOLO detect-every-frame has a HOLE there.
+2. vs OMC: raw residual is a CONSTANT ~60mm (cup-centroid vs rim-markers) + ~10% DISPLACEMENT-SCALE
+   (a reconstruction/calibration error, affects YOLO too -- worth chasing separately). The tracker
+   itself is ~sub-mm at rest, r=0.999 in shape. Confidence-by-displacement stays high at MAX reach
+   => tracks the cup at all motion levels.
+3. **Per-trial correlation (PLAIN tracker + greedy>=2 consensus): median 0.9995, 17/18 >=0.998,
+   worst P13 trial_15 = 0.931.** Every trial works.
+
+**CORRECTIONS (each flipped a wrong claim of mine):**
+- RE-ANCHOR IS HARMFUL, not helpful: the trigger uses a leave-out consensus that INCLUDES bad cams;
+  one bad cam drags the reference -> flags+re-seeds a GOOD cam onto the wrong obj -> cascade until
+  all cams agree on the hand. Plain keeps cam errors INDEPENDENT (the reason >=3 consensus works).
+  The "confident-wrong all-cams-on-hand" failure I diagnosed at length was CREATED by re-init; plain
+  those trials are 0.9997. (position-only vs re-init irrelevant -- trigger is poisoned either way.)
+- "100% COVERAGE" WAS A BUG: counted >=3 cams producing a BOX, not >=3 AGREEING post-gate. Real
+  coverage on P13 trial_14/15 is 42-57% at >=3 (only c3+c4 hold the cup at that viewpoint).
+- FINAL CONSENSUS = greedy biggest-subset, min 2, but a size-2 point only accepted if within 150mm
+  of the previous point (temporal continuity) -> rejects spurious frozen+noise pairs. trial_15:
+  0.94@42%(>=3) / 0.82@100%(naive>=2) / **0.93@94%(greedy>=2)** -- strictly better. scripts/consensus_greedy.py.
+- P13 cam2 recut for trial_11-15 (local uncut, const offset -3.0597s, ncc 0.999) but cam2 is ALSO
+  weak at P13's viewpoint -> didn't add a 3rd good cam. trial_15 is a genuine 2-good-cam RIG limit.
+- confidence: absolute (sigmoid 0-1), corr -0.4 with per-frame loss (usable flag) but does NOT drop
+  on a confident wrong-obj lock -> can't catch the failure that matters; moot since plain needs none.
+
+**NEXT (this session):** SmoothNet / STGFormer to improve POSE tracking (the pose keypoints, used
+for the head-frame + as the OMC-alignment reference, are noisier than the cup).
+
+---
+
+## 2026-07-21 >>> SMOOTHNET ON POSE — jitter −93%, peak-velocity fixed, beats a low-pass
+
+**Ask:** "run smoothnet on pose tracking to see if it improves jitter, speed correlation with omc,
+and reproduction. test it on 3d and on 2d" — on the SAME n=18 as the tracker thread (P07/P08/P13
+trial_10-15, each has a c3d = OMC ground truth). Tracked arm: L for P07/P13, R for P08.
+
+**Setup.** SmoothNet (ECCV'22, `github cure-lab/SmoothNet` → `external/SmoothNet`) is a plug-and-play
+temporal-only refiner: a tiny MLP (encoder `Linear(window,512)` → 5 residual blocks → decoder) that
+acts on the TIME axis only, so it's joint-count-agnostic — the pretrained h36m checkpoint loads clean
+on our 11-keypoint pose (0 missing/0 unexpected). Used PRETRAINED window=32, NO retraining. Weights:
+`scratchpad/smoothnet_ckpts/checkpoints/` (windows 8/16/32/64). Runner `scripts/smoothnet_pose_delta.py`
+reuses the proven `compare_pose_omc_delta.py` loaders / sync / Kabsch so triangulation+alignment are
+identical to the incumbent harness.
+
+**Two experiments.** 3D = smooth the triangulated pose (T,33) in metres, per joint. 2D = smooth each
+camera's raw keypoints (T,22) in normalised px, THEN triangulate the smoothed 2D.
+
+**RESULT (median, n=18, wrist):**
+
+| method | jitter mm/s² | OMC speed-corr | reprod mm | peak-vel err |
+|---|---|---|---|---|
+| raw | 14417 | +0.923 | 38.0 | **+31%** |
+| **3D SmoothNet** | **1018** (−93%) | **+0.984** | 38.4 | **+4%** |
+| 3D Butterworth 6Hz | 1450 | +0.979 | 38.0 | +11% |
+| 2D SmoothNet | 1078 | +0.986 | 39.3 | +5% |
+| 2D Butterworth | 1996 | +0.974 | 38.2 | +10% |
+
+**Peak-velocity error is the load-bearing check** (guards against a low-pass faking a win by killing
+signal). Raw wrist OVERSHOOTS OMC's true peak speed by +14..+79% per trial — that overshoot *is* the
+jitter. SmoothNet pulls all 18 trials to within ±9% (mostly ±5%). A plain Butterworth cuts jitter too
+but ROUNDS OFF the peak (+11%) because a linear low-pass attenuates + phase-lags. SmoothNet cuts MORE
+jitter (1018 < 1450) AND preserves the peak — so it is NOT a rebranded low-pass. Reproduction (median
+Kabsch mm) stays flat (+0.4mm): position denoised, not distorted. This rescues the Murphy peak-velocity
+measure.
+
+**Pick = 3D SmoothNet** (best jitter+peak, reprod unchanged, simpler — no re-triangulation). The ~38mm
+reproduction floor is untouched by smoothing: it's the SAME rig/body-fit alignment floor the cup tracker
+hit (pose residual 32-46mm), not a jitter problem.
+
+**Render** `out/smoothnet_wrist_speed.png` (P08/P07/P13 wrist speed, raw/Butter/SmoothNet/OMC) confirms
+the numbers by eye: green (SmoothNet) sits on the black OMC peaks where blue (raw) spikes past them and
+orange (Butter) rounds them off. Caveat visible on P13: BOTH filters share a small phase-lag vs OMC =
+P13's known rig desync (raw speed-corr already lowest 0.78), upstream of smoothing.
+
+**Bugs caught + retracted mid-run:** first 3D pass root-subtracted by left_hip, whose gaps propagated
+NaN to every joint → 95% of frames blanked → looked like "3D smoothing fails" (speed-corr 0.92→0.36).
+Fix = smooth PER JOINT (each joint over its own coverage) + drop root subtraction (the filter is
+offset-covariant per channel). After the fix, 3D became the winner.
+
+**Not yet done:** LOPO-train SmoothNet on our own 18 trials (we have OMC truth) — pretrained already
+wins but a data-specific filter might close P13's residual gap; wire 3D SmoothNet into the pose stage
+that feeds head_distance / OMC alignment. Memory: `project_smoothnet_pose`.
+
+---
+
+## 2026-07-21 (cont.) >>> MODEL HUNT: no ST 3D→3D refiner has weights; VideoPose3D lifter adds nothing
+
+**Ask:** try STGFormer/SOTFormer/"stformer", then "look for a 2D→2D or 3D→3D that uses all of the pose
+at once", then "see whether the best lifter does something interesting" (framing corrected mid-thread:
+NO apex occlusion for pose — the occlusion problem was the CUP; this is just "is tracking better with
+the lifter", a straight quality comparison).
+
+**Field survey (verified each model's actual input/output from its method text, not its name):**
+| model | spatial+temporal | 3D→3D refiner? | weights |
+|---|---|---|---|
+| SmoothNet | ✗ temporal-only | ✓ refiner | ✓ (the ONLY refiner with weights) |
+| STGFormer / STFormer / PoseFormer / STCFormer | ✓ | ✗ **2D→3D lifter** | some |
+| SOTFormer | — (box tracker, CVPR'26) | ✗ | ✗ 134B LFS stubs |
+| DDHPose, FinePOSE (diffusion) | ✓ | ✗ **2D→3D lifter** (diffuse 3D conditioned on 2D) | ✓ but lifter |
+| VideoPose3D | temporal conv | ✗ **2D→3D lifter** | ✓ (AWS, runnable) |
+| GCN-Pose-Refinement (CVPR'24 wkshp) | ✓ | ✓ refiner | ✗ no weights (BlendMimic-trained, train-your-own) |
+| D3PRefiner, HPR-Net, StarPose, attention-refiner | ✓ | ✓ refiner | ✗ no repo / README-only |
+
+**Conclusion:** the field has a real GAP — the spatial+temporal "uses all joints at once" architecture
+exists only as LIFTERS with weights, or as REFINERS without weights. SmoothNet is the sole 3D→3D refiner
+that ships weights, and it's deliberately temporal-only (its paper argues cross-joint correlations are
+noisy and hurt transfer — which is why it's the one that generalizes). MotionBERT (best lifter) weights
+are OneDrive-only → 401 in headless env, not fetchable. SmoothNet's 2D checkpoint == its 3D checkpoint
+(same file), so our earlier 2D experiment already used the correct weights — no separate 2D refiner exists.
+
+**VideoPose3D lifter probe (runnable — AWS weights).** Ran it per-camera as a monocular 2D→3D lifter on
+all 18 c3d trials. ⚠ Compromised by design: it needs the FULL 17-joint H36M skeleton; we capture 11 COCO
+joints (upper body + hips + head). Derived Spine/Thorax/Neck/Hip; FABRICATED both legs (static neutral)
+— off-distribution for its all-joint temporal conv. `scripts/videopose3d_probe.py`.
+
+| | OMC speed-corr | jitter mm/s² |
+|---|---|---|
+| our triangulation | +0.921 | 14417 |
+| VP3D best single cam (ORACLE, picks winning cam via OMC) | +0.915 | 8001 |
+| VP3D mean-of-cams (honest) | +0.802 | — |
+| SmoothNet-refined triangulation | **+0.984** | **1018** |
+
+**Answer: the lifter adds NOTHING.** Its best-cam shape only TIES raw triangulation (+0.915 vs +0.921),
+and that's with an OMC-oracle picking the best camera; the honest mean-of-cams is clearly WORSE (+0.802)
+because per-cam lifts disagree and averaging degrades. Jitter beats raw triangulation (temporal conv
+low-pass) but is 8× noisier than SmoothNet. Render `out/vp3d_probe_P07_trial_10_L_unaffected.png`: lifts
+track the 4 drink reaches but wander at rest where OMC+triangulation sit near zero. Expected — a
+monocular learned prior (fabricated legs) can't beat real multi-view geometry, nor a purpose-built
+refiner on smoothness.
+
+**Pose thread verdict: SmoothNet-refined triangulation is the winner and the answer.** No runnable
+ST-refiner exists to try; the SOTA lifters don't fit our upper-body multi-view data. Memory:
+[[project_smoothnet_pose]]. Open if wanted: LOPO-train GCN-Pose-Refinement on our OMC truth (the only
+untried ST-refiner path, requires training from scratch).
+
+---
+
+## 2026-07-21 (cont.) >>> v2 PIPELINE BUILT + MEASURED (branch pipeline-v2-uetrack-smoothnet)
+
+Built the v2 stages, wired behind flags (both-off = v1), got results on new + old datasets, benchmarked.
+
+**New modules:** `cup_task/pose_smooth.py` (SmoothNet 3D refine), `cup_task/cup_track.py` (detect-once
+UETrack + greedy consensus, with a cache-consuming path `track_cup_3d_from_cache` for the OMC results),
+`cup_task/consensus.py` (greedy ≥2-cam). Flags `--smooth-pose` / `--cup-track` on `pipeline.py`.
+Results: `scripts/results_v2_delta.py`. Benchmark: `scripts/bench_realtime_v2.py`. SmoothNet ckpt copied
+to `models/smoothnet_h36m_fcn_ckpt_32.pth.tar`.
+
+**NEW dataset (DELTA n=18) — v2 wins both:**
+- Segmentation drink dwell vs OMC: v1 (every-frame YOLO) 767ms → v2 (detect-once UETrack) **67ms** (~11x).
+  v1 over-estimates dwell (+500..1200ms, noisier cup lingers), breaks on P13_11. ⚠ first pass used a
+  made-up speed-proxy dwell that showed v2 WORSE; the REAL segment.segment_cup_only reversed it.
+- Murphy: peak_velocity |err| 45.2→26.3 mm/s (−42%), movement_units 1.0→0.5. total_movement_time (phase-
+  driven) + trunk unchanged. The SmoothNet win landing on the clinical measures.
+
+**OLD dataset (drink_study n=139) — pose-smooth = no change:** SAME-segmenter dwell |err| 183ms both
+v1/v2 (per-phase onsets byte-identical); e2e 433→467ms (noise). Correct: dwell is CUP-driven and only the
+POSE changed here (cup = shared `_refill_cup`). Confirms the segmentation win is a CUP-tracker win, not a
+pose-smoothing one. `scripts/compare_phases_omc.py --smooth-pose`.
+
+**Real-time (YOLO-pose, real 1080p frames, warm, ONE shared UETrack):**
+- Live loop fps @1/5/10 cam: pose (batched YOLO) 258/85/47, UETrack 193/41/20.
+- Whole offline pipeline/trial (8.9s video): consensus 38ms + SmoothNet 768ms (3 joints warm; +950ms load
+  once) + segment 0.6ms = 806ms.
+- Verdict: batched pose real-time to ~5 cams; UETrack is the scale bottleneck (sequential per-cam update)
+  → 5-10cam live needs BATCHED tracker inference next. Offline stages trivially fast.
+
+**Bugs fixed:** (1) bench OOM'd making 1 UETrack model per cam → ONE shared model. (2) SmoothNet vs UETrack
+both ship top-level `lib/` → load SmoothNet's model by ABSOLUTE PATH (spec_from_file_location) so the name
+collision is irrelevant regardless of load order.
+
+**Follow-up (user asked, planned):** benchmark RTMPose + BlazePose alongside YOLO-pose (neither installed;
+rtmlib + mediapipe pip-installable; speed-only first — both use non-COCO-11 layouts).

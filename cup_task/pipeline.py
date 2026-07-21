@@ -36,7 +36,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cup_task import cup_detect, pose_keypoints, segment, triangulate
+from cup_task import cup_detect, pose_keypoints, pose_smooth, segment, triangulate
 from cup_task.kalman_3d import load_calibration
 
 FPS = 60.0
@@ -174,6 +174,12 @@ def main(argv=None) -> int:
     ap.add_argument("--pose-model", default=str(Path(__file__).resolve().parents[1]
                                                 / "models" / "yolo26n-pose.pt"))
     ap.add_argument("--device", default="0")
+    ap.add_argument("--smooth-pose", action="store_true",
+                    help="v2: refine triangulated pose with SmoothNet before segmentation "
+                         "(jitter -93%%, peak-vel restored; see docs/PIPELINE_V2_PLAN.md)")
+    ap.add_argument("--cup-track", action="store_true",
+                    help="v2: detect-once UETrack cup tracking instead of every-frame triangulation "
+                         "(needs clips + GPU; the offline results path uses cached tracker points)")
     a = ap.parse_args(argv)
 
     reps = find_reps(a.clipdir)
@@ -190,6 +196,9 @@ def main(argv=None) -> int:
         d = a.out / stem
         detect_rep(clips, d, a.cup_model, a.pose_model, a.device)
         tracks = fuse_3d(d, a.calib, d / "tracks3d.json")
+        if a.smooth_pose:
+            tracks = pose_smooth.smooth_tracks(tracks)
+            print(f"  pose refined (SmoothNet): {tracks['pose_smoothed']}", flush=True)
         seg = phases_from_3d(tracks)
 
         iv = [(n, s, e) for n, s, e in seg["intervals"]]

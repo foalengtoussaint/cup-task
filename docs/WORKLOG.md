@@ -1854,3 +1854,14 @@ gate). Speedup end-to-end: 1cam 1.0x, 5cam 1.8x (36->64fps), 10cam 2.1x (19->41f
 the two individual rates -- both compute-bound on the 7.6GB GPU so streams contend, don't overlap.
 Real-time (>=60fps): comfortable at 1-2 cams; 5 cams borderline (37fps); 10 cams needs a bigger/second
 GPU. Benchmark: scripts/bench_realtime_v2.py --what live. (Corrected an inverted speedup label mid-run.)
+
+## 2026-07-21 (cont.) >>> batched the crop too + profiled the real bottleneck
+
+Batched the per-camera crop+upload (stack N crops, ONE cuda upload+normalize vs N separate transfers).
+Speed barely moved (5cam 64->65, 10cam 41->41). Profiled update() -- crop 0.56ms + upload 0.46ms are
+NEGLIGIBLE vs encoder 16.36ms at N=10. The ENCODER (Fast-iTPN) is the bottleneck and does NOT amortize
+(N=1->10: 3.24->16.36ms = 5x) -- it already saturates the 7.6GB GPU's compute. So ~2x is the batching
+CEILING on this GPU; the earlier "4-5x backbone" was vs a cold-warmup baseline (misleading, corrected).
+Crop-batching KEPT anyway = correctness win: N>=2 batched now matches sequential to 0.004px (was 2.1px
+from mixed per-cam upload); N=1 still 0.000px. More tracker throughput needs bigger GPU / lighter
+backbone / cameras-across-devices, not more batching.

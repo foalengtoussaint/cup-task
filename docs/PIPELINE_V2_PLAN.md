@@ -237,3 +237,31 @@ memory-bound + one compute-bound).
 **Real-time verdict (this GPU):** 1-2 cams comfortably real-time (72fps both models). 5 cams = 37fps
 simultaneous (just under 60fps capture — real-time-ish; hit 60 by batching the crop, a bigger GPU, or
 cup+pose on separate devices). 10 cams = 22fps, not real-time here → separate GPUs or a bigger card.
+
+---
+
+# ADDENDUM 2 — batched the crop too; profiled where the time actually goes (2026-07-21)
+
+Batched the per-camera crop+upload as well (crop all N on CPU, stack, ONE cuda upload + normalize for
+the whole batch instead of N separate `.cuda()` transfers). Result: **speed barely moved** (5cam 64→65,
+10cam 41→41 fps). Profiled the `update()` to find out why — the real per-phase split at N=10:
+
+| phase | N=1 | N=5 | N=10 |
+|---|---|---|---|
+| crop | 0.07 | 0.29 | 0.56 ms |
+| upload+norm | 0.08 | 0.23 | 0.46 ms |
+| **encoder** | **3.24** | **9.23** | **16.36 ms** |
+| decoder | 0.73 | 1.12 | 2.36 ms |
+
+**The crop+upload were never the bottleneck** (~1ms of ~19ms at N=10). The ENCODER dominates, and it does
+NOT amortize with batch — N=1→10 the encoder goes 3.24→16.36ms (5x), because the Fast-iTPN backbone at
+batch=10 already saturates this 7.6GB GPU's compute. So **~2x is the ceiling on this GPU** (batched 16ms
+vs sequential ~32ms for 10 cams); the earlier "4-5x backbone" figure compared against a cold-warmup
+sequential baseline and was misleading.
+
+The crop-batching is kept anyway — it's a CORRECTNESS win: with all cameras' crops going through one
+stacked-tensor path, N>=2 batched now matches sequential to **0.004px** (was 2.1px from the mixed
+per-camera upload path). N=1 stays byte-identical (0.000px/532fr).
+
+**Takeaway:** on this GPU the tracker is encoder-compute-bound; more throughput needs a bigger GPU, a
+lighter tracker backbone, or splitting cameras across devices — not more batching.

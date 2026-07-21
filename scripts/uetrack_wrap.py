@@ -88,19 +88,25 @@ class UETrackBatch:
         active = [c for c in range(self.n) if self.states[c] is not None and rgbs[c] is not None]
         if not active:
             return [None] * self.n
-        search_b, rf, tmpl_b, anno_b, text_b = [], {}, [], [], []
+        import numpy as np
+        crops, rf, tmpl_b, anno_b, text_b = [], {}, [], [], []
         for c in active:
             st = self.states[c]
+            # crop only (CPU numpy + one cv2.resize) -- cheap; the GPU upload is batched below
             xp, r = self._sample_target(rgbs[c], st["state"], self._t.params.search_factor,
                                         output_sz=self._t.params.search_size)
-            s = self._t.preprocessor.process(xp)
-            if self._t.multi_modal_vision and s.size(1) == 3:
-                s = torch.cat((s, s), axis=1)
-            search_b.append(s); rf[c] = r
+            crops.append(xp); rf[c] = r
             tmpl_b.append(st["template_list"]); anno_b.append(st["template_anno_list"])
             text_b.append(st["text_src"])
-        # stack: templates/anno/text are identical-shaped per camera -> cat along batch dim
-        sb = torch.cat(search_b, 0)                                   # (N,C,Hs,Ws)
+        # BATCHED preprocess: ONE cuda upload + normalize for all N crops (not N small transfers).
+        # Replicates preprocessor.process exactly, but on the stacked (N,H,W,C) array.
+        pp = self._t.preprocessor
+        arr = np.stack(crops, 0)                                      # (N,Hs,Ws,3) uint8
+        sb = torch.from_numpy(arr).cuda().float().permute(0, 3, 1, 2)  # (N,3,Hs,Ws)
+        mean, std = (pp.mean, pp.std)
+        sb = ((sb / 255.0) - mean) / std
+        if self._t.multi_modal_vision and sb.size(1) == 3:            # duplicate RGB->6ch (RGB+RGB)
+            sb = torch.cat((sb, sb), axis=1)
         n_tmpl = len(tmpl_b[0])
         tmpl_cat = [torch.cat([tmpl_b[i][k] for i in range(len(active))], 0) for k in range(n_tmpl)]
         anno_cat = [torch.cat([anno_b[i][k] for i in range(len(active))], 0)

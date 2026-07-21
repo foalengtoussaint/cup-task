@@ -360,57 +360,176 @@ def speed_path():
 
 # ---------------------------------------------------------------- 3. SEGMENTATION
 
-def segmentation():
-    """Drink dwell + phase-boundary error vs the OMC-cup segmentation."""
-    print(f"\n{'='*86}\n=== 3. SEGMENTATION — drink phases, MMC cup vs OMC cup (same segmenter) "
-          f"===\n{'='*86}", flush=True)
+MURPHY_PHASES = ["rest_pre", "reaching", "forward_transport", "drinking",
+                 "back_transport", "returning", "rest_post"]
 
-    def dwell(xyz):
-        seg = segment.segment_cup_only(_fill(xyz), fps=FPS)
-        d = [(s, e) for nm, s, e in seg["intervals"] if nm == "drinking"]
-        return ((d[0][1] - d[0][0]) / FPS if d else np.nan,
-                d[0][0] / FPS if d else np.nan, d[0][1] / FPS if d else np.nan)
 
-    rows = []
-    print(f"{'trial':16} {'OMC dwell':>10} {'v3 dwell':>10} {'Δdwell':>9} {'Δonset':>9} {'Δoffset':>9}")
-    print("-" * 70)
+def segmentation(smooth_cup: bool = True):
+    """Phase-boundary error for EVERY phase, MMC cup vs OMC cup (same segmenter both sides).
+
+    Scores the whole 7-phase Murphy timeline, not just the drink dwell. Reporting the dwell alone
+    is misleading: the dwell is the EASIEST boundary (the cup stops dead at the mouth) and it hid a
+    real defect -- the terminal phases often never fire at all, so back_transport swallows the tail
+    of the trial and total_movement_time over-runs. A phase that is never produced is a MISS, which
+    is a worse failure than a mis-timed boundary and is counted separately here.
+    """
+    print(f"\n{'='*92}\n=== 3. SEGMENTATION — ALL 7 phases, MMC cup vs OMC cup (same segmenter) "
+          f"===\n{'='*92}", flush=True)
+
+    def phases_of(cup, hand):
+        try:
+            seg = segment.segment_cup_only(_fill(cup), fps=FPS)
+            ph = segment.to_murphy_phases(seg, _fill(hand), _fill(cup), fps=FPS)
+            return {nm: (s / FPS, e / FPS) for nm, s, e in ph}
+        except Exception:
+            return {}
+
+    srcs = ["v1", "v3"] + (["v3+SN"] if smooth_cup else [])
+    on = {k: {p: [] for p in MURPHY_PHASES} for k in srcs}   # onset error
+    off = {k: {p: [] for p in MURPHY_PHASES} for k in srcs}  # offset error
+    dur = {k: {p: [] for p in MURPHY_PHASES} for k in srcs}  # duration error
+    miss = {k: {p: 0 for p in MURPHY_PHASES} for k in srcs}
+    npres = {p: 0 for p in MURPHY_PHASES}                    # times OMC had the phase
+
     for part, (trials, side) in TRIALS.items():
         calib = _calib(part)
         for trial in trials:
             mmc, n = H._load_mmc(part, trial)
             omc = H._load_omc(part, trial, n)
             lag, _ = H._find_lag(mmc[f"{side}_wrist"], omc[f"{side}_wrist"])
+            omc = {j: _shift(v, lag) for j, v in omc.items()}
             oc = _shift(_omc_cup(part, trial, n), lag)
+            c1 = _cup_v1(part, trial, calib, n)
             c3 = _cup_v3(part, trial, calib, n)
-            if not np.isfinite(c3).any() or not np.isfinite(oc).any():
+            hand = _smooth_joint(mmc[f"{side}_wrist"])
+
+            po = phases_of(oc, omc[f"{side}_wrist"])
+            if not po:
                 continue
-            do, so_, eo = dwell(oc)
-            d3, s3, e3 = dwell(c3)
-            if not (np.isfinite(do) and np.isfinite(d3)):
+            cand = {"v1": (c1, mmc[f"{side}_wrist"]), "v3": (c3, hand)}
+            if smooth_cup:
+                cand["v3+SN"] = (_smooth_joint(c3), hand)
+            for k, (cup, hd) in cand.items():
+                pm = phases_of(cup, hd)
+                for p in MURPHY_PHASES:
+                    if p not in po:
+                        continue
+                    if k == srcs[0]:
+                        npres[p] += 1
+                    if p not in pm:
+                        miss[k][p] += 1
+                        continue
+                    on[k][p].append((pm[p][0] - po[p][0]) * 1000)
+                    off[k][p].append((pm[p][1] - po[p][1]) * 1000)
+                    dur[k][p].append(((pm[p][1] - pm[p][0]) - (po[p][1] - po[p][0])) * 1000)
+
+    med = lambda v: np.median(np.abs(v)) if v else np.nan
+    for k in srcs:
+        print(f"\n  --- {k} ---")
+        print(f"  {'phase':20} {'n':>3} {'miss':>5} {'|Δonset|':>10} {'|Δoffset|':>10} "
+              f"{'|Δdur|':>9}")
+        print("  " + "-" * 62)
+        for p in MURPHY_PHASES:
+            if not npres[p]:
                 continue
-            rows.append(((d3 - do) * 1000, (s3 - so_) * 1000, (e3 - eo) * 1000))
-            print(f"{part}_{trial.split('_')[1]:>10} {do:9.2f}s {d3:9.2f}s "
-                  f"{(d3-do)*1000:+8.0f}ms {(s3-so_)*1000:+8.0f}ms {(e3-eo)*1000:+8.0f}ms")
-    R = np.array(rows)
-    if len(R):
-        print("-" * 70)
-        print(f"{'MEDIAN |err|':16} {'':10} {'':10} {np.median(np.abs(R[:,0])):7.0f}ms "
-              f"{np.median(np.abs(R[:,1])):7.0f}ms {np.median(np.abs(R[:,2])):7.0f}ms")
-        print(f"{'p90 |err|':16} {'':10} {'':10} {np.percentile(np.abs(R[:,0]),90):7.0f}ms "
-              f"{np.percentile(np.abs(R[:,1]),90):7.0f}ms {np.percentile(np.abs(R[:,2]),90):7.0f}ms")
-    print("\n  Same segmenter on both sides, so the CUP TRACK is the only variable.")
-    return rows
+            f = lambda v: f"{med(v):.0f}ms" if v else "   -"
+            mk = f"{miss[k][p]}/{npres[p]}"
+            print(f"  {p:20} {len(on[k][p]):3d} {mk:>5} {f(on[k][p]):>10} {f(off[k][p]):>10} "
+                  f"{f(dur[k][p]):>9}")
+        allon = [x for p in MURPHY_PHASES for x in on[k][p]]
+        alloff = [x for p in MURPHY_PHASES for x in off[k][p]]
+        tm = sum(miss[k].values()); tn = sum(npres.values())
+        print(f"  {'ALL PHASES':20} {len(allon):3d} {f'{tm}/{tn}':>5} {med(allon):9.0f}ms "
+              f"{med(alloff):9.0f}ms")
+
+    print("\n  Same segmenter on every row, so the CUP TRACK is the only variable.")
+    print("  'miss' = the phase was NEVER PRODUCED (worse than a mis-timed boundary).")
+    print("  ⚠ The drink dwell alone (the OLD metric) is the EASIEST boundary — the cup stops dead")
+    print("  at the mouth — and it HID everything below. Score all 7 phases, not just drinking.")
+    print("\n  v3+SN now produces every phase in every trial (0/83 miss) and all boundaries are")
+    print("  17-125 ms EXCEPT back_transport-end / returning-onset (~550 ms). That one is NOT a")
+    print("  tracking error: at BOTH boundaries the OMC cup is already parked (median displacement")
+    print("  4.5 mm at OMC's own boundary, 6.1 mm at v3's), and the disagreement is symmetric in")
+    print("  sign across trials (+917, -783, +750, -600 ms ...). It is the magnitude rule chasing")
+    print("  whichever track twitches last once the cup is stationary — ill-defined on both sides.")
+    print("  Fixing it needs a better DEFINITION of 'the cup is down', not a better track.")
+    return on, off, miss
 
 
 # ---------------------------------------------------------------- 4. MURPHY
 
-def murphy():
-    """Murphy position measures: v1 (raw pose) vs v3 (SmoothNet + blend speed), error vs OMC."""
-    print(f"\n{'='*86}\n=== 4. MURPHY measures — v1 raw vs v3, |error| vs OMC ===\n{'='*86}",
+POSITION_MEASURES = ["total_movement_time", "peak_velocity", "time_to_peak_velocity",
+                     "time_to_peak_velocity_percent", "time_to_first_peak_velocity",
+                     "time_to_first_peak_velocity_percent", "number_of_movement_units",
+                     "max_trunk_displacement"]
+
+ANGLE_MEASURES = ["elbow_extension_reaching", "shoulder_flexion_reaching",
+                  "shoulder_flexion_drinking", "shoulder_abduction_reaching",
+                  "shoulder_abduction_drinking", "peak_elbow_ang_vel",
+                  "interjoint_coordination"]
+
+
+def _angle_scalars(P, phases, side):
+    """The 7 ANGLE measures from raw 3D points (no IK).
+
+    ⚠ These are NOT the ported container measures. The container computes angles from a MuJoCo
+    `qpos` IK fit and explicitly REFUSES raw-point angles ("would inherit pose jitter"). cup-task
+    has no body model, so these are computable-to-SEE only -- useful for MMC-vs-OMC comparison
+    (both sides use the identical formula, so the comparison is fair), NOT for clinical scoring.
+    """
+    from compare_pose_omc_delta import _murphy_signals
+    o = "right" if side == "left" else "left"
+    sh, el, wr = f"{side}_shoulder", f"{side}_elbow", f"{side}_wrist"
+    u, v = P[sh] - P[el], P[wr] - P[el]
+    c = (u * v).sum(1) / (np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1) + 1e-9)
+    elb = H._lp(np.degrees(np.arccos(np.clip(c, -1, 1))))
+    try:
+        sig = _murphy_signals(P, side=side)      # side-aware: DELTA's affected arm is the LEFT one
+        flex, abd = H._lp(sig["shoulder_flexion"]), H._lp(sig["shoulder_abduction"])
+    except Exception:
+        flex = abd = np.full(len(elb), np.nan)
+    eav = np.abs(np.gradient(elb)) * FPS
+
+    def ph(name):
+        for nm, s, e in phases:
+            if nm == name:
+                return s, e
+        return None
+
+    def mx(a, w):
+        return float(np.nanmax(a[w[0]:w[1]])) if w and w[1] > w[0] else float("nan")
+
+    r, d, fw = ph("reaching"), ph("drinking"), ph("forward_transport")
+    rf = (r[0], fw[1]) if (r and fw) else r
+    ijc = float("nan")
+    if r and r[1] - r[0] >= 10:
+        m = int(0.1 * (r[1] - r[0]))
+        a1, b1 = flex[r[0] + m:r[1] - m], elb[r[0] + m:r[1] - m]
+        if np.isfinite(a1).all() and np.isfinite(b1).all() and np.std(a1) > 1e-6 and np.std(b1) > 1e-6:
+            ijc = float(np.corrcoef(a1, b1)[0, 1])
+    return {"elbow_extension_reaching": mx(elb, rf),
+            "shoulder_flexion_reaching": mx(flex, r),
+            "shoulder_flexion_drinking": mx(flex, d),
+            "shoulder_abduction_reaching": mx(abd, r),
+            "shoulder_abduction_drinking": mx(abd, d),
+            "peak_elbow_ang_vel": mx(eav, (0, len(elb))),
+            "interjoint_coordination": ijc}
+
+
+def murphy(own_phases: bool = True):
+    """Murphy measures, v1 (raw pose + every-frame cup) vs v3 (SmoothNet pose + UETrack cup).
+
+    PHASES: by default each arm segments with its OWN cup track (v1 with v1's, v3 with v3's), and
+    only OMC uses the OMC cup. That is the END-TO-END number -- it is what the pipeline would
+    actually report, and it is now the honest comparison because the v3 segmentation is good
+    (dwell 67ms median). `--fixed-phases` restores the old OMC-phases-for-everyone mode, which
+    ISOLATES the pose by removing segmentation as a variable; useful for attribution, but it
+    flatters both arms by handing them ground-truth phase boundaries they would not have live.
+    """
+    mode = "each arm segments with its OWN cup" if own_phases else "phases FIXED from the OMC cup"
+    print(f"\n{'='*86}\n=== 4. MURPHY measures — v1 vs v3, |error| vs OMC  ({mode}) ===\n{'='*86}",
           flush=True)
-    measures = ["total_movement_time", "peak_velocity", "number_of_movement_units",
-                "max_trunk_displacement"]
-    agg = {m: {"v1": [], "v3": []} for m in measures}
+    agg = {m: {"v1": [], "v3": []} for m in POSITION_MEASURES + ANGLE_MEASURES}
     nfail = 0
 
     for part, (trials, side) in TRIALS.items():
@@ -424,50 +543,98 @@ def murphy():
             wr = f"{side}_wrist"
             other = "right" if side == "left" else "left"
 
-            # ONE shared phase set (from the OMC cup) so the POSE is the only variable.
-            cup_seg = segment.segment_cup_only(_fill(oc), fps=FPS)
-            try:
-                phases = segment.to_murphy_phases(cup_seg, _fill(omc[wr]), _fill(oc), fps=FPS)
-            except Exception:
-                nfail += 1
-                continue
+            c1 = _cup_v1(part, trial, calib, n)
+            c3 = _cup_v3(part, trial, calib, n)
+            sn = {j: _smooth_joint(mmc[j]) for j in
+                  (wr, f"{side}_elbow", f"{side}_shoulder", f"{other}_shoulder")}
 
-            trunk = (mmc[f"{side}_shoulder"] + mmc[f"{other}_shoulder"]) / 2
-            trunk_o = (omc[f"{side}_shoulder"] + omc[f"{other}_shoulder"]) / 2
-
-            def measure(hand, trunk_xyz):
+            def phases_for(cup_xyz, hand_xyz):
                 try:
-                    return compute_position_measures(hand, trunk_xyz, phases, side, fps=FPS)
+                    seg = segment.segment_cup_only(_fill(cup_xyz), fps=FPS)
+                    return segment.to_murphy_phases(seg, _fill(hand_xyz), _fill(cup_xyz), fps=FPS)
                 except Exception:
                     return None
 
-            m1 = measure(mmc[wr], trunk)
-            m3 = measure(_smooth_joint(mmc[wr]), trunk)
-            mo = measure(omc[wr], trunk_o)
+            ph_o = phases_for(oc, omc[wr])
+            if own_phases:
+                ph_1 = phases_for(c1, mmc[wr])
+                ph_3 = phases_for(c3, sn[wr])
+            else:
+                ph_1 = ph_3 = ph_o
+            if not (ph_o and ph_1 and ph_3):
+                nfail += 1
+                continue
+
+            trunk1 = (mmc[f"{side}_shoulder"] + mmc[f"{other}_shoulder"]) / 2
+            trunk3 = (sn[f"{side}_shoulder"] + sn[f"{other}_shoulder"]) / 2
+            trunk_o = (omc[f"{side}_shoulder"] + omc[f"{other}_shoulder"]) / 2
+
+            def measure(hand, trunk_xyz, ph):
+                try:
+                    return compute_position_measures(hand, trunk_xyz, ph, side, fps=FPS)
+                except Exception:
+                    return None
+
+            m1 = measure(mmc[wr], trunk1, ph_1)
+            m3 = measure(sn[wr], trunk3, ph_3)
+            mo = measure(omc[wr], trunk_o, ph_o)
             if not (m1 and m3 and mo):
                 nfail += 1
                 continue
-            for m in measures:
+            for m in POSITION_MEASURES:
                 o = getattr(mo, m, None)
                 if o is None or (isinstance(o, float) and not np.isfinite(o)):
                     continue
                 agg[m]["v1"].append(abs(getattr(m1, m) - o))
                 agg[m]["v3"].append(abs(getattr(m3, m) - o))
 
-    print(f"{'measure':28} {'n':>4} {'v1 |err|':>10} {'v3 |err|':>10} {'change':>10}")
-    print("-" * 66)
-    for m in measures:
-        v1, v3 = agg[m]["v1"], agg[m]["v3"]
-        if not v1:
-            print(f"{m:28} {'-':>4}")
-            continue
-        a, b = np.median(v1), np.median(v3)
-        ch = f"{(b-a)/a*100:+.0f}%" if a else "-"
-        print(f"{m:28} {len(v1):4d} {a:10.2f} {b:10.2f} {ch:>10}")
+            # angle measures: same formula on each pose source
+            P1 = {j: mmc[j] for j in mmc}
+            P3 = dict(mmc); P3.update(sn)
+            a1 = _angle_scalars(P1, ph_1, side)
+            a3 = _angle_scalars(P3, ph_3, side)
+            ao = _angle_scalars(omc, ph_o, side)
+            for m in ANGLE_MEASURES:
+                if not np.isfinite(ao[m]):
+                    continue
+                if np.isfinite(a1[m]):
+                    agg[m]["v1"].append(abs(a1[m] - ao[m]))
+                if np.isfinite(a3[m]):
+                    agg[m]["v3"].append(abs(a3[m] - ao[m]))
+
+    def _block(title, names, unit_note):
+        print(f"\n  {title}")
+        print(f"  {'measure':36} {'n':>3} {'v1 |err|':>10} {'v3 |err|':>10} {'change':>9}")
+        print("  " + "-" * 72)
+        for m in names:
+            v1, v3 = agg[m]["v1"], agg[m]["v3"]
+            if not v1 or not v3:
+                print(f"  {m:36} {'-':>3}")
+                continue
+            a, b = np.median(v1), np.median(v3)
+            ch = f"{(b-a)/a*100:+.0f}%" if a > 1e-9 else ("=" if b <= 1e-9 else "-")
+            print(f"  {m:36} {len(v1):3d} {a:10.2f} {b:10.2f} {ch:>9}")
+        print(f"  {unit_note}")
+
+    _block("POSITION measures (the ported set, 8/8)", POSITION_MEASURES,
+           "times in s (or % of movement time); peak_velocity mm/s; units = count; trunk mm.")
+    _block("ANGLE measures (raw-point, NOT the ported set — see _angle_scalars)", ANGLE_MEASURES,
+           "degrees (peak_elbow_ang_vel deg/s; interjoint_coordination = Pearson r).")
     if nfail:
         print(f"\n  ({nfail} trials skipped: phase or measure computation failed)")
-    print("\n  Phases held FIXED (from the OMC cup) so the pose source is the only variable.")
-    print("  peak_velocity in mm/s; times in s; movement units = count; trunk in mm.")
+    if own_phases:
+        print("\n  END-TO-END: v1 segmented with the v1 cup, v3 with the v3 cup, OMC with the OMC")
+        print("  cup. Differences therefore include BOTH the pose and the segmentation — which is")
+        print("  what the pipeline actually delivers. Use --fixed-phases to isolate the pose.")
+        print("\n  total_movement_time was |err| 1.50 s here until the segmenter learned DIRECTION.")
+        print("  The old scalar-speed rule ended back_transport at 'last frame above BACK_OFF',")
+        print("  which a detect-once tracker never satisfies (it keeps emitting a slightly-moving")
+        print("  point after the cup is down), so returning/rest_post went missing in 11/12 trials")
+        print("  and TMT over-ran. segment_cup_only now ends the return on ARRIVAL (settled near")
+        print("  rest AND no longer closing on it) — a state, not a threshold. TMT: 1.50 -> 0.05 s.")
+    else:
+        print("\n  Phases FIXED from the OMC cup for all three arms, so the POSE is the only")
+        print("  variable. Attribution only — live, no arm gets ground-truth phase boundaries.")
     return agg
 
 
@@ -476,6 +643,9 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--what", choices=["accuracy", "speed", "segment", "murphy", "all"],
                     default="all")
+    ap.add_argument("--fixed-phases", action="store_true",
+                    help="score Murphy with OMC-cup phases for every arm (isolates the pose). "
+                         "Default is END-TO-END: each arm segments with its own cup track.")
     a = ap.parse_args(argv)
     H.use_good_cams()
     if a.what in ("accuracy", "all"):
@@ -485,7 +655,7 @@ def main(argv=None):
     if a.what in ("segment", "all"):
         segmentation()
     if a.what in ("murphy", "all"):
-        murphy()
+        murphy(own_phases=not a.fixed_phases)
 
 
 if __name__ == "__main__":

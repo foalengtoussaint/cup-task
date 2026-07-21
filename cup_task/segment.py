@@ -47,6 +47,8 @@ CUP_MIN_RUN = max(int(0.15 * FPS), 3)
 DRINK_SPEED = 150.0    # mm/s: cup nearly still at the mouth
 DRINK_DISP_PAD = 150.0 # mm: "near peak" = within this of max displacement from rest
 MIN_PHASE = max(int(0.20 * FPS), 5)
+ARRIVE_MM = 25.0       # mm: cup is "back home" within this of its rest spread (end of return)
+ARRIVE_HOLD_S = 0.25   # s: settled-and-not-closing must hold this long (one sign flip = noise)
 
 # --- fusion ---
 DRINK_FRAC = 0.15      # van Andel: drink when distance < 15% of steady state
@@ -255,15 +257,42 @@ def segment_cup_only(xyz, fps=FPS, *, fwd_on=FWD_ON, back_off=BACK_OFF,
     rest_pos = np.median(filled[:min(rw, T)], axis=0)
     disp = np.linalg.norm(filled - rest_pos, axis=1)
 
+    # SIGNED radial velocity: d(disp)/dt. Positive = travelling AWAY from the rest position,
+    # negative = coming BACK to it. Scalar |speed| cannot tell those apart, which is the whole
+    # reason the end of back_transport used to be found by "speed fell below a threshold" -- a
+    # test that fails whenever the track carries a residual noise floor above that threshold
+    # (a detect-once tracker keeps emitting a slightly-moving point after the cup is set down,
+    # ~40mm/s vs OMC's ~11, so back_transport swallowed the trial tail in 11/12 trials).
+    # Direction is robust to that: the cup has ARRIVED when it stops closing on rest, which is
+    # a sign change, not a magnitude. See docs/PIPELINE_V3.md.
+    radial = np.r_[0.0, np.diff(disp)] * fps
+
     # transport window: hysteresis on the glass-velocity gates
     onset_runs = [(s, e) for s, e in _runs(speed > fwd_on) if e - s >= CUP_MIN_RUN]
     if not onset_runs:
-        return {**empty, "speed": speed, "disp": disp}
+        return {**empty, "speed": speed, "disp": disp, "radial": radial}
     grasp_start, grasp_end = onset_runs[0][0], onset_runs[-1][1]
-    loose = np.flatnonzero(speed > back_off)
-    tail = loose[loose >= grasp_end - 1]
-    if tail.size:
-        grasp_end = int(tail[-1]) + 1
+
+    # END OF THE RETURN = the cup is back on the table: its DISPLACEMENT from rest stops changing.
+    #
+    # Read that off the displacement curve, not the speed curve. Once the cup lands there is a
+    # burst of small noise in the speed (set-down contact, tracker residual, mocap marker wobble)
+    # right around the 10mm/s gate, and the old rule -- "extend to the LAST frame above back_off"
+    # -- chased whichever signal twitched last, so the boundary was set by noise rather than by
+    # the event. The displacement curve has no such ambiguity: it flattens when the cup arrives,
+    # and both tracks flatten at the same instant even when their speeds disagree.
+    #
+    # So: the FIRST frame, after the cup has come back near rest, where displacement stays flat
+    # for ARRIVE_HOLD_S. First (not last) because everything after the cup lands is noise.
+    rest_r = float(np.nanmax(disp[:min(rw, T)])) if np.isfinite(disp[:min(rw, T)]).any() else 0.0
+    hold = max(int(ARRIVE_HOLD_S * fps), 3)
+    flat = np.r_[True, np.abs(np.diff(disp)) * fps < back_off]     # displacement not changing
+    ok = flat & (disp < rest_r + ARRIVE_MM)                        # ...and back near rest
+    ok[:grasp_start] = False
+    for s, e in _runs(ok):
+        if e - s >= hold:
+            grasp_end = min(grasp_end, int(s))    # first sustained flat run = the cup landed
+            break
 
     in_win = np.zeros(T, bool)
     in_win[grasp_start:grasp_end] = True
@@ -302,7 +331,7 @@ def segment_cup_only(xyz, fps=FPS, *, fwd_on=FWD_ON, back_off=BACK_OFF,
         phase[apex:grasp_end] = P_BACK
 
     return {"phase": phase, "intervals": _intervals(phase), "speed": speed, "disp": disp,
-            "grasp": (grasp_start, grasp_end), "drink_runs": drink_runs,
+            "radial": radial, "grasp": (grasp_start, grasp_end), "drink_runs": drink_runs,
             "peak_disp": float(peak_disp)}
 
 

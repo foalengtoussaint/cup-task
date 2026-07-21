@@ -89,19 +89,74 @@ class FlowSpeedOnline:
         return speed_from_flow_obs(obs_p, obs_pv, self.calib, self.fps, self.min_cams)
 
 
-def speed_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
-                        fps: float = FPS, min_cams: int = 2) -> float:
-    """Triangulate {p} and {p+flow} and difference them -> scalar 3D speed (mm/s), NaN if too few
-    cameras. Shared by the online and offline paths so both compute the identical number."""
+def velocity_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
+                           fps: float = FPS, min_cams: int = 2) -> np.ndarray:
+    """Triangulate {p} and {p+flow} and difference them -> 3D VELOCITY VECTOR (mm/s).
+
+    The vector, not just its magnitude. Direction is free here -- the difference of the two
+    triangulations is already a displacement in 3D -- and it is what lets a caller ask "is the
+    target moving TOWARD or AWAY from somewhere" without ever differentiating a position track.
+    That matters because differentiating position is precisely what injects the noise this whole
+    module exists to avoid (a ~1mm per-frame positional wobble becomes ~60mm/s of phantom speed).
+    """
     from cup_task.kalman_3d import triangulate_dlt
+    nan3 = np.full(3, np.nan)
     cams = [c for c in obs_p if c in obs_pv and c in calib]
     if len(cams) < min_cams:
-        return float("nan")
+        return nan3
     Xp = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_p[c]) for c in cams])
     Xv = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_pv[c]) for c in cams])
     if Xp is None or Xv is None:
-        return float("nan")
-    return float(np.linalg.norm(np.asarray(Xv) - np.asarray(Xp)) * fps)
+        return nan3
+    return (np.asarray(Xv, float) - np.asarray(Xp, float)) * fps
+
+
+def speed_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
+                        fps: float = FPS, min_cams: int = 2) -> float:
+    """Scalar 3D speed (mm/s), NaN if too few cameras. Magnitude of velocity_from_flow_obs, so
+    the online and offline paths compute the identical number from one implementation."""
+    v = velocity_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
+    return float(np.linalg.norm(v)) if np.isfinite(v).all() else float("nan")
+
+
+def velocity_from_cached_flow(px: dict[str, np.ndarray], flow: dict[str, np.ndarray],
+                              calib: dict, n: int, fps: float = FPS,
+                              min_cams: int = 2) -> np.ndarray:
+    """OFFLINE path -> (n,3) 3D VELOCITY track (mm/s), NaN rows where too few cameras.
+
+    Same geometry as speed_from_cached_flow, but keeps the direction. Use this when a caller needs
+    to know WHERE the target is heading -- e.g. the segmenter asking whether the cup is travelling
+    away from or back toward its rest position, which scalar speed cannot answer.
+    """
+    out = np.full((n, 3), np.nan)
+    cams = [c for c in flow if c in px and c in calib]
+    for f in range(n):
+        obs_p, obs_pv = {}, {}
+        for c in cams:
+            if (f < len(px[c]) and f < len(flow[c])
+                    and np.isfinite(px[c][f]).all() and np.isfinite(flow[c][f]).all()):
+                obs_p[c] = px[c][f]
+                obs_pv[c] = px[c][f] + flow[c][f]
+        out[f] = velocity_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
+    return out
+
+
+def radial_velocity(vel_xyz: np.ndarray, pos_xyz: np.ndarray, origin: np.ndarray) -> np.ndarray:
+    """Component of a 3D velocity along the outward radial direction from `origin` (mm/s).
+
+    Positive = moving AWAY from origin, negative = moving BACK toward it. Feed it the flow
+    velocity and you get a signed "is it leaving or returning" signal with NO differentiation of
+    position anywhere in the chain -- unlike d(displacement)/dt, which inherits every bit of the
+    position track's frame-to-frame noise.
+    """
+    v = np.asarray(vel_xyz, float)
+    r = np.asarray(pos_xyz, float) - np.asarray(origin, float)
+    nrm = np.linalg.norm(r, axis=1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        u = r / nrm[:, None]
+    out = np.einsum("ij,ij->i", v, u)
+    out[~np.isfinite(nrm) | (nrm < 1e-6)] = np.nan
+    return out
 
 
 def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.ndarray],

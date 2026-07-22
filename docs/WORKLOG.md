@@ -2231,3 +2231,99 @@ I had read `seg["grasp"]` without checking what to_murphy_phases does with it do
 **LESSON: check git log + memory for prior work on a boundary BEFORE diagnosing it as new**, and never
 let a harness call a sub-stage directly when the pipeline calls a refined path. I broke a working
 version twice while "improving" it.
+
+## 2026-07-22 (cont.) >>> FLOW DIAGNOSTICS: where the 2D speed error really comes from
+
+Long diagnostic thread, driven almost entirely by user questions that each caught an error in my
+reasoning. **No shipping-pipeline change came out of it** beyond the flow camera gates -- it is a
+map of what the error IS and which fixes are dead ends. Numbers in docs/RESULTS.md §10.
+
+### Camera gating (the one change that shipped)
+
+User: "does flow use all cameras or only the consensus ones, and the reprojected or detected point?"
+It used ALL cameras and the RAW DETECTED pixel. Points are right (flow must be measured where the
+image evidence is); ignoring the consensus was not. gate_consensus=True is now default:
+cup MOVING err 25.3 -> 19.8 mm/s, wrist unchanged (its consensus rejects ~nothing).
+
+User then suggested a consensus on the FLOW VECTORS themselves rather than a geometric occlusion
+test -- better idea, and now default (gate_flow=True): cup 25.3 -> 19.4, wrist 21.7 -> 18.7.
+It is NOT an occlusion detector (33% recall) -- it makes the fusion ROBUST, since triangulating flow
+is least-squares with breakdown point 0.
+
+### The occlusion finding (user: "check if the wrist is between the cup and the camera")
+
+Right, and 2D proximity does NOT capture it (medians identical). The ANGULAR test does, 50x:
+    wrist IN FRONT, <10deg   median flow 0.957 px
+    wrist BEHIND             median flow 0.019 px
+PyrLK tracks the HAND'S texture where the hand covers the cup. Dropping occluded cameras: rest p95
+81.3 -> 11.9 mm/s. CUP-ONLY -- cup-as-occluder-of-wrist fires on 72.5% of camera-frames (the cup is
+HELD by the wrist) and wrecks it (21.7 -> 92.3).
+
+### Six methods that lost to PyrLK
+
+    best-RMS integer shift   0.92 px  vs PyrLK 0.71   (searching ANY translation)
+    ECC affine (6 param)     0.91     vs ECC-translation 0.75
+    LightGlue (DISK) best    0.89     (r25 crop; 1.47 with all keypoints)
+    RAFT-large               0.95     RAFT-small 0.97
+    CLAHE / Wiener / minEig  all neutral-to-worse
+**Fitting the patch better != estimating the motion better**, six times over.
+
+### What the error actually is
+
+* NOT a texture limit. LK information floor sigma/sqrt(lambda_min) = 0.025px vs 0.708 observed (28x).
+* It IS model error: shifting frame t+1 back by the measured flow (INTEGER shifts, no interpolation)
+  leaves 10.51 grey vs a 0.87 static floor; the BEST possible translation still leaves 7.09 (8.1x).
+  No translation can match these patches.
+* But that gap is NOT recoverable -- chasing it backfires (best-RMS shift is FURTHER from truth).
+* ~51% of the 3D speed error is PROJECTION-IRREDUCIBLE: feeding the pipeline the TRUE projected flow
+  (oracle) still gives 11.13 of the 21.71 mm/s. 49% is PyrLK. Pixel quantisation alone is 15.10.
+
+### Corrections the user forced (each reversed a claim of mine)
+
+1. "Dominated by cross-camera disagreement" -- WRONG. 94% of the 6.35px reprojection residual is
+   COMMON-MODE and cancels between Xp and Xv; only 0.40px survives against a 2px signal.
+2. "Perpendicularity dominates (-0.228)" -- ARTIFACT of dividing by displacement. Against ABSOLUTE
+   error it is +0.014. Displacement is the only real driver (+0.285).
+3. "Blur is the weakest factor / no correlation" -- measured with Laplacian variance, which tracks
+   CONTENT not sharpness (it read HIGHER on visibly blurrier crops). The correct measure is
+   directional ANISOTROPY (along-motion vs across-motion gradient energy), validated on synthetic
+   blur (0.88 -> 0.08 over 0-20px). Blur IS present: aniso 0.99 at rest -> 0.52 at 6-12px.
+4. User: "if a correlates with b and c, b should correlate with c" -- correct, and Pearson was
+   hiding it: Spearman disp-blur -0.388 (vs -0.138), blur-error -0.115 (vs -0.002). The relationship
+   is THRESHOLDED (blur only starts above ~2px), so Pearson understates it. The blur->error curve is
+   U-SHAPED: error 0.64 at the blurriest, min 0.26 near aniso 1.3, 0.59 at the sharpest.
+5. My first affine test was invalidated by a SIGN BUG (ECC-translation scored 7.05px, as bad as
+   affine -- the tell). A synthetic known-shift check catches it in seconds. ALWAYS sanity-check an
+   estimator on synthetic ground truth BEFORE comparing it.
+
+### RAFT: rejected, and WHY it loses is the interesting part
+
+RAFT-large has near-identical per-camera marginals (mean 1.307 vs PyrLK 1.306, median 0.73 vs 0.79)
+and a 3.5x SMALLER max (15.4 vs 54.8 px), plus 5-10x less BIAS (+0.05 vs +0.28; at 6-12px PyrLK
+over-reads +2% while RAFT is flat). User asked the right question: does that survive to 3D? NO --
+PyrLK wins on every fuser (20.5-22.6 vs 22.9-25.3 mm/s).
+WHY: decomposing the per-frame errors into the part all cameras SHARE and the part that differs:
+    |frame mean| (does NOT cancel)   pyrlk 0.515   raft 0.581
+    within-frame spread (averages)   pyrlk 1.012   raft 1.148
+RAFT's errors are more CORRELATED ACROSS CAMERAS, and correlated error is exactly what multi-view
+fusion cannot remove. **For a multi-view fuser, error correlation across views matters more than
+per-view accuracy** -- invisible in any per-camera statistic. Also ~20x PyrLK's cost.
+
+### OPEN, and the most promising lead: the L1 fuser
+
+User: "the consensus thing doesn't seem very robust, I'd prefer other fast methods with similar
+results." Correct. Comparing fusers on the Jacobian formulation (u_dot = J v, which models what each
+camera can actually see):
+    fuser      moving err    PEAK err
+    plain        21.91        64.53
+    loo (now)    20.52        80.06   <- WORST at the peak, worse than plain
+    huber        21.12        59.99
+    l1           20.88        35.34   <- less than HALF of loo's peak error
+    trimmed      22.64        60.49
+**l1 (IRLS toward a median-like solution) more than halves the peak error vs the current LOO gate**,
+with the same moving-frame error and NO hand-set threshold. peak_velocity is a Murphy measure, so
+this matters. NOT ADOPTED YET: n=6 trials on a probe harness; needs confirming on the full 12 via
+results_v3_delta.py, plus a check that it does not disturb the cup path or segmentation.
+
+Scripts: flow_gating_matrix.py, flow_model_shootout.py, flow_3d_survival.py (per-frame arrays saved
+to out/figures/*.npz so tail/threshold questions need no GPU recompute).

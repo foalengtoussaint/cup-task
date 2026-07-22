@@ -3308,3 +3308,34 @@ RECOMMENDATION: keep the gate for per-frame accuracy work, but **do NOT compute 
 gated output**. Either raise the threshold for peak extraction (0.02 keeps 88.3% at 14.99 median)
 or take the peak from the ungated track. This caveat applies to every gated number in this log --
 they are conditional on a speed-biased subsample.
+
+### Why cam1 points cannot be matched to cam2 points directly -- the sharper reason
+
+User: "I still don't understand why you can't make the points from cam1 correspond to the points
+from cam2 directly." Worth restating precisely, because I had been giving the weaker reason.
+
+**TWO DIFFERENT OPERATIONS get called "correspondence":**
+    (1) given a 3D POINT, find its pixel in every camera  -> trivial, just project. EXACT.
+    (2) given a PIXEL found in cam1, find the matching pixel in cam2 -> this is the hard one.
+Seeding does (1) and it works perfectly -- that IS making cam1 and cam2 points correspond, so the
+answer to the question is "we do, and it is the foundation of the method." What fails is (2), and
+only (2), which is what cloud_velocity.py attempted.
+
+**THE REASON IS NOT (only) THAT APPEARANCE MATCHING IS HARD.** I had been citing the NCC ceiling
+(median 0.01 at known-true correspondences, 5% clearing a 0.65 gate). True, but the deeper problem
+comes first. Measured on P07 frame 150, cam_1 vs cam_3, using ONLY geometry:
+    cam_1 finds 15 corners, cam_3 finds 13 corners
+    candidates within 2px of the epipolar line, per cam_1 corner: [1 1 0 0 0 0 0 0 0 0 2 0 0 0 0]
+    **12 of 15 corners have ZERO candidates**
+So the match fails not because the right partner is ambiguous, but because **THE RIGHT PARTNER WAS
+NEVER DETECTED IN THE OTHER VIEW.** Shi-Tomasi fires on what is locally distinctive IN THAT IMAGE:
+a specular highlight sits at a different PHYSICAL spot depending on viewing angle, an occluding
+contour is a different physical edge from each camera, and a surface mark can be foreshearing away
+to nothing. The two cameras genuinely detect DIFFERENT PHYSICAL POINTS -- there is nothing to
+correspond, at any threshold, with any descriptor.
+
+**WHY SEEDING ESCAPES THIS.** It chooses the points FIRST, in 3D, so every camera is asked about
+the SAME point rather than nominating its own candidates. The cup surface never has to look
+distinctive from two angles simultaneously -- PyrLK only needs enough local texture to FOLLOW the
+point within one camera, which is a far weaker requirement than "independently detected as a corner
+from both viewpoints".

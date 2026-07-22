@@ -2644,3 +2644,42 @@ more trials (P13's linear time-warp would add 6) or a sync measurement that does
 speed signal being compared. ⚠ Also worth remembering: all of this is a MEASUREMENT-HARNESS
 question. A better lag estimate makes the EVALUATION more accurate; it does not make the tracker
 better in production, where there is no OMC to align to.
+
+### The idea I should have tried first: FUSE the two estimators (one-sided error)
+
+User: "you don't have any other ideas? surely you haven't tried every mathematical idea." Fair --
+I had exhausted ideas about the TIMING OFFSET and then stopped as though that were the whole
+space. The estimator itself had an obvious untried move: cloud and flow are two INDEPENDENT
+measurements of the same quantity, and their errors correlate only **0.473**, so over half the
+error is independent and combinable. Both signals already exist; the fusion is free.
+
+THE MECHANISM, and why it is `max` rather than an average. Every failure mode in either pipeline
+-- a lost track, a smeared patch, a camera dropping out, a deforming cloud -- makes a measured
+displacement SHORTER. Neither can invent motion. So the error is ONE-SIDED:
+    cloud under-reads on 76.4% of frames (median signed -12.66 mm/s)
+    flow  under-reads on 71.2% of frames (median signed -10.60 mm/s)
+With one-sided error the LARGER estimate is the better one, and averaging two under-estimates just
+gives a smaller under-estimate. Confirmed directly: on frames where the two DISAGREE the larger is
+closer **74%** of the time, while "which method is better" is a coin flip (cloud closer 47%). And
+it does not inflate the easy frames -- where the two agree within 5% the fused ratio is 0.958,
+still slightly under rather than over.
+
+    method   median   mean    p90   >100mm/s   ratio     (n=12 trials, cup, moving frames)
+    cloud     16.49  17.99  68.86      5.0%    0.943
+    flow      18.66  18.59  56.68      1.8%    0.952    <- previous shipping path
+    mean      14.51  15.66  59.39      3.2%    0.947
+    max       15.20  14.47  49.80      1.5%    0.984    <- ADOPTED
+
+**max beats flow on 11/12 trials**, and unlike everything else tried tonight it improves the TAIL
+rather than the median: p90 56.7 -> 49.8, >50mm/s frames 13.7% -> 9.6%, worst frame 203 -> 165.
+The ratio going 0.95 -> 0.98 is the shared under-read being partly corrected, which is the
+mechanism doing exactly what it predicts.
+
+⚠ IT SURVIVES THE STRATIFICATION THAT KILLED THE PREVIOUS CLAIM. Where the HAND HOLDS THE CUP
+(Q1, the hard case and most of the task) max gives 13.5 vs flow's 16.3; it wins every speed band
+including 800+ mm/s (50.0 vs 59.0). This is not a mix effect.
+
+SCOPE, and the guard rail: the rule is a claim about the error's SIGN, not a general fuser.
+`signed_error_split()` exists to check the assumption before applying it elsewhere -- on a
+symmetric-error signal `max` is biased HIGH and the mean is correct, which is pinned by a test.
+Validated on the CUP only; the wrist needs its own signed-error measurement first.

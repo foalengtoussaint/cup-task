@@ -3562,3 +3562,38 @@ so nothing guarantees a 2D-textured feature is exactly there; it starts aperture
 ~10 frames PyrLK walks the point onto real texture, lambda_min rises, both shift components become
 determined, and the step goes clean. Settling = the aperture problem resolving. Purely a tracker
 property, nothing to do with the cup's surface being measured.
+
+### Resolving the maturation thread: RANSAC is already an implicit maturity filter
+
+User's argument (a good one): if maturation is real, the BASELINE also injects young tracks at each
+of its ~8 reseeds, so those immature points should be dragging baseline accuracy down -- and
+filtering them from the FIT should help, with no accumulation change. Clean, paired, coverage-
+preserved test. Result: filtering age<5/10/15 from the baseline fit is a PERFECT NO-OP (identical
+to 4 decimals).
+
+Not a bug -- checked. **Young tracks almost never reach the fit in the first place:** median
+fraction of fitted tracks that are age<10 is **0%**, and only 11% of frames have ANY young track in
+the fit. A young track must clear three hurdles before it can contribute: survive PyrLK + the
+forward-backward check, survive in >=2 cameras (to triangulate), and survive RANSAC.
+
+**RANSAC is the load-bearing one, measured directly:**
+    YOUNG tracks (age<10) reaching RANSAC: rejected **4.3%**
+    OLD   tracks (age>=10)               : rejected **0.2%**    -> 20x higher rejection for young
+A young track jitters at ~150 mm/s (the aperture problem), which is EXACTLY what RANSAC flags as
+inconsistent with the rigid motion. So the pipeline ALREADY excludes immature tracks -- not by age,
+but because their jitter fails the geometric consistency check.
+
+**THIS CLOSES THE ENTIRE RESEED/ACCUMULATE/MATURITY LINE.** The user's premise ("immature points
+decrease baseline accuracy") is false: they are filtered out already, by a mechanism orthogonal to
+age. Which is why:
+  * age-gating helped only via coverage selection (the mature tracks were already the ones fitted)
+  * age-weighting moved the answer ~0.1% (RANSAC already removed the outliers being down-weighted)
+  * the accumulator was worse (more young tracks, but they do not reach the fit -- they only add
+    triangulation cost and occasionally slip a barely-jittering one past RANSAC)
+  * decouple-alive-from-fitted was a wash (the fit was ALREADY effectively fitting the mature set)
+There is no accuracy left on the table from maturity: an explicit maturity filter is redundant with
+RANSAC, which does it better (by actual inconsistency, not by the age PROXY for inconsistency).
+
+The maturation mechanism is real (aperture problem, 2D, per-camera) and it is WHY reseed-rarely
+wins -- but the exploitation the user reasoned toward is already present in the pipeline under a
+different name.

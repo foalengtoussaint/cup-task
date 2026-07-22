@@ -93,7 +93,8 @@ class CloudTracker:
                  units_per_metre: float = 1000.0, reseed_below: int = RESEED_BELOW,
                  min_inliers: int = 8, gate_consensus: bool = True,
                  anchor_px: float | None = 30.0, max_scale_dev: float | None = 0.01,
-                 retire_deformed: bool = True, deslide: float | None = None):
+                 retire_deformed: bool = True, deslide: float | None = None,
+                 topup_every: bool = False):
         self.calib = calib
         self.radius, self.height, self.n_seed = radius, height, n_seed
         self.fb_tol, self.min_cams = fb_tol, min_cams
@@ -142,6 +143,13 @@ class CloudTracker:
         # tau=30, beating the baseline on only 2/12 and 0/12 trials). See _deslide for why.
         self.deslide = deslide
         self._offset_ref: dict[str, np.ndarray] = {}
+        # Refill dead track slots every frame instead of waiting for a full reseed. See topup().
+        # ⚠ DEFAULT OFF: measured n=12, it buys COVERAGE (74.2% -> 79.9%) but costs ACCURACY
+        # (14.70 -> 16.19 median, p90 53.6 -> 60.5) and wins on only 5/12 trials. A fresh track
+        # contributes from its second frame with no history behind it, so the cloud is diluted
+        # with young, less-settled points. Turn it ON if coverage matters more than precision.
+        self.topup_every = topup_every
+        self._topup_n = 0
         self._track_prev3d: dict[int, np.ndarray] = {}
         self._px: dict[str, np.ndarray] = {}      # cam -> (K,2) current pixel per track (NaN = lost)
         self._prev_gray: dict[str, np.ndarray] = {}
@@ -149,6 +157,48 @@ class CloudTracker:
         self._prev_ids: np.ndarray | None = None
 
     # -- seeding ------------------------------------------------------------------------------
+    def topup(self, gray: dict, centre: np.ndarray) -> int:
+        """Refill DEAD track slots without disturbing the live ones. Returns how many were added.
+
+        WHY NOT JUST RESEED. `seed()` replaces the whole cloud, which breaks track identity and
+        therefore costs a frame of velocity every time it fires (Kabsch needs row i of A to be the
+        same physical point as row i of B; a fresh seed has no relationship to the previous frame).
+        That is also why the tracker does NOT reseed every frame -- doing so would leave no
+        correspondence to fit at all, which is exactly the failure that made the re-detect-and-match
+        design in cloud_velocity.py score 13667 mm/s.
+
+        But replacement is all-or-nothing for no good reason: a slot whose track has DIED carries no
+        correspondence to preserve, so it can be refilled freely while the live tracks keep theirs.
+        This keeps the cloud populated without ever breaking identity.
+        """
+        live = None
+        for pts in self._px.values():
+            m = np.isfinite(pts).all(1)
+            live = m if live is None else (live | m)
+        if live is None:
+            return 0
+        dead = np.flatnonzero(~live)
+        if not len(dead):
+            return 0
+        P = surface_seed(centre, self.radius, self.height, self.n_seed,
+                         seed=int(self._topup_n) + 1)
+        self._topup_n += 1
+        for cam, cal in self.calib.items():
+            if cam not in gray or cam not in self._px:
+                continue
+            h, w = gray[cam].shape
+            for k in dead:
+                X = P[k % len(P)]
+                if not _visible(cal, X, centre):
+                    continue
+                u = _project(cal, X)
+                if u is not None and 5 <= u[0] < w - 5 and 5 <= u[1] < h - 5:
+                    self._px[cam][k] = u
+            self._offset_ref.pop(cam, None)
+        for k in dead:
+            self._track_prev3d.pop(int(k), None)
+        return len(dead)
+
     def seed(self, gray: dict, centre: np.ndarray) -> None:
         """(Re)seed the cloud from the cup's 3D position. Correspondence is by construction."""
         P = surface_seed(centre, self.radius, self.height, self.n_seed)
@@ -352,9 +402,18 @@ class CloudTracker:
                     res.active_3d_points_count = v["n_inliers"]
             self._prev_cloud, self._prev_ids = cloud, ids
 
-        # tracks die (occlusion, blur, drift); reseed from the current 3D position when too few
-        if len(cloud) < self.reseed_below and np.isfinite(cup_xyz).all():
-            self.seed(gray, cup_xyz)
+        # tracks die (occlusion, blur, drift). Two ways to replace them:
+        #   topup  -- refill only the DEAD slots, live tracks keep their identity, so no frame of
+        #             velocity is lost. A topped-up track is absent from _prev_ids on its first
+        #             frame, so the intersect1d above excludes it automatically until it has a
+        #             genuine previous position -- correspondence stays exact by construction.
+        #   seed   -- full replacement, breaks identity and costs a frame. Only as a fallback when
+        #             the cloud has collapsed entirely.
+        if np.isfinite(cup_xyz).all():
+            if self.topup_every and len(cloud) < self.n_seed:
+                self.topup(gray, cup_xyz)
+            if len(cloud) < self.reseed_below:
+                self.seed(gray, cup_xyz)
         return res
 
 

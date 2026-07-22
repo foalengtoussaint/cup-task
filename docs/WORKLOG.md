@@ -3168,3 +3168,45 @@ consensus gate's `prev` continuity term, which chains in processing order.
 
 NOT ADOPTED. Also note this is inherently OFFLINE-ONLY -- the live path cannot run reversed -- so
 even a positive result would not have transferred to the online estimator.
+
+### Why the tracker cannot reseed every frame -- PROVEN, not argued
+
+User asked twice, and rightly: "why can't you reseed at every frame?" The answer is not the one I
+first gave (that correspondence would break). Two cases:
+
+  * **Different rng draw each frame** -- point k jumps 62mm median for a 5mm cup motion.
+    Correspondence really is garbage. This is the case I described.
+  * **FIXED rng draw** -- correspondence is PERFECT: every point moves exactly the 5mm the cup
+    moved. So my stated reason was wrong; reseeding CAN preserve correspondence.
+
+**The real reason, measured exactly.** With a fixed draw, both clouds are rigid patterns generated
+FROM THE DETECTION, so their centroids ARE cup3[f-1] and cup3[f], and Kabsch returns exactly
+cup3[f] - cup3[f-1]. No pixel is ever consulted. Proven on all 12 trials -- the two columns are
+identical to every decimal:
+
+    tracked (current)     16.19 median / mean 16.00 / p90  60.53
+    reseed EVERY frame    35.92 median / mean 36.83 / p90 109.54
+    detection alone       35.92 median / mean 36.83 / p90 109.54   <- IDENTICAL
+
+So reseeding every frame is an elaborate way to differentiate the detection track, and that is
+**2.2x worse** than tracking because it inherits the detection's per-frame jitter (0.88-1.54 px
+median, the same jitter that sank the deslide experiment).
+
+**THE PRINCIPLE: the cloud must carry information forward in time that the per-frame detection does
+not have.** Persistent PyrLK tracks do that -- they follow real image texture between frames.
+Regenerated points cannot, however their correspondence is arranged. The tracking is not incidental
+to the method; it IS the method, and the seed's only job is to place the initial pixels.
+
+**Related, from the same question: `topup()`.** Reseeding replaces the WHOLE cloud, discarding live
+tracks and costing a frame of velocity. Refilling only the DEAD slots keeps live identities (a
+topped-up track is absent from _prev_ids on its first frame, so the intersect1d excludes it until
+it has a genuine history). Measured n=12: coverage 74.2% -> 79.9% but accuracy 14.70 -> 16.19,
+p90 53.6 -> 60.5, winning 5/12. DEFAULT OFF -- the cloud gets diluted with young, unsettled points.
+Available via `topup_every=True` when coverage matters more than precision.
+
+**Also settled by the same line of questioning: does the seed GEOMETRY matter?** I had claimed the
+cylinder only needs to land pixels on the cup. Partly wrong. Paired on frames both configurations
+answer: true 40x95mm gives 8.42 vs a degenerate 5x5mm seed's 9.23, and a wrong 20mm radius gives
+16.01. The mechanism is the cloud's EXTENT (23.7mm vs 9.1mm) -- a tiny cloud has no lever arm to
+see rotation. ⚠ Unpaired, the 5x5 seed looks BETTER (9.64 vs 10.05) purely because it only answers
+on the easy 46% of frames; the paired comparison flips it.

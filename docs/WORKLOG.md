@@ -3456,3 +3456,44 @@ explains and quantifies several earlier results at once:
   * why persistent tracking beats everything (it is the only design that accumulates settling)
 The actionable version is not "prefer old tracks at fit time" but **"avoid actions that reset
 age"** -- which is exactly the existing policy of reseeding as rarely as possible.
+
+### The settling mechanism, and why "average mature tracks" cannot be cashed in
+
+User: "does the algorithm get better deeper in the seed, can we average many tracks after a point,
+and WHY are early tracks noisier -- is it doomed off-cup tracks being dropped?"
+
+**WHY EARLY TRACKS ARE NOISIER -- TWO independent causes, and the user guessed one:**
+
+  (1) SURVIVORSHIP (the user's hypothesis, ~half the effect). Tracks that DIE before frame 40 have
+      residual **1.15 mm** at age<=5; tracks that will SURVIVE to 40 have **0.43 mm** at the same
+      age. So doomed tracks -- the ones drifting off the cup -- are noisy from birth and get culled
+      by the anchor/consensus gates. The population improves as they are removed. Exactly as asked.
+
+  (2) SETTLING (independent, the other half). Among ONLY the long-lived tracks (no survivor
+      confound left), residual still falls 0.43 -> 0.10 mm with age. MECHANISM, measured: a young
+      PyrLK track is still HUNTING for a stable feature -- its per-frame offset acceleration
+      (cup motion removed) falls 0.78 -> 0.15 mm with age. A fresh seed is a SYNTHETIC cylinder
+      point; PyrLK has not locked onto real texture yet, so its pixel wobbles frame-to-frame, and
+      THAT wobble is the noise. It is a TRACKER property, not the cup.
+      ⚠ Ruled out a wrong mechanism: reprojection error does NOT fall with age (0.89 -> 2.90 px, it
+      RISES) -- so settling is not the cross-camera rays converging; it is per-frame step jitter.
+
+**CAN WE USE IT? Measured three ways, all fail:**
+  * age GATE (age>=20 only): 10.86 vs 17.21 unpaired but PAIRED 10.86 vs 11.06, 7/12 -- coverage
+    selection, already retracted in the previous entry.
+  * age WEIGHT (weight the centroid by track maturity, no coverage change): the honest version the
+    paired test cannot fool. ⚠ First harness bugged (age dict reset made all ages 0). But the math
+    shows the ceiling anyway: weighting a centroid DIFFERENCE by maturity moves the displacement by
+    ~0.1% (5.078 -> 5.071 on a test case), because sum(w(B-A))/sum(w) is a gentle reweighting of
+    already-agreeing per-point displacements. Inside the ~6 mm/s measurand noise by construction.
+
+WHY WEIGHTING IS INHERENTLY WEAK HERE: RANSAC has ALREADY removed the gross outliers, so the
+surviving per-point displacements mostly agree (that is what makes the cloud rigid). Reweighting a
+set of near-equal vectors cannot move their mean much. The settling effect is large PER TRACK but
+the fit already averages ~11 of them, and spatial averaging got there first (the same conclusion as
+the temporal-pooling entry).
+
+SO THE ANSWER TO "average many tracks after a point" IS: the tracker already runs 11-48 simultaneous
+tracks and already averages them; selecting or weighting by maturity is either coverage selection or
+a sub-noise reweighting. The settling is real and it is WHY persistent tracking works -- but it is
+banked automatically by not resetting age, not by a fit-time rule.

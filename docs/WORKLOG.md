@@ -3244,3 +3244,36 @@ the cloud method actually exploits.
 mm of position. The honest cohort figure is 13.6-14.7 mm/s median speed error against a cup moving
 150-360 mm/s, i.e. ~5-9%. And roughly half of even that is lever-arm/measurand rather than tracker
 error (see the envelope analysis).
+
+### Why coverage is only 74% -- it is almost entirely MY OWN GATE, and the gaps are 1 frame long
+
+Instrumented every exit path in `update()` on 1614 moving frames (n=12, 4 trials/participant):
+
+    ANSWERED                1203   74.5%
+    scale gate (rigidity)    317   19.6%   <- FOUR-FIFTHS of all loss
+    reseed (prev wiped)       58    3.6%
+    min_inliers               36    2.2%
+    no cup3 / <2 cams / cloud<3 / common<3   ALL ZERO
+
+So the missing 25% is NOT occlusion, NOT lost tracks, NOT detection gaps -- every one of those
+paths is empty. It is the Umeyama rigidity gate refusing frames where the cloud deformed, plus a
+small tail from reseeds discarding `_prev_cloud` (~8 per trial, see the reseed entry).
+
+**IS THE GATE PRICED RIGHT? Yes -- it refuses genuinely bad frames, not good ones:**
+    threshold   kept    err of KEPT   err of REFUSED
+      0.05     97.1%       16.24          68.00
+      0.02     88.3%       14.99          50.67
+      0.01     75.6%       14.05          36.81      <- shipping
+      0.005    56.6%       12.55          26.91
+The refused population is 2.6x worse than the kept one at the shipping threshold. Refusing is the
+right call for a measurement -- but it is a CHOICE, and a consumer that needs continuity more than
+per-frame precision should raise the threshold rather than accept 74%.
+
+**AND THE GAPS ARE TINY.** 282 refusal runs, **median 1 frame**, p90 4, max 14; only 24% of refused
+frames sit in runs longer than 5. These are isolated single-frame holes scattered through the
+trial, not blackouts. At 60fps a 1-frame hole is trivially interpolable, so the EFFECTIVE cost of
+the 25% is much smaller than the number suggests -- which is worth stating whenever the coverage
+figure is quoted, because "74% coverage" sounds far worse than "a scattering of single-frame gaps".
+
+⚠ Note this also means the earlier coverage comparisons between configs were mostly comparing GATE
+BEHAVIOUR, not tracking robustness.

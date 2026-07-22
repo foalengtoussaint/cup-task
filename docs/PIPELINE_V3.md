@@ -301,9 +301,36 @@ cup pixels instead of wrist pixels (`scripts/cup_flow_probe.py`, n=12):
 method transfers. Note the *blend* does NOT win here, unlike the wrist: SmoothNet already handles the
 cup's slower peaks, so plain flow is the pick for reporting cup speed.
 
-**But the SEGMENTER uses SmoothNet, not flow** — two measured reasons: (1) in the return region the
-two tie (11.8 vs 12.0 mm/s) and flow has a worse tail (p90 25.5 vs 16.0); (2) the segmenter needs a
-3D *position* track to compute displacement-from-rest, which flow cannot provide.
+### Why the SEGMENTER uses SmoothNet and NOT flow
+
+Flow is the better *reporting* signal but the worse *gating* signal. Three measured reasons:
+
+**1. Flow has a heavy tail at rest, and the segmenter's gates are thresholds.** Speed during
+`rest_pre`, before the cup has moved at all:
+
+| | median | **p95** |
+|---|---|---|
+| OMC | 0.4 | 3.6 |
+| SmoothNet | 3.3 | **14.2** |
+| flow | 4.9 | **81.3** |
+
+The onset gate is `FWD_ON = 15 mm/s`. SmoothNet's p95 sits just under it; **flow's is 5× above it**,
+so flow spuriously trips the gate before the cup moves. Flow's excellent *median* (4.9) hides this —
+the same median-vs-tail trap as the point-tracking thread.
+
+**2. Consequently it misses the onset.** First crossing of `FWD_ON` vs OMC's crossing, n=12:
+
+| | median | p90 |
+|---|---|---|
+| **SmoothNet** | **308 ms** | **460 ms** |
+| flow | 600 ms | 748 ms |
+
+**3. The segmenter needs POSITION, which flow cannot provide.** Displacement-from-rest drives both
+the drink rule and the arrival rule; flow yields velocity only.
+
+So: **flow for reporting cup speed, SmoothNet for driving the segmenter.** Same division as the
+wrist, and for the same underlying reason — a direct velocity measurement is accurate in the mean but
+noisy frame-to-frame, which is exactly wrong for a threshold crossing.
 
 ---
 
@@ -395,18 +422,30 @@ for attribution.)
 | measure | n | v1 \|err\| | v3 \|err\| | change |
 |---|---|---|---|---|
 | total_movement_time (s) | 12 | 0.04 | **0.03** | −20 % |
-| **peak_velocity** (mm/s) | 10 | 45.22 | **26.41** | **−42 %** |
+| **peak_velocity** (mm/s) | 12 | 45.22 | **24.28** | **−46 %** |
 | time_to_peak_velocity (s) | 12 | 0.06 | **0.05** | −14 % |
-| **time_to_peak_velocity_percent** | 12 | 22.91 | **10.94** | **−52 %** |
-| time_to_first_peak_velocity (s) | 8 | nan | nan | — |
-| time_to_first_peak_velocity_percent | 8 | nan | nan | — |
+| time_to_peak_velocity_percent | 12 | 10.39 | 10.57 | +2 % |
+| time_to_first_peak_velocity (s) | 12 | 0.04 | **0.03** | −20 % |
+| **time_to_first_peak_velocity_percent** | 12 | 15.58 | **9.27** | **−41 %** |
 | **number_of_movement_units** | 12 | 2.00 | **1.00** | **−50 %** |
 | max_trunk_displacement (mm) | 5 | 7.01 | 7.08 | +1 % |
 
 The measures that read the *derivative* improve most — exactly the ones jitter was corrupting.
 `max_trunk_displacement` is a slow positional measure SmoothNet correctly leaves alone.
-⚠ `time_to_first_peak_velocity` returns NaN in **both** arms (n=8) — an unresolved issue in the
-measure itself, not a v3 regression; not yet investigated.
+
+**All 8 measures now report on all 12 trials.** Two `score.py` bugs were suppressing them:
+
+- **`_butter_lowpass` was NaN-poisoning whole trials.** `filtfilt` propagates a single NaN across its
+  entire output, so **2 missing frames in a 596-frame trial nulled every measure for that trial**
+  (2/12 trials). Now interpolates gaps, filters, and restores NaN only where the input was missing.
+- **`time_to_first_peak_velocity` was structurally blind to edge peaks.** `find_peaks` only returns
+  *interior* local maxima, so a single-peaked reach whose speed peaks at the window edge (measured:
+  argmax at frame 0) returned nothing — and a single-peaked reach is the normal healthy case. Falls
+  back to the argmax, which for that profile *is* the first peak.
+
+⚠ `time_to_peak_velocity_percent` previously read −52 %; that was computed on the NaN-poisoned
+8-trial subset. On the full 12 it is +2 % — a reminder that a measure silently dropping trials also
+biases the ones it keeps.
 
 ### Angle measures — 7, raw-point
 

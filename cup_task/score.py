@@ -70,12 +70,27 @@ class MurphyPositionMeasures:
 
 
 def _butter_lowpass(sig, fs, cutoff, order):
-    """Zero-phase Butterworth lowpass; identity on signals too short to filter."""
+    """Zero-phase Butterworth lowpass; identity on signals too short to filter.
+
+    NaN-SAFE. filtfilt propagates a single NaN across the WHOLE output, so two missing frames in a
+    596-frame trial silently nulled every measure for that trial (measured: 2/12 trials returned
+    NaN peak_velocity for exactly this reason). Interpolate the gaps, filter, then restore NaN
+    only where the input was actually missing -- so a gap can never poison the frames around it.
+    """
     sig = np.asarray(sig, float)
     if len(sig) < 3 * (order + 1):
         return sig.astype(np.float32)
+    bad = ~np.isfinite(sig)
+    if bad.all():
+        return sig.astype(np.float32)
+    if bad.any():
+        idx = np.arange(len(sig))
+        sig = np.interp(idx, idx[~bad], sig[~bad])
     b, a = butter(order, cutoff / (0.5 * fs), btype="low")
-    return filtfilt(b, a, sig).astype(np.float32)
+    out = filtfilt(b, a, sig).astype(np.float32)
+    if bad.any():
+        out[bad] = np.nan
+    return out
 
 
 def _smoothed_xyz(xyz, fs, cutoff, order):
@@ -184,8 +199,17 @@ def compute_position_measures(
             prom = max(50.0, 0.15 * peak_velocity)
             first, _ = find_peaks(seg_pk, prominence=prom)
             if len(first):
-                t_first = int(first[0]) / fps
-                t_first_pct = int(first[0]) / max(re - rs, 1) * 100.0
+                idx = int(first[0])
+            else:
+                # find_peaks only sees INTERIOR local maxima, so a reach whose speed peaks at the
+                # very edge of the window yields nothing at all (measured: 2/12 trials here, one
+                # with argmax at frame 0). A single-peaked reach is the NORMAL healthy case -- it
+                # must not report "no first peak". Fall back to the argmax, which for a
+                # single-peaked profile IS the first peak.
+                idx = int(np.nanargmax(seg_pk)) if np.isfinite(seg_pk).any() else -1
+            if idx >= 0:
+                t_first = idx / fps
+                t_first_pct = idx / max(re - rs, 1) * 100.0
 
     # movement units: everything EXCEPT drinking
     gap = max(int(mu_time_gap_s * fps), 1)

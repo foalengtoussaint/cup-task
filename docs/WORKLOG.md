@@ -2127,3 +2127,48 @@ Commits: b9a4ab5 (v3 split + flow/blend + SmoothNet fix), 928b521 (cohort + cup-
 diagnosis), ae67bc5 (segmentation displacement boundary + all-phase metric + full Murphy).
 Scripts: bench_v3.py, results_v3_delta.py, cup_flow_probe.py. Modules: cup_task/{flow_speed,
 speed_blend}.py.
+
+## 2026-07-22 >>> the NaN Murphy measures, and WHY flow is not used for segmentation
+
+Two follow-ups the user asked for after the v3 writeup.
+
+### The NaNs were TWO real bugs in score.py, not a missing measure
+
+`time_to_first_peak_velocity` (+_percent) reported NaN for BOTH arms on 8/12 trials, and
+peak_velocity on 10/12. Root causes, both mine-adjacent and both fixed:
+
+1. **`_butter_lowpass` NaN-poisons the whole trial.** scipy's filtfilt propagates a single NaN across
+   its ENTIRE output — so **2 missing frames in a 596-frame trial nulled every measure for that
+   trial**. (The 2 NaNs came from my own `_shift` end-padding, so a harness detail was silently
+   deleting measures.) Now: interpolate gaps -> filter -> restore NaN only where the input was
+   actually missing. medfilt was checked and is already NaN-safe, so the lowpass was the sole culprit.
+2. **`find_peaks` is structurally blind to edge peaks.** It returns only INTERIOR local maxima, so a
+   single-peaked reach whose speed peaks at the window edge (measured: argmax at frame 0 on P07_12,
+   frame 7 + prominence-rejected on P07_11) returned nothing at all. A single-peaked reach is the
+   NORMAL healthy case and must not report "no first peak". Falls back to argmax, which for that
+   profile IS the first peak.
+
+RESULT: all 8/8 position measures now report on all 12 trials. peak_velocity n=10->12 and improves to
+-46%; time_to_first_peak_velocity -20%, its _percent -41%.
+⚠ time_to_peak_velocity_percent was -52% and is now +2% — the old figure was computed on the
+NaN-poisoned 8-trial subset. **A measure that silently drops trials also biases the ones it keeps.**
+
+### Why the segmenter uses SmoothNet and NOT flow (asked directly; my earlier answer was thin)
+
+I had justified it only as "flow gives no position". The real reason is stronger and measured: flow is
+the better REPORTING signal but the worse GATING signal.
+
+rest_pre speed (before the cup moves at all), vs the FWD_ON=15mm/s onset gate:
+  OMC        median  0.4  p95   3.6 mm/s
+  SmoothNet  median  3.3  p95  14.2      <- p95 just UNDER the gate
+  flow       median  4.9  p95  81.3      <- p95 5x ABOVE the gate
+
+So flow spuriously trips the onset gate before the cup moves. Its excellent MEDIAN (4.9) hides the
+tail — the same median-vs-tail trap as the point-tracking thread. Consequence, first crossing of
+FWD_ON vs OMC's crossing (n=12): **SmoothNet 308ms median / 460 p90, flow 600 / 748** — flow is 2x
+WORSE at the gate the segmenter actually depends on. Plus the segmenter needs a POSITION track for
+displacement-from-rest, which flow cannot provide.
+
+VERDICT: flow for reporting cup speed (25.3 vs 77.4 mm/s on moving frames), SmoothNet for driving the
+segmenter. Same division as the wrist, same underlying reason: a direct velocity measurement is
+accurate in the mean but noisy frame-to-frame, which is exactly wrong for a threshold crossing.

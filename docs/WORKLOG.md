@@ -2477,3 +2477,46 @@ the RAW signal.
 
 Kept: cloud_velocity.py stays as the recorded negative result (it is why we know cross-view NCC is
 a dead end). Branch NOT merged.
+
+### Trying to push the cloud below 29.7 -- what the error actually is (and a tuning trap)
+
+User: "I feel like you could make that error better even without matching without the texture."
+Right that there is headroom; wrong about where. Profiling P07 trial_10 (median err 11.5 mm/s, so
+the 29.7 trial-level figure is driven by a minority of frames):
+
+    band (OMC mm/s)   n    med err   ratio(cloud/omc)
+    0-50            305      4.0       4.60   <- OVER-reads: a noise floor
+    50-200          113     29.2       0.69   <- UNDER-reads
+    200-500          38     93.6       0.76
+    500+             47    133.3       0.86
+
+TWO OPPOSITE BIASES, so they are two different problems. Hypotheses tested and KILLED:
+
+  1. "PyrLK loses the fast tracks, survivors biased slow" -- REFUTED. Track survival is 99.5-102.8%
+     at EVERY speed band. Nothing is being lost.
+  2. "Reseeding re-pins the cloud to a biased reference; coast longer" -- REFUTED. reseed_below
+     4 or 2 collapses coverage (95% -> 34%) because tracks die and are never replenished.
+
+WHAT IT ACTUALLY IS: **the cloud inherits its seed source's bias**. The smoothed consensus cup3
+that seeds it has the SAME signature -- ratio 5.34 at rest, 0.83-0.97 moving, vs the cloud's 4.60
+and 0.69-0.86. The cloud is not creating this bias, it is anchored to something that already has
+it. Note the cloud is already BETTER than its own seed on moving frames (median 11.5 vs 35.7), so
+the tracking is adding real value on top of a flawed anchor.
+
+The REST noise is also not what it looks like: per-point 3D jitter is only 0.07mm (=4 mm/s), and
+~20 independent points should average to ~0.9 mm/s at the centroid -- but the reported rest speed
+is 3.7 mm/s, 4x that. So **the jitter is CORRELATED across points, not independent**, and the
+centroid cannot average it away. Same lesson as the RAFT-vs-PyrLK finding: correlated error
+survives multi-view/multi-point fusion, and only the correlated part matters.
+
+⚠ TUNING TRAP, and I nearly shipped it. A single-trial sweep on P07_10 said nseed=240 was a big
+win (24.2 vs 48's 40.6, at BETTER coverage). Across 6 trials it REVERSES:
+    nseed= 48  median 31.0  mean 29.6  cov 96.6%
+    nseed=240  median 36.6  mean 35.6  cov 98.2%
+240 won only on the trial it was tuned on and lost on 4 of the other 5 (P08 39-44 vs 19-32). The
+non-monotonic sweep (240 good, 360/480 bad, 720 middling) was the tell -- a real optimum does not
+zigzag. Kept nseed=48. Same failure the l1 retraction was about: a headline from too little data.
+
+CONCLUSION: the cloud's remaining error is NOT in the cloud. It is inherited from the consensus
+seed track, and the rest-noise is correlated so more points cannot fix it. Tuning this pipeline
+further is not the lever; the seed track is. Left at nseed=48 / min_inliers=8 / reseed_below=8.

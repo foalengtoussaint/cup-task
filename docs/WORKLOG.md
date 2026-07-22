@@ -2309,21 +2309,53 @@ RAFT's errors are more CORRELATED ACROSS CAMERAS, and correlated error is exactl
 fusion cannot remove. **For a multi-view fuser, error correlation across views matters more than
 per-view accuracy** -- invisible in any per-camera statistic. Also ~20x PyrLK's cost.
 
-### OPEN, and the most promising lead: the L1 fuser
+### The L1 fuser -- ⚠ HEADLINE RETRACTED at n=12, NOT adopted
 
 User: "the consensus thing doesn't seem very robust, I'd prefer other fast methods with similar
-results." Correct. Comparing fusers on the Jacobian formulation (u_dot = J v, which models what each
-camera can actually see):
+results." Correct in principle. Comparing fusers on the Jacobian formulation (u_dot = J v, which
+models what each camera can actually see). The n=6 probe run said:
     fuser      moving err    PEAK err
     plain        21.91        64.53
     loo (now)    20.52        80.06   <- WORST at the peak, worse than plain
     huber        21.12        59.99
-    l1           20.88        35.34   <- less than HALF of loo's peak error
+    l1           20.88        35.34   <- "less than HALF of loo's peak error"
     trimmed      22.64        60.49
-**l1 (IRLS toward a median-like solution) more than halves the peak error vs the current LOO gate**,
-with the same moving-frame error and NO hand-set threshold. peak_velocity is a Murphy measure, so
-this matters. NOT ADOPTED YET: n=6 trials on a probe harness; needs confirming on the full 12 via
-results_v3_delta.py, plus a check that it does not disturb the cup path or segmentation.
 
-Scripts: flow_gating_matrix.py, flow_model_shootout.py, flow_3d_survival.py (per-frame arrays saved
-to out/figures/*.npz so tail/threshold questions need no GPU recompute).
+**⚠ That 2x claim did NOT survive the full cohort.** fuser_validate.py, n=12, both targets, paired on
+the same OMC peak events (cached PyrLK only -- the fuser question never needed RAFT, so 25s not
+minutes):
+
+    WRIST (48 matched peaks)          CUP (24 matched peaks)
+    fuser     moving  peak  p90       fuser     moving  peak  p90
+    plain      20.53  64.78 150.5     plain      25.49  59.48 243.3
+    loo (now)  18.95  55.37 150.1     loo (now)  19.98  26.85  90.0  <- BEST
+    huber      19.29  59.52 125.1     huber      23.75  48.27 130.2
+    l1         18.21  34.16 117.9     l1         22.32  38.48 102.9
+    trimmed    19.92  60.57 143.2     trimmed    21.30  30.22 123.3
+
+WHAT ACTUALLY MOVED: `l1`'s own number was stable (35.34 -> 34.16). **It was `loo`'s BASELINE that
+was unstable** -- 80.06 at n=6, 118.95 on a 2-trial subset, 55.37 across 12. The "2x win" was a
+bad-luck baseline draw, not an l1 gain. The real wrist win is 55.4 -> 34.2 median (better on 64.6%
+of peaks, max tail 270 -> 185): real, but ~4x smaller than advertised.
+
+AND IT REVERSES ON THE CUP, which the n=6 probe never tested: `loo` is best there and beats `l1` on
+66.7% of cup peaks. This is NOT a surprise -- it is exactly what flow_consensus_cams' own docstring
+already documents. The two targets fail differently:
+  * CUP   = ONE camera, SUSTAINED occlusion -> hard-dropping is the correct response; soft
+            down-weighting still lets the bad camera contribute.
+  * WRIST = TRANSIENT blur across SEVERAL cameras -> a soft, median-like estimator survives it,
+            and a hard gate is on the wrong side of its threshold too often.
+
+DECISION: **not adopted, fuser unchanged.** No single fuser is uniformly better, so a global swap
+trades a wrist gain for a cup regression. Per-target fusers (l1 wrist / loo cup) are defensible by
+mechanism but are two code paths and a per-target choice fit on n=12 -- that is the overfitting the
+"general mechanisms only" rule exists to prevent. `trimmed` is the quiet runner-up (zero knobs, one
+refit instead of eight, second-best on the cup, better wrist tails than loo at 143/165 vs 150/270)
+and is where to look first if this is revisited.
+
+The durable lesson is methodological, and it is the same one as the detect-once/Siamese retraction:
+**a headline computed against a noisy baseline is a claim about the baseline, not the candidate.**
+n=6 was too thin to pin `loo`, and the entire "2x" rested on that.
+
+Scripts: flow_gating_matrix.py, flow_model_shootout.py, flow_3d_survival.py, fuser_validate.py
+(per-frame arrays saved to out/figures/*.npz so tail/threshold questions need no GPU recompute).

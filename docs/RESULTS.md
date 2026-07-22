@@ -495,6 +495,37 @@ perpendicular component it can actually observe. Measured **20.53 vs 21.71 mm/s*
 a −5 % gain from a *general geometric mechanism*, no tuned constants. It does not stack with the LOO
 consensus (18.95 vs 18.73): both fix the same thing, LOO empirically, the Jacobian by construction.
 
+### Which robust fuser? — LOO kept, the `l1` "2× win" retracted
+
+Given the Jacobian stack `A v = b`, the fusers differ only in the loss: `plain` (lstsq, breakdown
+point 0), `loo` (shipping — drop the camera whose leave-one-out removal moves the fused velocity by
+> 20 mm/s), `huber`, `l1` (IRLS with `w = 1/‖r‖`, i.e. a geometric-median-like solution, **no
+threshold**), `trimmed` (drop the single worst residual). `scripts/fuser_validate.py`, n = 12, paired
+on the same OMC peak events:
+
+| fuser | wrist moving | wrist peak | wrist p90 | cup moving | cup peak | cup p90 |
+|---|---|---|---|---|---|---|
+| plain | 20.53 | 64.78 | 150.5 | 25.49 | 59.48 | 243.3 |
+| **loo** (ships) | 18.95 | 55.37 | 150.1 | **19.98** | **26.85** | **90.0** |
+| huber | 19.29 | 59.52 | 125.1 | 23.75 | 48.27 | 130.2 |
+| **l1** | **18.21** | **34.16** | **117.9** | 22.32 | 38.48 | 102.9 |
+| trimmed | 19.92 | 60.57 | 143.2 | 21.30 | 30.22 | 123.3 |
+
+⚠ **A previous n = 6 probe reported `l1` halving the peak error (80.1 → 35.3). That is retracted.**
+`l1`'s own number was stable (35.3 → 34.2); **`loo`'s baseline was the unstable one** — 80.1 at n = 6,
+119.0 on a 2-trial subset, 55.4 across 12. The win is real but ~4× smaller than advertised, and it
+**reverses on the cup**, where `loo` wins 66.7 % of peaks.
+
+That reversal is mechanism, not noise, and it matches what the gating analysis already found: the cup
+fails as **one camera, sustained occlusion** (hard-dropping is right; soft down-weighting still lets
+the bad camera vote), the wrist as **transient blur across several cameras** (a median-like estimator
+survives it; a fixed threshold is too often on the wrong side).
+
+**Decision: fuser unchanged.** No fuser is uniformly better, so a global swap trades a wrist gain for
+a cup regression, and per-target fusers would be two code paths chosen on n = 12. `trimmed` is the
+runner-up worth revisiting first — zero knobs, one refit instead of eight, second-best on the cup, and
+better wrist *tails* than `loo` (p90 143 / max 165 vs 150 / 270).
+
 ⚠ **Tried and rejected — all mechanism-free tuning that did not survive the full cohort:** a
 Laplacian sharpness gate (24.3 vs 21.9 ungated), PyrLK's own `minEigThreshold` (default 1e-4 rejects
 0/532 points; every higher value made speed error worse, 19.2 → 22.2+), CLAHE (helps the pooled

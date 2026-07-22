@@ -2610,3 +2610,37 @@ WHAT REMAINS TRUE: the per-track consensus gate + keypoint anchor are a real, re
 improvement to the CLOUD (29.7 -> 16.0, radius wander 29mm -> 5.9mm, monotonic, 11/12 trials).
 The cloud is now a viable estimator rather than a broken one -- it is just not a better one, and
 its unique output (rotation) is still scale-unreliable.
+
+### Chasing the shared ~6% under-read: FOUR hypotheses, all dead
+
+Both estimators under-read speed by a flat ~0.94 ratio across every speed band (flat = a SCALE, not
+a saturation), and it is SHARED, so it lives upstream of both. Tried, in order:
+
+  1. **OMC resample 100Hz -> 60Hz shortens the path.** NO: native 167.8 vs resampled 167.2 mm/s,
+     a 0.3% effect, and in the wrong direction to explain a 6% under-read.
+  2. **Chording -- a 1/60s difference cuts the corner on a curved path.** NO: widening the stride
+     INCREASES measured speed (stride1 167.2, stride4 176.2), the opposite of curvature loss. The
+     trajectory is not curved enough at 60Hz to matter.
+  3. **A universal f-vs-f+1 indexing offset.** Found a REAL convention mismatch in the code --
+     flow_track_from_clip stores flow(f-1 -> f) at index f-1 (the START of the interval) while
+     H._speed assigns its diff to index f (the END). Shifting flow +1 frame cut cohort error
+     18.7 -> 14.7 (-21%). ⚠ BUT IT IS NOT UNIVERSAL: P08 improves 5/6 (19.0 -> 12.1) while P07
+     does not move at all (18.6 -> 18.9, 3/6). The same code runs on both, so a real convention
+     bug would have to be universal. What it actually reflects: _find_lag returns median -1 for
+     P07 and 0 for P08, so "+1 everywhere" is just supplying P08's missing lag and overshooting
+     P07 by a frame. NOT ADOPTED -- it would be fitting one half of the cohort.
+  4. **Estimate the lag on the CUP instead of the wrist** (the harness aligns on the wrist but we
+     compare the cup). WORSE: 20.5 vs 18.7.
+
+And the follow-up that would have made a tidy story -- "the lags are spurious, use 0" -- is ALSO
+refuted: corr(delta|lag|, delta err) = -0.289, shrinking |lag| made error WORSE on average (+3.0),
+and trials with a nonzero lag have LOWER error (14.7) than trials with lag 0 (22.3).
+
+CONCLUSION, and the reason to stop: every one of these looked convincing on partial evidence and
+died on the full cohort. At n=12 trials, with effects that live at +-1 frame, this harness cannot
+separate a real timing bug from noise -- the +1 shift is a 21% "improvement" that is almost
+certainly half-cohort overfitting. The honest next step is NOT another candidate fix; it is either
+more trials (P13's linear time-warp would add 6) or a sync measurement that does not depend on the
+speed signal being compared. ⚠ Also worth remembering: all of this is a MEASUREMENT-HARNESS
+question. A better lag estimate makes the EVALUATION more accurate; it does not make the tracker
+better in production, where there is no OMC to align to.

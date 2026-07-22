@@ -3129,3 +3129,42 @@ drift is nearly free (it differences away) while per-frame noise is expensive --
 sliding" was a true observation that turned out to be the wrong thing to fix. Kept in the code
 (`deslide=`, default None) because it demonstrably stops the sliding; anyone wanting POSITION
 rather than velocity from this cloud should reach for it.
+
+### Forward + reverse passes: no gain, and an unexplained asymmetry
+
+User asked whether running the tracker forward AND backward lowers the error. Decoded each trial
+once, replayed the frames in both orders, combined four ways (speed is a magnitude, so no sign
+handling is needed). n=12:
+
+    method          median   mean    p90    cov     beats forward
+    forward          14.70  15.27  53.64  74.2%      --
+    reverse          17.52  18.18  68.99  74.4%      2/12
+    mean             16.96  17.24  61.25  87.9%      2/12
+    max              15.95  16.51  61.06  87.9%      3/12
+    best-coverage    16.37  16.78  78.95  87.9%      2/12
+
+NO COMBINATION BEATS FORWARD ALONE. Combining does buy coverage (74% -> 88%, since the two passes
+lose tracks at different frames) but costs accuracy.
+
+WHY COMBINING FAILS: forward and reverse errors correlate **+0.394** -- the two passes fail on the
+SAME trials, for reasons intrinsic to the data rather than to the tracking direction. Contrast the
+cloud+flow max-fusion that DID work: there the errors were similarly correlated (0.473) but the
+bias was ONE-SIDED (both under-read 71-76% of frames), which is what `max` exploits. Here there is
+no such asymmetry to exploit, so `max` just picks the noisier pass half the time.
+
+⚠ THE UNEXPLAINED PART: reverse is consistently WORSE (2/11 trials), despite seeing IDENTICAL
+pixels and producing MORE inliers (12 vs 9) and BETTER coverage (79% vs 67%) -- more data, worse
+answer. The loss concentrates in the trial's early phase (12.4 forward vs 18.9 reverse). Two
+hypotheses tested and BOTH FAIL:
+  * "reverse seeds mid-motion while forward seeds at rest" -- REFUTED: cup speed in the first 8%
+    of a trial is 0.4 mm/s and in the last 8% is 0.3 mm/s, and the start is slower on only 4/12
+    trials. Seeding conditions are symmetric.
+  * "the reseed rule fires differently" -- reseeds were 10 forward vs 11 reverse, essentially the
+    same.
+I do not have a validated explanation, and rather than invent a third story I am recording it as
+open. Something in the pipeline is direction-dependent; the candidates left are PyrLK's own
+internal asymmetry (its pyramid/window is not time-symmetric in the presence of blur) and the
+consensus gate's `prev` continuity term, which chains in processing order.
+
+NOT ADOPTED. Also note this is inherently OFFLINE-ONLY -- the live path cannot run reversed -- so
+even a positive result would not have transferred to the online estimator.

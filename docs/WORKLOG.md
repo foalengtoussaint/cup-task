@@ -2872,3 +2872,38 @@ relative to the cup's actual centre.
 TO ACTUALLY MEASURE IT you need the cup's GEOMETRY fitted to observed surface points, so the centre
 is inferred from the surface rather than read off whatever point a detector emitted. The cloud is
 the only signal here that can support that -- it has surface points, not a box centre.
+
+### Cylinder fit to recover a REAL cup centre: right idea, defeated by the patch size
+
+Follow-through on "to actually measure the cup centroid you need the cup's GEOMETRY fitted to
+observed surface points". Added `fit_cylinder_axis()`: try each principal direction as the axis,
+project into the perpendicular plane, and fit a circle of the cup's KNOWN 40mm radius by linear
+least squares; keep the axis with the lowest residual. The centre then comes from the OBJECT, not
+from whichever point a detector emitted -- which would make the measurand well-defined for the
+first time and remove the near-hemisphere bias by construction.
+
+ON SYNTHETIC DATA IT DOES EXACTLY THAT, and best on the case that matters:
+    full 360deg cloud : centre err  3.20mm   (cloud centroid  4.32mm)
+    NEAR-HALF only    : centre err  1.75mm   (cloud centroid 25.25mm)   <- 14x better
+
+ON REAL DATA IT IS 3x WORSE THAN DOING NOTHING (n=12):
+    point        median   mean     p90   ratio
+    centroid      22.09  22.58   96.91  0.966
+    cyl-centre    64.25  75.22  552.27  1.176
+
+WHY -- and it is a property of the data, not the method. The real cloud is **11 points spanning
+[20.8, 15.0, 6.8] mm**. A full cup would give roughly [40, 28, 28]. So the cloud is a small PATCH,
+and fitting a 40mm-radius circle to a nearly-flat 20mm patch means extrapolating curvature from
+almost none: tiny noise swings the inferred centre a long way. Measured directly -- the fitted
+centre JUMPS with p90 13.0mm per frame while the cup itself moves ~5mm per frame. The fit is
+UNSTABLE, not conceptually wrong.
+
+⚠ THE REUSABLE LESSON, and it is the same one as the cloud_velocity synthetic test: **my synthetic
+rig was far easier than reality** (200 points over a half-cylinder vs 11 points on a 20mm patch),
+so it validated a method that does not survive the real geometry. A synthetic test must match the
+POINT COUNT and SPATIAL EXTENT of the real data or it certifies nothing.
+
+WHAT WOULD MAKE IT WORK: many more surviving tracks spread over more of the cup (the seed count
+sweep says the tracker cannot supply that -- 240 seeds was worse across the cohort), or fusing the
+fit across time rather than per frame. Not pursued: the patch size is the binding constraint and
+nothing tonight moves it.

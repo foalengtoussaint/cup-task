@@ -309,3 +309,60 @@ class CloudTracker:
         if len(cloud) < self.reseed_below and np.isfinite(cup_xyz).all():
             self.seed(gray, cup_xyz)
         return res
+
+
+def fit_cylinder_axis(cloud: np.ndarray, radius: float = 40.0
+                      ) -> tuple[np.ndarray, np.ndarray] | tuple[None, None]:
+    """Surface points on a cup -> (centre, axis) of the best-fit cylinder of KNOWN radius.
+
+    WHY THIS IS THE RIGHT MEASURAND. Every other "cup position" in this repo is an arbitrary point:
+    the OMC marker cluster sits on one patch of the cup, the UETrack point is wherever a box centre
+    landed, and the cloud's own centroid is biased to the visible near hemisphere. None is the
+    cup's centre, so speeds compared between them differ by omega x r for an unknown r. Fitting a
+    cylinder of the cup's KNOWN radius to observed surface points recovers a centre defined by the
+    OBJECT rather than by the sensor -- the same physical point every frame, in every method.
+
+    ⚠ THE NEAR-HEMISPHERE PROBLEM IS EXACTLY WHAT THIS FIXES. The cloud only ever sees the camera-
+    facing surface, so its centroid sits ~R/2 off-centre and MOVES as the cup rotates (the visible
+    patch changes). A cylinder fit pushes inward by the known radius from the observed surface, so
+    a one-sided patch still recovers the axis it curves around.
+
+    Method: the axis direction is the SMALLEST-variance direction of the surface normals' spread --
+    for points on a cylinder, the direction along the axis is the one in which the points do NOT
+    curve. Estimated here as the third principal component of the centred cloud only when the cloud
+    is elongated enough to see it; otherwise the dominant spread direction is used. Then the centre
+    is the point minimising sum(|dist_perp(p) - radius|^2), solved in the plane perpendicular to
+    the axis by a linear (Pratt-style) circle fit.
+
+    Returns (None, None) when there are too few points to constrain the fit.
+    """
+    P = np.asarray(cloud, float)
+    if len(P) < 6:
+        return None, None
+    c0 = P.mean(0)
+    Q = P - c0
+    # axis = the principal direction with the LEAST curvature signature. For a cup viewed from the
+    # side the points wrap around the axis, so the axis is the eigenvector whose spread is most
+    # "flat" -- in practice the one with the smallest |curvature| of the projected points.
+    _, _, Vt = np.linalg.svd(Q, full_matrices=False)
+    best, best_res = None, np.inf
+    for ax in Vt:                      # try each principal direction as the axis
+        ax = ax / np.linalg.norm(ax)
+        # project into the plane perpendicular to ax and fit a circle of the KNOWN radius
+        e1 = np.cross(ax, [1.0, 0, 0])
+        if np.linalg.norm(e1) < 1e-6:
+            e1 = np.cross(ax, [0, 1.0, 0])
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(ax, e1)
+        u = Q @ e1
+        v = Q @ e2
+        # linear least squares for the circle centre: |p - c|^2 = r^2 expands to
+        # 2*u*cu + 2*v*cv + (r^2 - cu^2 - cv^2) = u^2 + v^2, linear in (cu, cv, k)
+        A = np.stack([2 * u, 2 * v, np.ones_like(u)], 1)
+        b = u ** 2 + v ** 2
+        sol, *_ = np.linalg.lstsq(A, b, rcond=None)
+        cu, cv = sol[0], sol[1]
+        res = float(np.mean((np.hypot(u - cu, v - cv) - radius) ** 2))
+        if res < best_res:
+            best_res, best = res, (c0 + cu * e1 + cv * e2, ax)
+    return best if best is not None else (None, None)

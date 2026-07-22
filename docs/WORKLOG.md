@@ -3374,3 +3374,47 @@ This closes the cross-camera-matching question properly. It is not the detector,
 not the descriptor choice, and not corners-versus-dense: **a plain specular cup viewed from 27-166
 degrees apart does not present the same appearance twice**, and any appearance-based matcher
 inherits that. Seeding avoids the question entirely by choosing points in 3D first.
+
+### Cross-camera matching, settled properly: co-visibility is FINE, discrimination is the wall
+
+User asked two good questions: (1) aren't there proper METHODS for matching, not just raw NCC, and
+(2) given where the cameras are, shouldn't they share surface anyway? Both were right to ask and
+both changed what I know.
+
+**(2) CO-VISIBILITY IS NOT THE PROBLEM.** Computed the angular arc of the cup each camera sees
+(cylinder normal test) and the pairwise overlap:
+    each camera sees 170-177deg of the 360deg surface
+    pairwise SHARED arc: 53-176deg -- EVERY pair shares real surface
+    cam_3-cam_4 are 29deg apart and share 164deg -- a near-ideal stereo pair
+So my dense test was sampling legitimately co-visible points, and the user's intuition was correct.
+
+**Viewpoint separation DOES matter though**, contrary to my earlier "wide baselines match better"
+claim (which came from a confounded match-count measurement). On strictly co-visible surface:
+    cam_3-cam_4 ( 29deg): NCC median +0.214, 22% >0.5
+    cam_2-cam_3 ( 45deg): NCC median +0.034, 10% >0.5
+    cam_1-cam_3 (100deg): NCC median -0.029,  0% >0.5
+
+**(1) PROPER METHODS DO HELP -- on the raw score.** On the best pair (29deg):
+    NCC                  +0.222   18% >0.5
+    NCC scale-corrected  +0.228   20%
+    CLAHE+NCC            +0.100    0%
+    **census (Hamming)   +0.653   79%**     <- census compares INTENSITY ORDER, so it is
+    gradient-orientation +0.178   20%          invariant to any monotonic intensity change
+
+**⚠ BUT THE SCORE IS A MIRAGE. THE DISCRIMINATION TEST KILLS IT.** A matcher must pick the true
+correspondence out of candidates along the epipolar line, so: slide +-20px (41 candidates, chance
+= 2.4%) and ask whether the TRUE offset wins.
+    pair          sep    NCC wins   CENSUS wins
+    cam_3-cam_4   29deg      6%          3%
+    cam_2-cam_4   70deg      6%          4%
+    cam_1-cam_5  142deg      1%          2%
+    cam_1-cam_3  100deg      0%          0%
+Census's 0.653 was almost entirely its CHANCE FLOOR -- on a 15x15 patch, half the pixels sit above
+the centre by coincidence, so random patches score ~0.5. It discriminates WORSE than NCC.
+
+**CONCLUSION, now for the right reason.** Cross-camera matching fails not because the cameras lack
+shared surface (they have 53-176deg of it), not because of the detector (dense fails identically),
+and not because NCC is the wrong metric (census scores higher and discriminates worse). It fails
+because **a nearly-textureless specular cup produces patches that are not DISTINGUISHABLE from
+their neighbours along the epipolar line** -- the true match beats 41 decoys at barely above chance.
+Seeding never has to solve this: it picks points in 3D and asks every camera about the same one.

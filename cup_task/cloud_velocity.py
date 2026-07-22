@@ -304,6 +304,7 @@ def compute_3d_velocity(cloud_a: np.ndarray, cloud_b: np.ndarray, dt: float,
         raise ValueError("dt must be > 0")
     from scipy.spatial.transform import Rotation
     n_in = len(cloud_a)
+    mask = np.ones(len(cloud_a), bool)
     if ransac and len(cloud_a) >= 4:
         R, t_vec, mask = kabsch_ransac(cloud_a, cloud_b, ransac_thresh)
         if R is None:
@@ -314,7 +315,17 @@ def compute_3d_velocity(cloud_a: np.ndarray, cloud_b: np.ndarray, dt: float,
         R, t_vec = kabsch(cloud_a, cloud_b)
     rotvec = Rotation.from_matrix(R).as_rotvec()
 
-    lin = t_vec / units_per_metre / dt
+    # ⚠ REPORT THE CENTROID'S MOTION, NOT KABSCH's t_vec.
+    # Kabsch returns t = centroid_B - R @ centroid_A, which is the translation of the WORLD ORIGIN
+    # under the fitted motion. The cloud sits ~1700mm from that origin here, so that origin-
+    # referred translation carries a LEVER ARM: a small rotation error swings R @ centroid_A by
+    # (rotation error) x (distance to origin), and shows up as an enormous phantom translation.
+    # Measured on DELTA P07 moving frames: t_vec read 2.10x the true cup speed while the cloud's
+    # own centroid displacement read 0.77x -- the tracking was fine, the reference point was not.
+    # The object's velocity is the motion of a point ON the object, so use the centroid.
+    ca = np.asarray(cloud_a, float)[mask].mean(0)
+    cb = np.asarray(cloud_b, float)[mask].mean(0)
+    lin = (cb - ca) / units_per_metre / dt
     ang = rotvec / dt
     return {
         "rotation_matrix": R,

@@ -129,6 +129,34 @@ def test_velocity_decouples_translation_and_rotation():
     assert v["linear_speed"] < 1e-9, "rotation leaked into translation"
 
 
+def test_translation_is_centroid_motion_not_origin_translation():
+    """⚠ REGRESSION: Kabsch's `t` is the WORLD ORIGIN's translation, not the object's.
+
+    t = centroid_B - R @ centroid_A. When the cloud sits far from the origin (here 1700mm, as in
+    the real rig), any rotation swings `R @ centroid_A` through a LEVER ARM, and the origin-
+    referred translation bears no relation to how far the object actually moved.
+
+    Measured on DELTA P07 before this was fixed: t_vec read 2.10x the true cup speed while the
+    cloud's own centroid displacement read 0.77x -- the tracking was fine, the reference point was
+    wrong. This test uses a PURE rotation about the object's own centre, where the object's
+    velocity is ZERO by construction but `t_vec` is large.
+    """
+    far = np.array([0.0, 0.0, 1700.0])                  # object far from the world origin
+    P = object_points() + far
+    R_true = rot([0, 1, 0], 0.05)
+    Q = (R_true @ (P - far).T).T + far                  # spins in place: centroid does NOT move
+
+    v = compute_3d_velocity(P, Q, 1 / 60, MM, ransac=False)
+    assert v["linear_speed"] < 0.01, \
+        f"pure rotation about the centre must give ~0 linear speed, got {v['linear_speed']:.3f} m/s"
+    assert np.isclose(v["angular_speed"], 0.05 * 60, atol=1e-6), "angular speed wrong"
+
+    # and the raw Kabsch t_vec is indeed huge here -- that is exactly what must NOT be reported
+    _, t_vec = kabsch(P, Q)
+    assert np.linalg.norm(t_vec) > 50, \
+        "test is not exercising the lever arm; move the cloud further from the origin"
+
+
 def test_units_conversion_is_explicit():
     """The same displacement in mm and in m must give the same m/s."""
     P = object_points()

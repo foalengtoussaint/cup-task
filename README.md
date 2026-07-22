@@ -1,59 +1,101 @@
 # cup-task
 
-Offline drink-task scoring from multi-camera video. Standalone productization of
-the `object-tracking-master/experiments/drink_study` research pipeline: detect the
-cup and the person's body/hand keypoints, fuse to 3D with the existing camera
-calibration, segment the drink phases, and emit the iMOVE task-scoring metrics.
+**Mocap-free drink-task scoring from multi-camera video.** Detect the cup and the person's
+keypoints, fuse to 3D with the existing camera calibration, segment the movement phases, and emit the
+Murphy clinical measures — no motion capture required.
 
-Inference (cup + pose) is real-time-capable; the 3D fusion → phase → scoring
-pipeline runs offline (per trial) for now.
+Standalone productization of the `object_tracking/experiments/drink_study` research pipeline.
 
-## Pipeline
+## Documentation
 
-Run the whole thing on one rep's clips:
+| | |
+|---|---|
+| **[docs/SPEC.md](docs/SPEC.md)** | **how the pipeline works** — stages, signals, phase definitions, conventions |
+| **[docs/RESULTS.md](docs/RESULTS.md)** | **every measured number** — accuracy vs OMC, speed, segmentation, Murphy |
+| [docs/WORKLOG.md](docs/WORKLOG.md) | chronological record, including what was tried and rejected |
+| [docs/SPEED_METRICS.md](docs/SPEED_METRICS.md) | the wrist-speed method comparison in detail |
+
+## Run it
 
 ```bash
-python -m cup_task.pipeline CLIPDIR --calib calibration.toml -o out/
+# whole pipeline on one rep's clips
+python -m cup_task.pipeline CLIPDIR --calib calibration.toml -o out/ \
+       --smooth-pose --cup-track
+
+# validation against OMC ground truth (cache-only, no GPU)
+python scripts/results_v3_delta.py --what all
+
+# speed benchmark (online fps + offline post-processing)
+python scripts/bench_v3.py --cams 1 5 10
 ```
 
-| Stage | Module | Status |
-|-------|--------|--------|
-| Cup detection | `cup_task.cup_detect` | ✅ drink_study `clean3d_refill` seg model |
-| Body/hand keypoints | `cup_task.pose_keypoints` | ✅ YOLO-pose, upper body |
-| 3D triangulation | `cup_task.triangulate` | ✅ multi-view DLT + consensus gate |
-| Phase segmentation | `cup_task.segment` | ✅ ported; reproduces research exactly (40/40 reps) |
-| Full pipeline | `cup_task.pipeline` | ✅ clips → 2D → 3D → phases, cached |
-| iMOVE metrics | `cup_task.score` | TODO (spec on iMOVE Docker) |
+## Pipeline at a glance
 
-Segmentation is the **base** geometric method (the same one the research pipeline's
-*truth* uses). Two known improvements are measured but not yet ported — a TCN gap-fill
-of the occluded cup track, and a head-distance feature channel. See
-[docs/WORKLOG.md](docs/WORKLOG.md) for what was measured and what is still assumed.
+```
+ONLINE   capture ─┬─ YOLO-pose ──────────────┐
+                  ├─ YOLO cup once → UETrack ┤   (2D per camera)
+                  └─ PyrLK flow @ wrist, cup ┘
+                     ─────────────────────────────────────────
+OFFLINE           triangulate → consensus → SmoothNet → blend
+                  → segment (7 phases) → Murphy measures
+```
+
+Split at **the point a stage stops needing raw pixels**. Flow is online because it needs the frame
+*pair* (offline it would force a second full decode); SmoothNet is offline because it is a
+non-causal ±16-frame window. Full reasoning in [SPEC.md](docs/SPEC.md).
+
+| stage | module | what it does |
+|---|---|---|
+| cup detection | `cup_task.cup_detect` | YOLO, one-shot seed |
+| cup tracking | `cup_task.cup_track` + `consensus` | detect-once UETrack, ≥2-cam greedy consensus |
+| body keypoints | `cup_task.pose_keypoints` | YOLO-pose, COCO-17 upper body |
+| 3D triangulation | `cup_task.triangulate` | multi-view DLT |
+| temporal refinement | `cup_task.pose_smooth` | SmoothNet (pose **and** cup) |
+| wrist/cup velocity | `cup_task.flow_speed`, `speed_blend` | PyrLK flow → 3D velocity; speed-gated blend |
+| phase segmentation | `cup_task.segment` | 7 Murphy phases, van Andel definitions |
+| clinical measures | `cup_task.score` | 8/8 position measures |
+
+## Headline results
+
+Validated on DELTA, **n = 12** (P07+P08 × trial_10–15) against Qualisys OMC:
+
+| | |
+|---|---|
+| cup trajectory | displacement corr **0.9996**, median error **2.3 mm**, 100 % coverage |
+| wrist speed | **6.9 mm/s** per-frame, **20.9 mm/s** at the peak (6–7× better than the v1 baseline) |
+| segmentation | **0/83 missed phases**, every boundary within **0–67 ms** (≤4 frames) |
+| Murphy | peak_velocity **−46 %** error, movement_units **−50 %**, all 8 measures on all 12 trials |
+| realtime | 100 fps at 1 camera, 38.5 at 5 (GPU-bound); offline post-processing ~887 ms/trial |
+
+Full tables, caveats and the cohort exclusion in [RESULTS.md](docs/RESULTS.md).
 
 ## Keypoints
 
-YOLO-pose (COCO-17), full upper body — head (mouth proxy), shoulders, elbows,
-wrists, hips. Knees/ankles dropped (no signal for a seated drinking task). The
-mouth-proxy point (nose → eye/ear fallback) replaces the QTM head marker the old
-pipeline depended on, making scoring mocap-free.
+YOLO-pose (COCO-17), upper body — head (mouth proxy), shoulders, elbows, wrists, hips. Knees/ankles
+dropped (no signal for a seated drinking task). The mouth-proxy point (nose → eye/ear fallback)
+replaces the QTM head marker the research pipeline depended on, which is what makes scoring
+mocap-free.
 
-## Quick start
+## Layout
 
-```bash
-pip install ultralytics onnxruntime opencv-python   # torch already present
-cp ../object-tracking-master/yolo11n-pose.pt .
-
-# keypoints for one clip -> JSON
-python -m cup_task.pose_keypoints CLIP.mp4 -o out.pose.json
-
-# overlay video to eyeball it
-python scripts/visualize_pose.py CLIP.mp4 -o overlay.mp4
+```
+cup_task/        the pipeline modules
+scripts/         active harnesses (results_v3_delta, bench_v3, cup_flow_probe) + shared libs
+scripts/archive/ settled investigations, kept — see its README
+models/          pose + SmoothNet + UETrack weights (repo-persistent on purpose)
+cache/           cached detections/tracks/flow — the offline path runs from here with no GPU
+runs/segment/    cup YOLO weights (still referenced by cache_tracks.py)
+out/figures/     current figures cited by the docs
+archive/         settled outputs and checkpoints, kept — see its README
 ```
 
-## Notes
+## Setup
 
-- Cup model weights (`yolo11n-pose.pt` and the cup seg model) are copied in, not
-  versioned (see `.gitignore`).
-- Camera calibration lives in the source repo at `data/calib/PXX/calibration.toml`.
-- Metric definitions come from iMOVE and are not yet available on this machine;
-  `cup_task.score` is a placeholder until that spec lands.
+```bash
+conda activate object_tracking        # torch 2.7 + cu118, ultralytics 8.4.49
+pip install ultralytics opencv-python ezc3d huggingface_hub
+```
+
+Weights and data (`models/`, `cache/`, `runs/`, `data/`, `external/`) are **not versioned** — they are
+large and regenerable, but nothing is ever auto-deleted. If the UETrack weights go missing, re-fetch
+them from HuggingFace `kangben258/UETrack` into `models/trackers/uetrack/`.

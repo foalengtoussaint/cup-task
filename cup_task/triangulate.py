@@ -110,6 +110,70 @@ def kf_rts_smooth(cons: np.ndarray, fps: float = 60.0,
     return np.array([s[:3] for s in xs])
 
 
+def camera_jitter(per_cam: dict[str, list], point_fn, n_frames: int) -> dict[str, float]:
+    """Per-camera 2D jitter (median |3rd difference|, px) of one target's keypoint.
+
+    THE WEIGHT SOURCE for weighted_triangulate. Why the THIRD difference: successive
+    differences peel off what a real arm can legitimately do. The 1st is velocity (a moving
+    hand has plenty), the 2nd is acceleration (the reach has that too), but the 3rd is JERK
+    -- and a real arm, driven by muscle through soft tissue, cannot change its acceleration
+    abruptly at 60fps. So what survives the third difference is almost entirely ESTIMATION
+    NOISE. It is a high-pass filter: real motion is low-frequency and differences away,
+    detector noise is high-frequency and remains.
+
+    Why jitter and NOT the two obvious alternatives:
+
+      * NOT per-keypoint CONFIDENCE. Measured across cameras, confidence is INVERTED:
+        corr(median conf, median jitter) = +0.56 (yolo26s) / +0.79 (x). The most confident
+        cameras are the SHAKIEST -- cam_9 is 0.995 confident and the jitteriest (4.6px),
+        cam_8 is 0.981 and among the steadiest. Weighting by confidence would up-weight the
+        worst cameras. (WITHIN one camera confidence IS a valid per-frame signal, r = -0.3
+        to -0.64 vs jitter -- but that is a different question from ranking cameras.)
+
+      * NOT REPROJECTION RESIDUAL. It measures disagreement with the consensus, and thereby
+        assumes the consensus is TRUE. On this rig cam_4 has the worst wrist residual
+        (20.9mm vs cam_8's 7.5mm) -- yet its 2D jitter is BETTER than average (2.25px), and
+        DROPPING it makes the 3D noisier (3.34 -> 3.77mm). Watching the video, cam_4's own
+        2D keypoint sits on the wrist better than the reprojected consensus does. A camera
+        that is steady and RIGHT but outvoted looks identical, under a residual metric, to a
+        camera that is wrong. Do not build a weight on it.
+
+    Known limitation: jitter rewards SMOOTH WRONGNESS. A tracker that lags, or glides
+    confidently onto the wrong point, scores beautifully. This measures noise, not
+    correctness -- and it cannot settle whether the consensus itself is biased. That needs an
+    INDEPENDENT reference (MeTRAbs), not another statistic from the same cameras.
+    """
+    out: dict[str, float] = {}
+    for ckey, frames in per_cam.items():
+        xy = []
+        for f in range(min(n_frames, len(frames))):
+            p = point_fn(frames[f])
+            xy.append(p if p is not None else np.array([np.nan, np.nan]))
+        xy = np.asarray(xy, float)
+        if len(xy) < 4:
+            continue
+        d3 = np.linalg.norm(np.diff(xy, n=3, axis=0), axis=1)
+        j = np.nanmedian(d3)
+        if np.isfinite(j) and j > 0:
+            out[ckey] = float(j)
+    return out
+
+
+def weighted_triangulate(cams: list[CamCalib], pts: list[np.ndarray],
+                         weights: list[float]) -> np.ndarray:
+    """DLT with per-camera weights. Each camera contributes 2 rows; scale them by sqrt(w)
+    so the least-squares solution minimises the WEIGHTED sum of squared residuals."""
+    A = []
+    for cam, p, w in zip(cams, pts, weights):
+        P = cam.K @ np.hstack([cam.R, cam.t.reshape(3, 1)])
+        s = np.sqrt(max(w, 1e-9))
+        A.append(s * (p[0] * P[2] - P[0]))
+        A.append(s * (p[1] * P[2] - P[1]))
+    _, _, Vt = np.linalg.svd(np.asarray(A))
+    h = Vt[-1]
+    return h[:3] / h[3]
+
+
 def _cam_key_from_clip(clip_name: str) -> str | None:
     """`P07_..._142730.4.mp4` -> 'cam_4'. Returns None if no .N. suffix."""
     m = re.search(r"\.(\d+)\.mp4$", clip_name)
@@ -188,11 +252,24 @@ POINT_FN = {
 
 
 def triangulate_target(per_cam: dict[str, list], cams: dict[str, CamCalib],
-                       point_fn, n_frames: int) -> list[dict]:
-    """Per-frame robust 3D for one target. Returns [{frame, X, n_cams, reproj_px}]."""
+                       point_fn, n_frames: int, jitter_weight: bool = True) -> list[dict]:
+    """Per-frame robust 3D for one target. Returns [{frame, X, n_cams, reproj_px}].
+
+    With jitter_weight (default), cameras are weighted by 1/jitter^2 -- inverse-variance,
+    the right weighting when the errors are independent and you know their scale. A camera
+    whose 2D keypoint is shaky contributes proportionally less to the fit. Measured on the
+    P07 wrist: 3D jitter 3.34 -> 3.07mm (-8%), for free. See camera_jitter for why the weight
+    is JITTER and not confidence (inverted across cameras) or reprojection residual (assumes
+    the consensus is truth, and would wrongly discard cam_4).
+    """
+    weights = {}
+    if jitter_weight:
+        jit = camera_jitter(per_cam, point_fn, n_frames)
+        weights = {c: 1.0 / (j ** 2) for c, j in jit.items()}
+
     track = []
     for f in range(n_frames):
-        use_cams, use_pts = [], []
+        use_cams, use_pts, use_w = [], [], []
         for ckey, frames in per_cam.items():
             if ckey not in cams or f >= len(frames):
                 continue
@@ -200,7 +277,15 @@ def triangulate_target(per_cam: dict[str, list], cams: dict[str, CamCalib],
             if p is not None:
                 use_cams.append(cams[ckey])
                 use_pts.append(p)
+                use_w.append(weights.get(ckey, 1.0))
         X, keep, med = robust_triangulate(use_cams, use_pts)
+        if X is not None and jitter_weight and len(keep) >= MIN_CAMS:
+            # refit the surviving inliers, this time weighted
+            X = weighted_triangulate([use_cams[i] for i in keep],
+                                     [use_pts[i] for i in keep],
+                                     [use_w[i] for i in keep])
+            med = float(np.median([np.linalg.norm(project(use_cams[i], X)[0] - use_pts[i])
+                                   for i in keep]))
         track.append({
             "frame": f,
             "X": None if X is None else [round(float(v), 1) for v in X],

@@ -94,7 +94,7 @@ class CloudTracker:
                  min_inliers: int = 8, gate_consensus: bool = True,
                  anchor_px: float | None = 30.0, max_scale_dev: float | None = 0.01,
                  retire_deformed: bool = True, deslide: float | None = None,
-                 topup_every: bool = False):
+                 topup_every: bool = False, warmup: int = 5):
         self.calib = calib
         self.radius, self.height, self.n_seed = radius, height, n_seed
         self.fb_tol, self.min_cams = fb_tol, min_cams
@@ -149,6 +149,15 @@ class CloudTracker:
         # contributes from its second frame with no history behind it, so the cloud is diluted
         # with young, less-settled points. Turn it ON if coverage matters more than precision.
         self.topup_every = topup_every
+        # WARMUP: suppress the first `warmup` frames after each seed(). A freshly-seeded cohort is
+        # aperture-limited -- ALL its tracks are still hunting for texture -- so the whole frame's
+        # speed is noisy (cohort age 0-4: 44.7 mm/s vs 30+: ~8 mm/s). Because the cloud is a
+        # UNIFORM-age cohort (seed() is a mass reset), maturity is a per-FRAME property, and the
+        # only handle on it is refusing the young-cohort frames. Measured n=12: suppress<5 gives
+        # 14.70 -> 13.42 median, 12/12 trials, at coverage 74->67% (the dropped frames were the
+        # 44.7 mm/s ones). 0 disables.
+        self.warmup = warmup
+        self._cohort_age = 10**9
         self._topup_n = 0
         self._track_prev3d: dict[int, np.ndarray] = {}
         self._px: dict[str, np.ndarray] = {}      # cam -> (K,2) current pixel per track (NaN = lost)
@@ -217,6 +226,7 @@ class CloudTracker:
             self._px[cam] = pts
         self._prev_gray = {c: g.copy() for c, g in gray.items()}
         self._offset_ref = {}         # offsets are per-seed; a reseed invalidates them
+        self._cohort_age = 0          # frames since this cohort was seeded (mass reset)
         self._prev_cloud = None       # a reseed breaks track identity; do not difference across it
         self._prev_ids = None
         self._track_prev3d = {}       # ids are REUSED after a reseed -- stale continuity would
@@ -356,6 +366,7 @@ class CloudTracker:
             if np.isfinite(cup_xyz).all():
                 self.seed(gray, cup_xyz)
             return None
+        self._cohort_age += 1
         self._track_forward(gray)
         if kp_by_cam:
             self._deslide(kp_by_cam)      # correct slow drift BEFORE culling on it
@@ -393,7 +404,8 @@ class CloudTracker:
                         else:
                             scale_ok = False
                     if (v["linear_velocity"] is not None and scale_ok
-                            and v["n_inliers"] >= self.min_inliers):
+                            and v["n_inliers"] >= self.min_inliers
+                            and self._cohort_age >= self.warmup):
                         res.linear_velocity = v["linear_velocity"]
                         res.linear_speed = v["linear_speed"]
                         res.angular_velocity = v["angular_velocity"]

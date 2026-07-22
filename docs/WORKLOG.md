@@ -3629,3 +3629,31 @@ WHAT THIS DOES AND DOES NOT CHANGE:
 The corrected picture is simpler and sharper: maturity is a property of the COHORT/frame, not of
 individual tracks within a frame, so it cannot be exploited by per-track selection -- only by
 reseeding as rarely as possible, which is the existing policy.
+
+### THE MATURITY EFFECT IS EXPLOITABLE AFTER ALL -- as a per-cohort WARMUP suppression
+
+Reconciling the contradiction the user kept pressing: the cloud is a UNIFORM-age cohort (seed() is
+a mass reset), so "residual falls with track age" is really "frame error falls with COHORT age --
+frames since the last reseed". Measured directly (frame speed error vs cohort age):
+    cohort age  0-4:  44.7 mm/s   |  15-19: 17.8  |  30-34:  7.4  |  40+: 10.9
+A fresh cohort is aperture-limited ALL AT ONCE (every window still hunting for texture), so the
+whole frame is noisy; as the cohort ages together, every track settles and the frame goes clean.
+This is the aperture-problem mechanism, correctly scoped to the FRAME not the individual track.
+
+**And it IS exploitable -- suppress the first `warmup` frames after each seed():**
+    warmup=0  14.70 median / cov 74%
+    warmup=5  13.42 / 67%   (12/12 trials, paired -0.92)   <- new default
+    warmup=8  12.47 / 61%   (12/12, paired -1.57)
+This is NOT coverage selection: it drops SPECIFIC, IDENTIFIABLE bad frames (the 44.7 mm/s young-
+cohort warmup), by a signal the tracker actually has (frames since reseed), not "whatever frames had
+mature tracks". Monotonic and 12/12. Wired as `warmup=5` default; verified the gate returns 0%
+of answers at cohort age <5 and reproduces the probe to the decimal.
+
+⚠ ONE FALSE ALARM on the way: a 4-trial spot check of the WIRED version read 18.38 -> 18.97 (worse),
+which looked like a wiring bug. It was small-sample noise on trials[:2] of a different loop -- the
+full 12-trial run matches the probe exactly. Lesson yet again: 2-4 trials cannot resolve a ~1 mm/s
+effect; only the paired full-cohort run is trustworthy.
+
+THIS IS THE FIRST THING IN THE LONG RESEED/MATURITY THREAD THAT SURVIVES EVERY TEST. The user's
+instinct -- that a real maturity effect must be usable -- was correct; it just had to be applied
+per-cohort (skip each cohort's warmup) rather than per-track (which RANSAC already handles).

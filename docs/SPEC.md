@@ -39,8 +39,8 @@ The pipeline splits at **the point where a stage stops needing raw pixels**.
          │      OFFLINE — per trial, numbers only (no pixels, no GPU needed)     │
          ▼                      ▼                        ▼                      ▼
   ┌─────────────┐      ┌──────────────────┐      ┌──────────────────────────────────┐
-  │ triangulate │      │ greedy consensus │      │ triangulate {p} and {p+flow},    │
-  │ (DLT, ≥2    │      │ ≥2 cams, 150mm   │      │ difference → 3D VELOCITY VECTOR  │
+  │ triangulate │      │ greedy consensus │      │ solve u̇ = J(X)·v across cams,   │
+  │ (DLT, ≥2    │      │ ≥2 cams, 150mm   │      │ L1/IRLS → 3D VELOCITY VECTOR     │
   │  cameras)   │      │ continuity gate  │      │ (never differentiates position)  │
   └──────┬──────┘      └────────┬─────────┘      └────────────────┬─────────────────┘
     triangulate            consensus                         flow_speed
@@ -115,12 +115,27 @@ Differentiating a position track amplifies its noise. Optical flow measures the 
 between two frames **directly**, so it never sees that noise:
 
 ```
-v3d(t) = ‖ triangulate{p_c + flow_c} − triangulate{p_c} ‖ × fps
+X       = triangulate{p_c}                    # where the target is, this frame
+u̇_c = J_c(X) · v                              # what camera c would see if it moved at v
+v3d(t)  = ‖ argmin_v Σ_c ‖J_c(X)·v − flow_c‖ ‖ × fps      # L1/IRLS, no threshold
 ```
 
-Both triangulations use the same cameras and calibration, so common-mode calibration error cancels
-and only motion survives. It is a **velocity measurement, not a position derivative** — nothing is
-differenced across time.
+It is a **velocity measurement, not a position derivative** — nothing is differenced across time,
+and common-mode calibration error cancels because every camera is referred to the same `X`.
+
+**Why the Jacobian rather than differencing two triangulations** (`triangulate{p+flow} −
+triangulate{p}`, the pre-2026-07-22 form, still available as `fuser="dlt2"`): a camera looking
+*along* the direction of motion sees almost no pixel displacement, and the two-triangulation form
+weights its near-zero, noise-dominated reading equally with a camera looking across the motion.
+`J` encodes exactly that visibility. Viewing geometry is the **largest** driver of per-camera flow
+error — a camera looking along the motion has ~2× the relative error — so this is the one estimator
+that models the dominant term. Measured 20.53 vs 21.71 mm/s.
+
+**Why L1 rather than least squares:** least squares has breakdown point 0, so one camera reading an
+occluder's motion moves the answer. IRLS with `w = 1/‖r‖` minimises `Σ‖r‖` (a geometric-median-like
+solution), capping each camera's *influence* by its own error. It replaced a leave-one-out
+consensus gate that did the same job with two tuned constants; they measure the same on this cohort,
+so the tie-break was the absence of knobs. See RESULTS §10.
 
 **Which cameras, and which points:**
 

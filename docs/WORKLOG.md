@@ -2359,3 +2359,46 @@ n=6 was too thin to pin `loo`, and the entire "2x" rested on that.
 
 Scripts: flow_gating_matrix.py, flow_model_shootout.py, flow_3d_survival.py, fuser_validate.py
 (per-frame arrays saved to out/figures/*.npz so tail/threshold questions need no GPU recompute).
+
+### ...then ADOPTED anyway, after asking the right question (fuser_noninferior.py)
+
+User: "even if l1 was not better but just not worse I'd still prefer it because it's an actual
+mechanistic thing that we can explain." That reframes the test from SUPERIORITY to NON-INFERIORITY,
+and the reframe changed the answer. Also asked "is loo the consensus mechanism? why is it only one
+that can be removed" -- which caught TWO errors in my write-up above:
+
+  * LOO is ITERATIVE (a while-loop, up to 2 drops from 5), not "drop one". I had described it
+    correctly in prose and then compared it as if `trimmed` were its near-equivalent.
+  * My harness called flow_consensus_cams with NO `max_drop`, while the docstring's own measured
+    optimum is PER TARGET (wrist 2, cup 3). So the head-to-head was unfair in opposite directions
+    on the two targets. (Production also ships uncapped -- the per-target optima were measured but
+    never wired in, which is its own finding.)
+
+Re-run with both caps, and a paired bootstrap resampling TRIALS (not peaks -- peaks within a trial
+share a geometry and a participant, so 24 peaks are not 24 independent samples):
+
+  * `max_drop=3` is UNREACHABLE: 5 cameras, min 3 kept => at most 2 drops. loo_cap3 is
+    bit-identical to uncapped. The docstring's "CUP 3:19.4 <- keeps improving" describes a setting
+    that cannot differ from the default.
+  * Against loo at its BEST setting (cap2) the cup gap VANISHES:
+        wrist  l1 - loo_cap2 = -4.03 mm/s  CI [-14.32, +3.25]
+        cup    l1 - loo_cap2 = +1.46 mm/s  CI [ -4.27, +9.17]   <- straddles 0
+    NOT DISTINGUISHABLE. My "loo wins the cup" rested on comparing against the uncapped variant.
+
+ADOPTED: l1 is the default fuser, gate_flow now OFF. Tie on numbers => the tie-break is that l1 has
+NO tuned constants while the LOO gate has `tol=20.0` AND a per-target `max_drop`.
+
+AND IT IS BETTER ON THE SHIPPING PATH, on BOTH targets: wrist 18.41 -> 18.19, cup 19.61 -> 18.66.
+The cup IMPROVES even though the isolated probe showed a regression -- because l1 composes with the
+GEOMETRIC consensus (gate_consensus, still on) better than the LOO gate did, and the probe had that
+pathway disabled. A probe that isolates a component can invert the sign of its effect in situ.
+
+End-to-end (results_v3_delta.py) the diff is SIX LINES -- only the flow and blend rows move:
+    flow   per-frame 8.4->7.2  off-peak 5.2->4.4  peak 49.3->34.2  max 257.3->184.8  time 83->65ms
+    BLEND  per-frame 6.8->6.7  off-peak 4.5->4.0  peak 15.0->17.0  max  85.7-> 73.4
+Segmentation boundaries and all 8 Murphy position measures are BYTE-IDENTICAL.
+
+Code moved into cup_task/flow_speed.py (projection_jacobian + solve_velocity), verified
+bit-identical to the probe on 200 random cases before switching the default. flow_consensus_cams
+pins itself to fuser="dlt2" internally -- its `tol` was tuned against that fuser, so letting it
+inherit the new default would silently change what the threshold means.

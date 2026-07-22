@@ -68,12 +68,16 @@ class FlowSpeedOnline:
     """
 
     def __init__(self, calib: dict, fps: float = FPS, min_cams: int = 2,
-                 gate_consensus: bool = True, gate_flow: bool = True):
+                 gate_consensus: bool = True, gate_flow: bool = False,
+                 fuser: str = "l1"):
         self.calib = calib
         self.fps = fps
         self.min_cams = min_cams
-        self.gate_consensus = gate_consensus       # see speed_from_cached_flow for the measurement
-        self.gate_flow = gate_flow                 # leave-one-out on the flow vectors themselves
+        self.gate_consensus = gate_consensus       # GEOMETRIC gate on POSITIONS -- still ON
+        # LOO gate on the FLOW VECTORS -- now OFF by default: the l1 fuser does this job with no
+        # `tol` and no per-target `max_drop`. Stacking both is redundant (they fix the same thing).
+        self.gate_flow = gate_flow
+        self.fuser = fuser
         self._prev: dict[str, np.ndarray] = {}
         self._prev3d = None
 
@@ -118,7 +122,7 @@ class FlowSpeedOnline:
             if len(keep) >= self.min_cams:
                 obs_p = {c: obs_p[c] for c in keep}
                 obs_pv = {c: obs_pv[c] for c in keep}
-        return speed_from_flow_obs(obs_p, obs_pv, self.calib, self.fps, self.min_cams)
+        return speed_from_flow_obs(obs_p, obs_pv, self.calib, self.fps, self.min_cams, self.fuser)
 
 
 OCCLUDER_CONE_DEG = 10.0     # angular radius around the camera->target ray
@@ -191,15 +195,17 @@ def flow_consensus_cams(obs_p: dict, obs_pv: dict, calib: dict, fps: float = FPS
     while len(cams) >= 3:
         if max_drop is not None and n0 - len(cams) >= max_drop:
             break
+        # NB: "dlt2" on purpose -- `tol` below was tuned against the two-triangulation fuser, so
+        # this gate must keep using it or the threshold silently changes meaning.
         base = velocity_from_flow_obs({c: obs_p[c] for c in cams},
-                                      {c: obs_pv[c] for c in cams}, calib, fps, 2)
+                                      {c: obs_pv[c] for c in cams}, calib, fps, 2, "dlt2")
         if not np.isfinite(base).all():
             break
         worst, wc = -1.0, None
         for c in cams:
             sub = [x for x in cams if x != c]
             v = velocity_from_flow_obs({k: obs_p[k] for k in sub},
-                                       {k: obs_pv[k] for k in sub}, calib, fps, 2)
+                                       {k: obs_pv[k] for k in sub}, calib, fps, 2, "dlt2")
             if not np.isfinite(v).all():
                 continue
             d = float(np.linalg.norm(v - base))
@@ -255,39 +261,130 @@ def occluded_by(target_xyz, occluder_xyz, cal,
     return bool(ang < cone_deg)
 
 
-def velocity_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
-                           fps: float = FPS, min_cams: int = 2) -> np.ndarray:
-    """Triangulate {p} and {p+flow} and difference them -> 3D VELOCITY VECTOR (mm/s).
+def projection_jacobian(cal, X) -> np.ndarray | None:
+    """d(pixel)/d(world position) at X for this camera -- the 2x3 projection Jacobian.
 
-    The vector, not just its magnitude. Direction is free here -- the difference of the two
-    triangulations is already a displacement in 3D -- and it is what lets a caller ask "is the
-    target moving TOWARD or AWAY from somewhere" without ever differentiating a position track.
+    This is what makes a camera's contribution HONEST: a camera looking along the direction of
+    motion sees almost no pixel displacement, and J encodes exactly that, so the fit stops treating
+    its (tiny, noise-dominated) reading as equally informative. Measured: this is the single largest
+    driver of per-camera flow error -- a camera looking ALONG the motion has ~2x the relative error
+    of one looking ACROSS it.
+    """
+    R_ = np.asarray(cal.R); t = np.asarray(cal.t).ravel(); K = np.asarray(cal.K)
+    Xc = R_ @ np.asarray(X) + t
+    x, y, z = Xc
+    if z <= 1:
+        return None
+    fx, fy = K[0, 0], K[1, 1]
+    return np.array([[fx / z, 0, -fx * x / z ** 2],
+                     [0, fy / z, -fy * y / z ** 2]]) @ R_
+
+
+def solve_velocity(rows, mode: str = "l1", fps: float = FPS,
+                   huber_k: float = 1.5, iters: int = 8) -> np.ndarray | None:
+    """rows = [(J_2x3, flow_2), ...] -> 3D velocity (mm/s), solving u_dot = J v.
+
+    `mode` selects ONLY the loss, never the model:
+        plain    least squares. Breakdown point 0 -- one bad camera moves the answer arbitrarily.
+        l1       DEFAULT. IRLS with w = 1/|r|, so minimising sum(w*|r|^2) == minimising sum|r|:
+                 a geometric-median-like solution. A camera's INFLUENCE is capped by its own
+                 error (twice as wrong => half the weight), so nothing is ever hard-dropped and
+                 there is NO threshold anywhere. The only constant is a 1e-3 floor against
+                 division by zero.
+        huber    quadratic near zero, linear in the tail. Needs a tuning constant (huber_k).
+        trimmed  drop the single worst-residual camera. No threshold, but a hard decision.
+    """
+    if len(rows) < 2:
+        return None
+    A = np.vstack([r[0] for r in rows])
+    b = np.concatenate([r[1] for r in rows])
+    if mode == "plain":
+        v, *_ = np.linalg.lstsq(A, b, rcond=None)
+        return v * fps
+    if mode == "trimmed" and len(rows) >= 3:
+        v, *_ = np.linalg.lstsq(A, b, rcond=None)
+        res = (A @ v - b).reshape(-1, 2)
+        keep = [i for i in range(len(rows)) if i != int(np.argmax(np.linalg.norm(res, axis=1)))]
+        A = np.vstack([rows[i][0] for i in keep])
+        b = np.concatenate([rows[i][1] for i in keep])
+        v, *_ = np.linalg.lstsq(A, b, rcond=None)
+        return v * fps
+    v, *_ = np.linalg.lstsq(A, b, rcond=None)
+    for _ in range(iters):
+        r = (A @ v - b).reshape(-1, 2)
+        rn = np.linalg.norm(r, axis=1)
+        if mode == "huber":
+            s = 1.4826 * np.median(rn) + 1e-6
+            w = np.where(rn <= huber_k * s, 1.0, huber_k * s / np.maximum(rn, 1e-9))
+        else:                                    # l1
+            w = 1.0 / np.maximum(rn, 1e-3)
+        W = np.repeat(w, 2)[:, None]
+        v, *_ = np.linalg.lstsq(A * W, b * W[:, 0], rcond=None)
+    return v * fps
+
+
+def velocity_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
+                           fps: float = FPS, min_cams: int = 2,
+                           fuser: str = "l1") -> np.ndarray:
+    """Per-camera flow vectors -> ONE 3D VELOCITY VECTOR (mm/s), robustly fused.
+
+    The vector, not just its magnitude. Direction is free here and it is what lets a caller ask "is
+    the target moving TOWARD or AWAY from somewhere" without ever differentiating a position track.
     That matters because differentiating position is precisely what injects the noise this whole
     module exists to avoid (a ~1mm per-frame positional wobble becomes ~60mm/s of phantom speed).
+
+    HOW: solve u_dot = J(X) v across cameras (see projection_jacobian), with an L1/IRLS loss (see
+    solve_velocity). Both parts are general geometric/statistical mechanisms with NO tuned
+    constants. `fuser="plain"` recovers ordinary least squares.
+
+    WHY NOT the older two-triangulation difference (triangulate {p} and {p+flow}, subtract): it
+    weights every camera equally regardless of whether that camera can SEE the motion, and it is a
+    least-squares fit with breakdown point 0. Measured 20.53 vs 21.71 mm/s for the Jacobian form.
+    Pass fuser="dlt2" if you need the old behaviour for a back-to-back comparison.
+
+    ⚠ The L1 fuser replaced the `flow_consensus_cams` LOO gate as the default robustifier
+    (2026-07-22). They are NOT DISTINGUISHABLE on this cohort -- paired bootstrap over 12 trials,
+    l1 - loo(cap2): wrist -4.03 mm/s CI [-14.32, +3.25], cup +1.46 CI [-4.27, +9.17] -- so the
+    tie-break is mechanistic: l1 has no `tol` and no per-target `max_drop`, while the LOO gate has
+    both and its own docstring put the optimal cap at 2 for the wrist but 3 for the cup.
     """
     from cup_task.kalman_3d import triangulate_dlt
     nan3 = np.full(3, np.nan)
     cams = [c for c in obs_p if c in obs_pv and c in calib]
     if len(cams) < min_cams:
         return nan3
-    Xp = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_p[c]) for c in cams])
-    Xv = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_pv[c]) for c in cams])
-    if Xp is None or Xv is None:
+    if fuser == "dlt2":
+        Xp = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_p[c]) for c in cams])
+        Xv = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_pv[c]) for c in cams])
+        if Xp is None or Xv is None:
+            return nan3
+        return (np.asarray(Xv, float) - np.asarray(Xp, float)) * fps
+
+    X = triangulate_dlt([calib[c] for c in cams], [np.asarray(obs_p[c]) for c in cams])
+    if X is None:
         return nan3
-    return (np.asarray(Xv, float) - np.asarray(Xp, float)) * fps
+    rows = []
+    for c in cams:
+        J = projection_jacobian(calib[c], X)
+        if J is not None:
+            rows.append((J, np.asarray(obs_pv[c], float) - np.asarray(obs_p[c], float)))
+    if len(rows) < min_cams:
+        return nan3
+    v = solve_velocity(rows, fuser, fps)
+    return nan3 if v is None else np.asarray(v, float)
 
 
 def speed_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
-                        fps: float = FPS, min_cams: int = 2) -> float:
+                        fps: float = FPS, min_cams: int = 2, fuser: str = "l1") -> float:
     """Scalar 3D speed (mm/s), NaN if too few cameras. Magnitude of velocity_from_flow_obs, so
     the online and offline paths compute the identical number from one implementation."""
-    v = velocity_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
+    v = velocity_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams, fuser)
     return float(np.linalg.norm(v)) if np.isfinite(v).all() else float("nan")
 
 
 def velocity_from_cached_flow(px: dict[str, np.ndarray], flow: dict[str, np.ndarray],
                               calib: dict, n: int, fps: float = FPS,
-                              min_cams: int = 2) -> np.ndarray:
+                              min_cams: int = 2, fuser: str = "l1") -> np.ndarray:
     """OFFLINE path -> (n,3) 3D VELOCITY track (mm/s), NaN rows where too few cameras.
 
     Same geometry as speed_from_cached_flow, but keeps the direction. Use this when a caller needs
@@ -303,7 +400,7 @@ def velocity_from_cached_flow(px: dict[str, np.ndarray], flow: dict[str, np.ndar
                     and np.isfinite(px[c][f]).all() and np.isfinite(flow[c][f]).all()):
                 obs_p[c] = px[c][f]
                 obs_pv[c] = px[c][f] + flow[c][f]
-        out[f] = velocity_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
+        out[f] = velocity_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams, fuser)
     return out
 
 
@@ -328,7 +425,7 @@ def radial_velocity(vel_xyz: np.ndarray, pos_xyz: np.ndarray, origin: np.ndarray
 def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.ndarray],
                            calib: dict, n: int, fps: float = FPS,
                            min_cams: int = 2, gate_consensus: bool = True,
-                           gate_flow: bool = True,
+                           gate_flow: bool = False, fuser: str = "l1",
                            target_xyz=None, occluder_xyz=None,
                            cone_deg: float = OCCLUDER_CONE_DEG) -> np.ndarray:
     """OFFLINE path: per-camera 2D points + precomputed per-camera flow -> (n,) 3D speed track.
@@ -353,6 +450,12 @@ def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.n
         MOVING err 25.3 -> 22.0 mm/s      (also improves)
     That single mask is what makes flow usable as a segmenter gate at all: first crossing of
     FWD_ON vs OMC goes 633ms -> 250ms, beating SmoothNet's 400ms.
+
+    `gate_flow` (default OFF since 2026-07-22): the LOO consensus on the flow vectors. Superseded
+    by the `l1` fuser, which robustifies the same fit with no `tol` and no per-target `max_drop`.
+    They are not distinguishable numerically (paired bootstrap over 12 trials, l1 - loo(cap2):
+    wrist -4.03 mm/s CI [-14.32,+3.25], cup +1.46 CI [-4.27,+9.17]), so the tie-break is the
+    absence of tuned constants. Stacking both is redundant -- they fix the same failure.
 
     NOTE the points are the RAW DETECTED pixels (YOLO keypoint / UETrack point), never a
     reprojection of the 3D consensus. Flow must be measured where the image evidence is; a
@@ -389,7 +492,7 @@ def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.n
             if len(keep) >= min_cams:
                 obs_p = {c: obs_p[c] for c in keep}
                 obs_pv = {c: obs_pv[c] for c in keep}
-        out[f] = speed_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
+        out[f] = speed_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams, fuser)
     return out
 
 

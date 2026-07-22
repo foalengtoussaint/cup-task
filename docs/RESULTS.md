@@ -115,12 +115,16 @@ covering the extra 22 % — the occluded apex v1 fails to produce.
 |---|---|---|---|---|---|---|---|
 | pos-diff (v1) | 42.7 | 40.9 | 142.3 | 281.6 | 562.0 | 74 ms | 333 ms |
 | SmoothNet | 10.6 | 7.2 | 21.0 | 48.0 | 82.3 | 52 ms | 233 ms |
-| flow (PyrLK) | 8.3 | **5.0** | 60.8 | 136.7 | 162.0 | 65 ms | 267 ms |
-| **blend** | **6.9** | **5.0** | **20.9** | **47.9** | 85.7 | **48 ms** | 217 ms |
+| flow (PyrLK, `l1`) | 7.2 | 4.4 | 34.2 | 129.4 | 184.8 | 65 ms | 200 ms |
+| **blend** | **6.7** | **4.0** | **17.0** | **44.8** | **73.4** | **48 ms** | 217 ms |
 
 All mm/s vs OMC. **The blend wins or ties every column** — flow's clean off-peak plus SmoothNet's
-accurate peak. Versus the v1 baseline: **6× better per-frame, 7× better at the peak**, and peak
+accurate peak. Versus the v1 baseline: **6× better per-frame, 8× better at the peak**, and peak
 velocity is a Murphy measure.
+
+Flow and blend both improved when the `l1` fuser replaced the LOO gate (§10): flow per-frame
+8.4 → 7.2 and its worst peak 257 → 185; blend off-peak 4.5 → 4.0 and worst peak 85.7 → 73.4, at the
+cost of peak median 15.0 → 17.0. Nothing else in the end-to-end output moved.
 
 ## 4. Cup speed — flow transfers from the wrist
 
@@ -521,10 +525,31 @@ fails as **one camera, sustained occlusion** (hard-dropping is right; soft down-
 the bad camera vote), the wrist as **transient blur across several cameras** (a median-like estimator
 survives it; a fixed threshold is too often on the wrong side).
 
-**Decision: fuser unchanged.** No fuser is uniformly better, so a global swap trades a wrist gain for
-a cup regression, and per-target fusers would be two code paths chosen on n = 12. `trimmed` is the
-runner-up worth revisiting first — zero knobs, one refit instead of eight, second-best on the cup, and
-better wrist *tails* than `loo` (p90 143 / max 165 vs 150 / 270).
+**Two corrections to the table above, both found by testing non-inferiority instead of superiority**
+(`scripts/fuser_noninferior.py`, paired bootstrap resampling **trials**, not peaks — peaks within a
+trial share a geometry and a participant):
+
+1. **`max_drop=3` is unreachable.** With 5 cameras and `min 3 kept` the LOO loop can drop at most 2,
+   so `loo_cap3` is bit-identical to uncapped. The docstring's "CUP 3: 19.4 ← keeps improving" was
+   describing a setting that cannot differ from the default.
+2. **Compared at `loo`'s *best* setting (cap2), the cup gap vanishes:** `l1 − loo_cap2` = **+1.46 mm/s,
+   95 % CI [−4.27, +9.17]** — straddles zero. Wrist: **−4.03, CI [−14.32, +3.25]**. The two fusers are
+   **not distinguishable on this cohort**; the earlier "loo wins the cup" rested on comparing against
+   the uncapped variant.
+
+**Decision: `l1` adopted as the default** (2026-07-22), `gate_flow` (the LOO gate) now **off**. The
+numbers tie, so the tie-break is mechanistic: `l1` carries **no tuned constants**, while the LOO gate
+carries `tol = 20.0` *and* a `max_drop` whose own docstring put the optimum at 2 for the wrist but 3
+for the cup — a per-target fork that was measured but never wired into production.
+
+Measured on the **shipping** path (`speed_from_cached_flow`, geometric `gate_consensus` still on),
+`l1` is better on **both** targets — wrist 18.41 → **18.19**, cup 19.61 → **18.66** mm/s. The cup
+*improves* here although the isolated probe showed a regression, because `l1` composes with the
+geometric consensus better than the LOO gate did; the probe had that pathway disabled. End-to-end,
+only the flow and blend rows of the speed table move — segmentation and all Murphy measures are
+byte-identical.
+
+`trimmed` remains the runner-up if this is ever revisited (zero knobs, one refit instead of eight).
 
 ⚠ **Tried and rejected — all mechanism-free tuning that did not survive the full cohort:** a
 Laplacian sharpness gate (24.3 vs 21.9 ungated), PyrLK's own `minEigThreshold` (default 1e-4 rejects

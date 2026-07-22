@@ -90,7 +90,8 @@ class CloudTracker:
     def __init__(self, calib: dict, radius: float = 40.0, height: float = 95.0,
                  n_seed: int = 24, fb_tol: float = FB_TOL, min_cams: int = MIN_CAMS,
                  units_per_metre: float = 1000.0, reseed_below: int = RESEED_BELOW,
-                 min_inliers: int = 8):
+                 min_inliers: int = 8, gate_consensus: bool = True,
+                 anchor_px: float | None = 30.0):
         self.calib = calib
         self.radius, self.height, self.n_seed = radius, height, n_seed
         self.fb_tol, self.min_cams = fb_tol, min_cams
@@ -103,6 +104,19 @@ class CloudTracker:
         # nearly unconstrained. Returning NaN loses coverage honestly; returning the number
         # loses accuracy silently.
         self.min_inliers = min_inliers
+        self.gate_consensus = gate_consensus
+        # ANCHOR: drop a track whose pixel drifts further than this from the frame's own detected
+        # keypoint. We HAVE a keypoint every frame, so a track that wanders off the object is
+        # detectable without any appearance model -- it is simply too far from where the object is.
+        # None disables. Expressed in px because that is where the drift happens.
+        # Measured n=12 (cup MOVING error vs OMC / coverage), with the consensus gate on:
+        #     no anchor  22.2 / 97.7%      40px  18.0 / 97.7%
+        #     30px       16.0 / 96.6%      25px  15.2 / 93.5%   (15px kills every track)
+        # Monotonic and replicating (30px beats no-anchor on 11/12 trials), unlike the n_seed
+        # sweep that looked good on one trial and reversed across the cohort. 30px is the default
+        # because 25px buys 0.8mm/s for 3 points of coverage.
+        self.anchor_px = anchor_px
+        self._track_prev3d: dict[int, np.ndarray] = {}
         self._px: dict[str, np.ndarray] = {}      # cam -> (K,2) current pixel per track (NaN = lost)
         self._prev_gray: dict[str, np.ndarray] = {}
         self._prev_cloud: np.ndarray | None = None
@@ -128,6 +142,8 @@ class CloudTracker:
         self._prev_gray = {c: g.copy() for c, g in gray.items()}
         self._prev_cloud = None       # a reseed breaks track identity; do not difference across it
         self._prev_ids = None
+        self._track_prev3d = {}       # ids are REUSED after a reseed -- stale continuity would
+                                      # let consensus3 accept a new track against an old position
 
     # -- per-frame ----------------------------------------------------------------------------
     def _track_forward(self, gray: dict) -> None:
@@ -152,7 +168,17 @@ class CloudTracker:
         self._prev_gray = {c: g.copy() for c, g in gray.items()}
 
     def _lift(self) -> tuple[np.ndarray, np.ndarray]:
-        """Triangulate each surviving track -> (cloud (M,3), ids (M,)). Identity preserved."""
+        """Triangulate each surviving track -> (cloud (M,3), ids (M,)). Identity preserved.
+
+        ⚠ EACH TRACK IS CONSENSUS-GATED INDEPENDENTLY, which the first version did not do and
+        which is why its cloud was not rigid. A track that drifts in ONE camera still gets
+        triangulated from every camera that has it, and that one bad 2D point drags the 3D
+        position -- measured, points that should sit at a fixed radius on a 40mm cup wandered with
+        29mm std. `consensus3` is the repo's existing answer to exactly this ("which cameras agree
+        about where this point is"), applied here PER TRACK rather than once for the whole object.
+        A track whose cameras cannot agree contributes nothing instead of contributing a lie.
+        """
+        from cup_task import consensus as _cons
         from cup_task.kalman_3d import triangulate_dlt
         cams = [c for c in self._px if c in self.calib]
         if not cams:
@@ -160,22 +186,53 @@ class CloudTracker:
         K = len(next(iter(self._px.values())))
         pts, ids = [], []
         for k in range(K):
-            use = [c for c in cams if np.isfinite(self._px[c][k]).all()]
-            if len(use) < self.min_cams:
+            obs = {c: tuple(self._px[c][k]) for c in cams if np.isfinite(self._px[c][k]).all()}
+            if len(obs) < self.min_cams:
                 continue
-            X = triangulate_dlt([self.calib[c] for c in use],
-                                [np.asarray(self._px[c][k]) for c in use])
+            if self.gate_consensus and len(obs) >= 2:
+                X, kept, _ = _cons.consensus3(obs, self.calib, prev=self._track_prev3d.get(k))
+                if X is None or len(kept) < self.min_cams:
+                    continue
+            else:
+                use = list(obs)
+                X = triangulate_dlt([self.calib[c] for c in use],
+                                    [np.asarray(obs[c]) for c in use])
             if X is not None and np.isfinite(X).all():
+                X = np.asarray(X, float)
+                self._track_prev3d[k] = X
                 pts.append(X); ids.append(k)
         return (np.array(pts) if pts else np.empty((0, 3))), np.array(ids, int)
 
-    def update(self, gray: dict, cup_xyz: np.ndarray, dt: float) -> FrameResult | None:
-        """One frame. `cup_xyz` is the cup's 3D position (consensus tracker) for seeding only."""
+    def _anchor(self, kp_by_cam: dict) -> None:
+        """Kill tracks that have drifted too far from THIS frame's detected keypoint.
+
+        The detection is available every frame, so a track that has slid off the object announces
+        itself geometrically -- no appearance model, no template, no threshold on similarity. This
+        is the cheap half of "we already have a mechanism to filter bad tracks".
+        """
+        if self.anchor_px is None:
+            return
+        for cam, pts in self._px.items():
+            kp = kp_by_cam.get(cam)
+            if kp is None or not np.isfinite(np.asarray(kp, float)).all():
+                continue
+            d = np.linalg.norm(pts - np.asarray(kp, float), axis=1)
+            pts[d > self.anchor_px] = np.nan
+
+    def update(self, gray: dict, cup_xyz: np.ndarray, dt: float,
+               kp_by_cam: dict | None = None) -> FrameResult | None:
+        """One frame. `cup_xyz` = cup 3D position (seeding + reseeding).
+
+        `kp_by_cam` = this frame's detected 2D keypoint per camera. Optional but recommended: it
+        is what lets `anchor_px` cull tracks that have slid off the object.
+        """
         if not self._px or not np.isfinite(cup_xyz).all():
             if np.isfinite(cup_xyz).all():
                 self.seed(gray, cup_xyz)
             return None
         self._track_forward(gray)
+        if kp_by_cam:
+            self._anchor(kp_by_cam)
         cloud, ids = self._lift()
 
         res = None

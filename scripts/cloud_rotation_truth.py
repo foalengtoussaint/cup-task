@@ -67,6 +67,8 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--trials", type=int, default=2)
     ap.add_argument("--nseed", type=int, default=48)
+    ap.add_argument("--anchor", type=float, default=None,
+                    help="px: drop tracks drifting further than this from the frame's keypoint")
     a = ap.parse_args(argv)
 
     import cv2
@@ -104,7 +106,8 @@ def main(argv=None):
                     caps[c] = cv2.VideoCapture(str(v))
             if not caps:
                 continue
-            trk = CloudTracker({c: calib[c] for c in caps}, n_seed=a.nseed, units_per_metre=1.0)
+            trk = CloudTracker({c: calib[c] for c in caps}, n_seed=a.nseed, units_per_metre=1.0,
+                               anchor_px=a.anchor)
             w_mmc = np.full(n, np.nan)
             for f in range(n):
                 gray = {}
@@ -114,7 +117,9 @@ def main(argv=None):
                         gray[c] = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
                 if len(gray) < 2 or f >= len(cup3) or not np.isfinite(cup3[f]).all():
                     continue
-                r = trk.update(gray, cup3[f], dt=1.0 / FPS)
+                kp = {c: px[c][f] for c in cams
+                      if f < len(px[c]) and np.isfinite(px[c][f]).all()}
+                r = trk.update(gray, cup3[f], dt=1.0 / FPS, kp_by_cam=kp)
                 if r is not None and r.angular_speed is not None:
                     w_mmc[f] = r.angular_speed
             for c in caps.values():

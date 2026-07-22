@@ -2172,3 +2172,62 @@ displacement-from-rest, which flow cannot provide.
 VERDICT: flow for reporting cup speed (25.3 vs 77.4 mm/s on moving frames), SmoothNet for driving the
 segmenter. Same division as the wrist, same underlying reason: a direct velocity measurement is
 accurate in the mean but noisy frame-to-frame, which is exactly wrong for a threshold crossing.
+
+## 2026-07-22 (cont.) >>> the release boundary was ALREADY SOLVED — I re-derived a worse fix
+
+User: *"remember that we had adjusted all these segmentation before already and found a good method
+and idk what happened here but Im not sure why it got way worse"*. They were right, and this is the
+correction.
+
+**What was already there.** Commits b7eeb0f + 7b16f20 (13 Jul) fixed EXACTLY the bug I "discovered":
+`returning` never appearing, back_transport swallowing the tail, caused by an unsigned cup-speed gate
+sitting inside the cup's ~30-50mm/s jitter floor. The fix was the **wrist->cup PLATEAU** in
+`refine_grasp_with_pose`: hand and cup are ONE RIGID BODY between grasp and release, so the distance
+CLOSES (reach), goes FLAT (holding), then OPENS (release). Scale-free, no cup-speed threshold at all,
+and it was validated BY WATCHING THE RENDER at both boundaries.
+
+**Why it looked broken again — my harness never called it.** `results_v3_delta.py` called
+`segment_cup_only` directly; `refine_grasp_with_pose` is only called by `pipeline.py`. So every
+segmentation number I reported came from a stripped-down segmenter with the fix absent, and I
+re-derived a weaker cup-only rule for a solved problem.
+
+**Two bugs in the refinement were ALSO blocking it** (so it would not have fully applied anyway):
+  * it BAILED OUT ENTIRELY when the onset already agreed (`if onset <= gs or onset >= ge: return
+    seg`), discarding the release fix with it — 10/12 trials;
+  * it clamped the release with `min(offset, ge)`, so it could only ever move the boundary EARLIER —
+    12/12 trials — but every cup-only rule ends transport EARLY, because the cup goes still while the
+    hand is still holding it. The two ends are now independent fixes.
+
+**The right question, asked by the user:** not "do the two rules agree" but "does OMC agree with the
+TRACKER". Same rule on BOTH sides, n=12:
+    wrist->cup plateau   median  17ms   p90  50ms   <- 4 trials agree EXACTLY
+    cup-only rule        median 167ms   p90 643ms
+Restoring the plateau: back_transport offset 167 -> **25ms**, returning onset 200 -> **33ms**, still
+0/83 misses. **Every phase boundary is now 0-67ms (<=4 frames).**
+
+**WHY the cup cannot see the release** (user asked to test the jitter just before vs just after the
+hand lets go). On RAW un-low-passed tracks, 0.5s windows, jitter = residual about a line fit + 2nd
+difference:
+                     OMC before  OMC after | v3 before  v3 after
+    net drift           3.00mm      0.17mm |   4.79mm     3.96mm
+    jitter (line fit)   0.51mm      0.03mm |   1.03mm     0.97mm
+    jitter (2nd diff)   0.09mm      0.01mm |   2.21mm     1.59mm
+In the MOCAP the pre-release wobble IS the hand — everything collapses ~17x the instant it lets go.
+But v3 barely changes: its post-release motion is TRACKER NOISE (1.59mm HF, 50-150x OMC's floor),
+comparable to the real pre-release hand wobble. **For the tracker there is no contrast at the release
+to detect**, even though the physical event is sharp. The plateau works because it keys on a ~300mm
+ramp, far above any noise floor. (⚠ my first jitter measure was `median|Ddisp|*fps` on the 6Hz
+LOW-PASSED disp — that is a radial SPEED, not jitter, and it reported an implausible 82x. Measure
+jitter on the RAW track about a local trend.)
+
+**Boundary definitions verified against the source protocol** (van Andel et al., PMC5933268 Table 1,
+user supplied). Paper: reaching ENDS at glass velocity > 15mm/s, back_transport ENDS at glass < 10mm/s
+— i.e. **reaching INCLUDES grasping** and **back_transport INCLUDES release of grasp**. Our boundaries
+land at +0ms (exact, 12/12) and +50ms of those criteria respectively; reach_end sits +100ms AFTER the
+grasp, so the grasp is inside reaching exactly as specified. No change needed — and this retires my
+earlier worry that reaching ended at the grasp and was shifting peak_velocity's window (it does not;
+I had read `seg["grasp"]` without checking what to_murphy_phases does with it downstream).
+
+**LESSON: check git log + memory for prior work on a boundary BEFORE diagnosing it as new**, and never
+let a harness call a sub-stage directly when the pipeline calls a refined path. I broke a working
+version twice while "improving" it.

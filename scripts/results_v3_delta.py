@@ -376,9 +376,20 @@ def segmentation(smooth_cup: bool = True):
     print(f"\n{'='*92}\n=== 3. SEGMENTATION — ALL 7 phases, MMC cup vs OMC cup (same segmenter) "
           f"===\n{'='*92}", flush=True)
 
-    def phases_of(cup, hand):
+    def phases_of(cup, hand, mouth=None):
+        """The REAL pipeline path: cup-only gate, THEN the pose refinement.
+
+        refine_grasp_with_pose is not optional and must not be skipped in a harness. It replaces
+        both transport boundaries with the wrist->cup PLATEAU (hand and cup are one rigid body
+        between grasp and release), which is where the accuracy actually comes from: same rule on
+        both sides, OMC-vs-tracker agreement is 17ms median / 50ms p90, versus 167/643 for any
+        cup-only rule. An earlier version of this harness called segment_cup_only alone, which
+        silently measured a stripped-down segmenter and made a long-solved boundary look broken.
+        """
         try:
             seg = segment.segment_cup_only(_fill(cup), fps=FPS)
+            seg = segment.refine_grasp_with_pose(seg, _fill(cup), _fill(hand),
+                                                 None if mouth is None else _fill(mouth), fps=FPS)
             ph = segment.to_murphy_phases(seg, _fill(hand), _fill(cup), fps=FPS)
             return {nm: (s / FPS, e / FPS) for nm, s, e in ph}
         except Exception:
@@ -403,14 +414,16 @@ def segmentation(smooth_cup: bool = True):
             c3 = _cup_v3(part, trial, calib, n)
             hand = _smooth_joint(mmc[f"{side}_wrist"])
 
-            po = phases_of(oc, omc[f"{side}_wrist"])
+            po = phases_of(oc, omc[f"{side}_wrist"], omc.get("nose"))
             if not po:
                 continue
-            cand = {"v1": (c1, mmc[f"{side}_wrist"]), "v3": (c3, hand)}
+            mmc_nose = _smooth_joint(mmc["nose"]) if "nose" in mmc else None
+            cand = {"v1": (c1, mmc[f"{side}_wrist"], mmc.get("nose")),
+                    "v3": (c3, hand, mmc_nose)}
             if smooth_cup:
-                cand["v3+SN"] = (_smooth_joint(c3), hand)
-            for k, (cup, hd) in cand.items():
-                pm = phases_of(cup, hd)
+                cand["v3+SN"] = (_smooth_joint(c3), hand, mmc_nose)
+            for k, (cup, hd, mo) in cand.items():
+                pm = phases_of(cup, hd, mo)
                 for p in MURPHY_PHASES:
                     if p not in po:
                         continue

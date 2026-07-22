@@ -203,12 +203,21 @@ def refine_grasp_with_pose(seg: dict, cup_xyz, hand_xyz, mouth_xyz=None, fps=FPS
     # release = start of the first big opening run AFTER the grasp = cup set down
     offset = next((s for s, _ in opening if s > onset), ge)
 
-    if onset <= gs or onset >= ge:
-        return seg                          # cup-only already agreed, or the fix is nonsense
+    # The two ends are INDEPENDENT fixes. Bailing out whenever the onset happens to agree threw
+    # the release fix away too (measured: 10/12 trials), and clamping the release with min(ge)
+    # made it unable to move the boundary LATER (12/12) -- which is exactly what it must do,
+    # because every cup-only rule ends the transport early: the cup goes still while the hand is
+    # still holding it. The plateau is the authority at BOTH ends when a pose track exists.
+    if not (gs < onset < ge):
+        onset = gs                          # keep cup-only's onset, still take the release
     out = dict(seg)
-    out["grasp"] = (onset, min(offset, ge))
+    out["grasp"] = (onset, offset)
     phase = seg["phase"].copy()
-    phase[gs:onset] = P_REST_PRE            # what cup-only called "motion" here was jitter
+    if onset > gs:
+        phase[gs:onset] = P_REST_PRE        # what cup-only called "motion" here was jitter
+    if offset > ge:
+        # the hand was still holding the cup after cup-only gave up: that is transport, not rest
+        phase[ge:offset] = P_BACK
     if offset < ge:
         # ...and the same at the other end: cup-only kept "transporting" for 2.3s after the
         # cup was demonstrably on the table and the hand had gone home, because its offset
@@ -273,17 +282,25 @@ def segment_cup_only(xyz, fps=FPS, *, fwd_on=FWD_ON, back_off=BACK_OFF,
         return {**empty, "speed": speed, "disp": disp, "radial": radial}
     grasp_start, grasp_end = onset_runs[0][0], onset_runs[-1][1]
 
-    # END OF THE RETURN = the cup is back on the table: its DISPLACEMENT from rest stops changing.
+    # PROVISIONAL end of the transport window. The REAL release boundary is a HAND event, not a
+    # cup event -- the cup is already still; what changes is the hand letting go -- so the
+    # authoritative rule lives in refine_grasp_with_pose(): the wrist->cup distance plateaus while
+    # the hand holds the cup and RAMPS as the hand withdraws. ALWAYS prefer that when a pose track
+    # is available (pipeline.py does).
     #
-    # Read that off the displacement curve, not the speed curve. Once the cup lands there is a
-    # burst of small noise in the speed (set-down contact, tracker residual, mocap marker wobble)
-    # right around the 10mm/s gate, and the old rule -- "extend to the LAST frame above back_off"
-    # -- chased whichever signal twitched last, so the boundary was set by noise rather than by
-    # the event. The displacement curve has no such ambiguity: it flattens when the cup arrives,
-    # and both tracks flatten at the same instant even when their speeds disagree.
+    # Measured, same rule applied to both OMC and the tracker, n=12 -- does OMC agree with MMC?
+    #     plateau (wrist->cup)   median  17 ms   p90  50 ms   <- 4 trials agree EXACTLY
+    #     any cup-only rule      median 167 ms   p90 643 ms
+    # The reason is visible in out/release_rules.png: by set-down the cup displacement has already
+    # flattened into a 5-15mm noise band with NO feature to lock onto, so a cup-only rule is
+    # picking between wobbles; meanwhile wrist->cup ramps ~150 -> ~450mm and both tracks ride that
+    # ramp in lockstep. Do not try to recover the release from the cup alone -- the event is not
+    # in that signal. (Two attempts to do so are recorded in docs/PIPELINE_V3.md.)
     #
-    # So: the FIRST frame, after the cup has come back near rest, where displacement stays flat
-    # for ARRIVE_HOLD_S. First (not last) because everything after the cup lands is noise.
+    # Cup-only fallback, used only when no pose track exists: first sustained flat run after the
+    # cup returns near rest. Better than the old "last frame above back_off" (which chased the
+    # post-landing noise burst and never fired at all for a detect-once tracker, losing
+    # returning/rest_post in 11/12 trials) but still ~167ms and noise-limited.
     rest_r = float(np.nanmax(disp[:min(rw, T)])) if np.isfinite(disp[:min(rw, T)]).any() else 0.0
     hold = max(int(ARRIVE_HOLD_S * fps), 3)
     flat = np.r_[True, np.abs(np.diff(disp)) * fps < back_off]     # displacement not changing

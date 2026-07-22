@@ -364,15 +364,69 @@ Same segmenter on every row, so the **cup track is the only variable.** v3 = UET
 | phase | miss | \|Δonset\| | \|Δoffset\| | \|Δduration\| |
 |---|---|---|---|---|
 | rest_pre | 0/12 | 0 ms | 17 ms | 17 ms |
-| reaching | 0/12 | 17 ms | 42 ms | 42 ms |
-| forward_transport | 0/12 | 42 ms | 67 ms | 125 ms |
+| reaching | 0/12 | 17 ms | 25 ms | 25 ms |
+| forward_transport | 0/12 | 25 ms | 67 ms | 83 ms |
 | drinking | 0/12 | 67 ms | 17 ms | 108 ms |
-| back_transport | 0/12 | 17 ms | 167 ms | 258 ms |
-| returning | 0/11 | 200 ms | 17 ms | 183 ms |
+| back_transport | 0/12 | 17 ms | 25 ms | 33 ms |
+| returning | 0/11 | 33 ms | 17 ms | 33 ms |
 | rest_post | 0/12 | 17 ms | 0 ms | 17 ms |
 | **ALL** | **0/83** | **17 ms** | **17 ms** | |
 
-**Every phase is produced in every trial, and every boundary is within 1–12 frames.**
+**Every phase is produced in every trial, and every boundary is within 0–67 ms (≤4 frames).**
+
+### The boundaries match the published protocol
+
+Checked against van Andel et al. (PMC5933268, Table 1), which defines the drink-task phases. The
+paper's criteria and where our boundaries actually land (OMC, n=12):
+
+| paper's boundary | criterion | signal | our offset |
+|---|---|---|---|
+| reaching start | hand velocity > 2 % of peak | hand | — |
+| **reaching end** (= fwd transport start) | **glass velocity > 15 mm/s** | cup | **+0 ms** (exact, 12/12) |
+| drinking start | face–glass < 15 % of steady state | cup+head | — |
+| **back transport end** (= returning start) | **glass velocity < 10 mm/s** | cup | **+50 ms** |
+| returning end | hand velocity back to 2 % of peak | hand | — |
+
+Two consequences worth stating explicitly, because both are easy to get backwards:
+
+- **`reaching` INCLUDES the grasp.** It ends when the *glass* starts moving, not when the hand
+  arrives. Measured, our `reach_end` sits **+100 ms after the grasp** and exactly on the glass-lift
+  criterion — the grasp is inside the reaching window, as the paper specifies ("Reaching (includes
+  grasping)").
+- **`back_transport` INCLUDES the release.** It ends when the *glass* stops, not when the hand lets
+  go ("Back transport (glass to table, includes release of grasp)").
+
+The two definitions converge in practice: our plateau release and the paper's glass-stop criterion
+agree to **+50 ms** (identical in 7/12 trials), because the hand releases and the glass settles
+within a frame or two of each other.
+
+### The transport boundaries come from the WRIST→CUP PLATEAU, not from the cup
+
+Both ends of the transport window are **hand events, not cup events**: while the hand holds the cup
+they are one rigid body, so the wrist→cup distance is flat; it *closes* during the reach and *opens*
+at the release. `refine_grasp_with_pose` finds those two ramps and owns both boundaries.
+
+This matters because **the cup signal has no feature at the release** — by set-down the cup
+displacement has already flattened into a 5–15 mm noise band, so any cup-only rule is choosing
+between wobbles. The wrist→cup distance meanwhile ramps ~150 → ~450 mm, and both tracks ride that
+ramp in lockstep (see `out/release_rules.png`). Same rule applied to both sides, n=12 — *does OMC
+agree with the tracker?*
+
+| release rule | median | p90 |
+|---|---|---|
+| **wrist→cup plateau** | **17 ms** | **50 ms** (4 trials agree exactly) |
+| any cup-only rule | 167 ms | 643 ms |
+
+⚠ **`refine_grasp_with_pose` is not optional** and a harness must never skip it. An earlier version
+of `results_v3_delta.py` called `segment_cup_only` alone, which measured a stripped-down segmenter
+and made this long-solved boundary look freshly broken — leading to a worse cup-only rule being
+re-derived for a problem the plateau already solved. `pipeline.py` always called it.
+
+Two bugs in the refinement itself were also blocking it: it **bailed out entirely when the onset
+already agreed** (discarding the release fix with it, 10/12 trials) and **clamped the release with
+`min(offset, ge)`** so it could only ever move the boundary *earlier* (12/12 trials) — but every
+cup-only rule ends transport *early*, because the cup goes still while the hand is still holding it.
+The two ends are now independent fixes.
 
 ### The defect the dwell-only metric hid, and the fix
 
@@ -390,24 +444,39 @@ displacement-from-rest stops changing, and *both tracks flatten at the same inst
 speeds disagree*. Take the FIRST sustained flat run after the cup returns near rest (everything after
 landing is noise), anchored inside the transport window so an outward pause cannot satisfy it.
 
-| | before | after |
-|---|---|---|
-| missing phases | 11/12 trials | **0/83** |
-| back_transport offset | unbounded | **167 ms** |
-| returning onset | unbounded | **200 ms** |
-| total_movement_time error | 1.50 s | **0.03 s** |
+| | before | cup-only rule | **+ plateau restored** |
+|---|---|---|---|
+| missing phases | 11/12 trials | 0/83 | **0/83** |
+| back_transport offset | unbounded | 167 ms | **25 ms** |
+| returning onset | unbounded | 200 ms | **33 ms** |
+| total_movement_time error | 1.50 s | 0.03 s | **0.03 s** |
 
-Two failed attempts are recorded so they are not retried: a **sign-only** rule (`radial >= 0`, no
+Three failed attempts are recorded so they are not retried: a **sign-only** rule (`radial >= 0`, no
 magnitude floor) fires during the *outward* trip and collapsed the window (21/52 misses); a
-**two-condition stability + direction** rule was better but still lost phases (3/83). Displacement
-flattening is what works.
+**two-condition stability + direction** rule still lost phases (3/83); and the **cup-only
+displacement rule** works (167 ms) but is beaten 6× by the plateau it was written to replace.
 
-**Residual (167/200 ms).** This is one shared boundary — back_transport-end = returning-onset — and
-checking the raw 100 Hz mocap shows it is genuinely ambiguous rather than a tracking error: in the
-disputed gaps the cup moves a median of 14.3 mm/s over a 4.8 mm range (a still cup is ~1 mm/s, ~1 mm).
-Participants keep adjusting the cup for up to ~1.4 s after setting it down. In ~2 trials v3
-over-smooths that real motion, in ~1 it invents motion the mocap does not show, and in ~1 OMC's own
-threshold exits early while motion continues. Neither side is simply right.
+**Why no cup-only rule can do better.** Measured on the RAW (un-low-passed) 3D tracks, in 0.5 s
+windows either side of the release. "jitter" = residual about a straight-line fit (removes smooth
+motion, so it is jitter and not drift) and the 2nd-difference magnitude (pure high-frequency):
+
+| | OMC before | OMC after | v3 before | v3 after |
+|---|---|---|---|---|
+| net drift | 3.00 mm | **0.17 mm** | 4.79 mm | 3.96 mm |
+| jitter (about a line fit) | 0.51 mm | **0.03 mm** | 1.03 mm | 0.97 mm |
+| jitter (2nd difference) | 0.09 mm | **0.01 mm** | 2.21 mm | 1.59 mm |
+
+**In the mocap the pre-release wobble IS the hand** — everything collapses ~17× the instant the hand
+lets go, and the cup is then perfectly still (0.03 mm). But **v3 barely changes across the release**:
+its post-release motion is tracker noise (1.59 mm HF, 50–150× OMC's floor), comparable to the real
+pre-release hand wobble. So for the tracker there is **no contrast at the release to detect**, even
+though the physical event is sharp. The plateau reaches 17 ms because it keys on a ~300 mm ramp, far
+above any noise floor.
+
+⚠ Beware the obvious way to measure this: `median |Δdisplacement| × fps` on the *low-passed* `disp`
+signal is a radial *speed*, not jitter — it cannot separate a slowly-sliding cup from a vibrating
+one, and the 6 Hz filter has already removed the high-frequency content. It reported an implausible
+82× for OMC. Measure jitter on the RAW track, about a local trend.
 
 ## 6. Murphy measures — v1 vs v3, |error| vs OMC — n=12
 

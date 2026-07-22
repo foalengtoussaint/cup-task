@@ -67,25 +67,41 @@ class FlowSpeedOnline:
     than two cameras produced a usable flow vector.
     """
 
-    def __init__(self, calib: dict, fps: float = FPS, min_cams: int = 2):
+    def __init__(self, calib: dict, fps: float = FPS, min_cams: int = 2,
+                 gate_consensus: bool = True):
         self.calib = calib
         self.fps = fps
         self.min_cams = min_cams
+        self.gate_consensus = gate_consensus       # see speed_from_cached_flow for the measurement
         self._prev: dict[str, np.ndarray] = {}
+        self._prev3d = None
 
     def update(self, gray_by_cam: dict[str, np.ndarray],
                wrist_px_by_cam: dict[str, np.ndarray]) -> float:
         """One rig-frame. gray_by_cam = {cam: HxW uint8}, wrist_px_by_cam = {cam: (2,) or None}."""
-        obs_p, obs_pv = {}, {}
+        avail = {}
         for cam, gray in gray_by_cam.items():
-            prev = self._prev.get(cam)
             px = wrist_px_by_cam.get(cam)
-            if prev is not None and px is not None and np.isfinite(px).all():
-                fl = flow_at(prev, gray, px)
-                if fl is not None and np.isfinite(fl).all():
-                    obs_p[cam] = np.asarray(px, dtype=float)
-                    obs_pv[cam] = np.asarray(px, dtype=float) + fl
+            if self._prev.get(cam) is not None and px is not None and np.isfinite(px).all():
+                avail[cam] = np.asarray(px, dtype=float)
             self._prev[cam] = gray
+
+        use = avail
+        if self.gate_consensus and len(avail) >= 2:
+            from cup_task import consensus as _cons
+            X, kept, _ = _cons.consensus3({c: tuple(p) for c, p in avail.items()},
+                                          self.calib, prev=self._prev3d)
+            if X is not None:
+                self._prev3d = X
+            if len(kept) >= self.min_cams:
+                use = {c: avail[c] for c in kept if c in avail}
+
+        obs_p, obs_pv = {}, {}
+        for cam, px in use.items():
+            fl = flow_at(self._prev[cam], gray_by_cam[cam], px)
+            if fl is not None and np.isfinite(fl).all():
+                obs_p[cam] = px
+                obs_pv[cam] = px + fl
         return speed_from_flow_obs(obs_p, obs_pv, self.calib, self.fps, self.min_cams)
 
 
@@ -161,21 +177,46 @@ def radial_velocity(vel_xyz: np.ndarray, pos_xyz: np.ndarray, origin: np.ndarray
 
 def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.ndarray],
                            calib: dict, n: int, fps: float = FPS,
-                           min_cams: int = 2) -> np.ndarray:
-    """OFFLINE path: per-camera wrist pixels + precomputed per-camera flow -> (n,) 3D speed track.
+                           min_cams: int = 2, gate_consensus: bool = True) -> np.ndarray:
+    """OFFLINE path: per-camera 2D points + precomputed per-camera flow -> (n,) 3D speed track.
 
     Calls the SAME speed_from_flow_obs as the online class, so the offline replay of a live session
     reproduces the live numbers exactly (the number and its check must share one implementation).
+
+    `gate_consensus` (default ON): use only the cameras the geometric consensus KEEPS on that frame.
+    Without it, a camera tracking the wrong object still contributes its flow vector with full
+    weight -- the consensus exists precisely to reject those, and flow was ignoring that rejection.
+    Measured, cup speed on MOVING frames: 24.7 -> 19.7 mm/s (-20%), and it costs almost nothing
+    (mean cameras 5.00 -> 4.80). The WRIST barely moves (8.3 -> 8.3; blend peak 20.9 -> 19.8, kept
+    4.99/5.00) -- the known asymmetry: a cup false positive is a DIFFERENT OBJECT and reprojects
+    far, so the gate catches it, while a pose error is the right person's slightly-wrong joint and
+    reprojects plausibly.
+
+    NOTE the points are the RAW DETECTED pixels (YOLO keypoint / UETrack point), never a
+    reprojection of the 3D consensus. Flow must be measured where the image evidence is; a
+    reprojected point would inherit the triangulation's own error and defeat the purpose of
+    measuring velocity independently of position.
     """
     out = np.full(n, np.nan)
     cams = [c for c in flow if c in wrist_px and c in calib]
+    prev3d = None
     for f in range(n):
+        avail = {c: wrist_px[c][f] for c in cams
+                 if f < len(wrist_px[c]) and np.isfinite(wrist_px[c][f]).all()}
+        use = avail
+        if gate_consensus and len(avail) >= 2:
+            from cup_task import consensus as _cons
+            X, kept, _ = _cons.consensus3({c: tuple(p) for c, p in avail.items()},
+                                          calib, prev=prev3d)
+            if X is not None:
+                prev3d = X
+            if len(kept) >= min_cams:
+                use = {c: avail[c] for c in kept if c in avail}
         obs_p, obs_pv = {}, {}
-        for c in cams:
-            if (f < len(wrist_px[c]) and f < len(flow[c])
-                    and np.isfinite(wrist_px[c][f]).all() and np.isfinite(flow[c][f]).all()):
-                obs_p[c] = wrist_px[c][f]
-                obs_pv[c] = wrist_px[c][f] + flow[c][f]
+        for c, p in use.items():
+            if f < len(flow[c]) and np.isfinite(flow[c][f]).all():
+                obs_p[c] = p
+                obs_pv[c] = p + flow[c][f]
         out[f] = speed_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
     return out
 

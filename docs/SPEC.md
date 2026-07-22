@@ -122,6 +122,21 @@ Both triangulations use the same cameras and calibration, so common-mode calibra
 and only motion survives. It is a **velocity measurement, not a position derivative** — nothing is
 differenced across time.
 
+**Which cameras, and which points:**
+
+- **Points are the RAW DETECTED pixels** — YOLO's keypoint, UETrack's tracked cup point. Never a
+  reprojection of the 3D consensus: flow must be measured where the image evidence is, and a
+  reprojected point would inherit the triangulation's own error, defeating the purpose of measuring
+  velocity independently of position.
+- **Cameras are gated by the consensus** (`gate_consensus=True`, default). Only cameras the
+  geometric consensus *keeps* on that frame contribute. Without it a camera tracking the wrong
+  object contributes its flow vector at full weight — the consensus exists to reject exactly those.
+
+That gate fixes errors **while the target moves** but not **at rest**, and the reason is worth
+knowing: at rest the consensus rejects ~0 cameras (they all agree *where* the cup is) yet each still
+reports a sub-pixel spurious *motion* (p95 ≈ 0.9 px), which triangulates into tens of mm/s. The two
+failure modes are orthogonal — geometric disagreement is gateable, sub-pixel flow noise is not.
+
 The two sources fail in complementary regimes:
 
 | | flow (PyrLK) | SmoothNet (d position/dt) |

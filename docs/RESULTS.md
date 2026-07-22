@@ -148,6 +148,36 @@ reporting cup speed.
 | by phase | — | drinking 2.5 % vs reaching 25.8 %, returning 25.7 %, back_transport 28.3 % |
 | a median fixes it? | **yes** (19.6 ≈ LOO's 19.4) | **no** (22.8 — *worse than no gate*) |
 
+### Motion blur: detectable, but nothing can be done with it directly
+
+**How PyrLK fails.** It assumes the patch is only *translated* between frames and solves for that
+shift from spatial gradients, via the structure tensor `[[ΣIx², ΣIxIy],[ΣIxIy, ΣIy²]]`. Its minimum
+eigenvalue says whether the patch has gradients in *both* directions; if not, the displacement is
+unconstrained. Blur destroys exactly those gradients — sharpness and conditioning correlate at
+**+0.765** — so the failure mode is predicted by the algorithm itself.
+
+**Blur is directly detectable in the image** — independent confirmation of the mechanism. Sharpness
+of the tracked patch (61×61 px), kept vs dropped cameras:
+
+| metric | kept | dropped | ratio |
+|---|---|---|---|
+| **Laplacian variance** | 669.4 | 388.6 | **0.58** |
+| gradient energy | 81.4 | 66.3 | 0.81 |
+| HF FFT energy | 441.8 | 327.3 | 0.74 |
+
+The consensus drops **42 % less sharp** patches, established from pixels alone without any knowledge
+of speed or geometry. But it is **not usable as a gate or a correction**:
+
+- **As a gate: worse than nothing** (24.3 mm/s vs 21.9 ungated, 19.5 for LOO) and it adds nothing on
+  top of LOO (19.7).
+- **As a speed correction: too weak.** Raw corr(sharpness, flow error) = **−0.060**, and the obvious
+  quartile trend is a **confound** — the blurriest quartile also moves 2.4× faster (blur is *caused*
+  by speed, corr −0.155). Stratifying by true speed leaves a real but noisy residual: at matched
+  speed the blurry half over-reads by ~20 mm/s (200–400 mm/s band: +26.6 vs +4.7), yet per-band
+  correlations are −0.005 to −0.132, so a per-frame correction cannot capture it.
+- **The speed blend already handles it** — it hands over to SmoothNet exactly where blur bites (fast
+  frames), which is why the blend's peak error is 20.9 mm/s against pure flow's 60.8 (§3).
+
 The wrist's blur hits **several cameras on the same frame**, so 3-of-5 disagree on 21 % of frames
 (13 % for the cup) — a median is then itself one of the bad values. Per-frame wrist error by how many
 cameras disagree: 0 → LOO 13.4 / median 12.4; 1 → 18.4 / 21.1; **2 → 24.7 / 42.8**; 3 → 46.9 / 49.3.
@@ -416,3 +446,58 @@ Same pattern: the angular *velocity* measure improves sharply while static angle
 4. **P13 clock drift** — a linear time-warp of its OMC restores 6 trials (n → 18).
 5. **`weighted_triangulate` / `camera_jitter`** exist in `triangulate.py` but are unused — an
    unfinished jitter-weighted-triangulation thread. Either wire it in and measure, or archive it.
+
+---
+
+## 10. Where the flow-speed error actually comes from (diagnosis)
+
+Traced end to end because the obvious explanations kept being wrong. The pipeline is:
+per-camera PyrLK (1–10 px) → undistort → DLT triangulate `{p}` and `{p+flow}` → difference × fps.
+
+**The geometry is NOT the bottleneck.** The reprojection residual of the triangulated point is 6.35 px
+— larger than the ~2 px flow signal — but it is **common-mode**: both `Xp` and `Xv` use the same
+cameras, calibration and nearly the same pixels, so **94 % of it cancels in the difference**. What
+survives is **0.40 px**, i.e. 0.20× the signal.
+
+**Cameras SHOULD disagree, and mostly do so legitimately.** Projecting the true (OMC, rotation-only
+Kabsch) velocity into each camera predicts a **0.329** cross-camera spread; the observed spread is
+**0.450**. So **~73 % of the disagreement is pure geometry** — each camera sees only the component of
+motion perpendicular to its ray. Only ~27 % is genuine flow error, and it is biased: observed /
+predicted = **1.17**, the blur over-read, now measured directly rather than inferred.
+
+**Per-camera accuracy is stable and characteristic.** Scoring each camera against the OMC-derived
+prediction (rotation-only alignment, so the 35 mm Kabsch translation error cancels in a velocity):
+median error **0.34–1.16 px** against 1.9–5.9 px predictions. Split-half correlation **+0.738** — a
+camera that is inaccurate early stays inaccurate — and per-camera relative error ranges **0.108–0.442**
+(a 4× spread) with across-trial SD of only 0.006–0.042.
+
+### What drives the per-camera error — ranked
+
+| factor | corr with relative error | quartile trend (low→high) |
+|---|---|---|
+| **perpendicularity** (fraction of motion visible) | **−0.215** | 0.270 → 0.190 → 0.170 → **0.147** |
+| predicted \|flow\| (px) | −0.152 | 0.255 → 0.218 → 0.174 → **0.148** |
+| distance to target | +0.122 | 0.154 → 0.189 → 0.160 → 0.324 |
+| patch sharpness (blur) | −0.067 | 0.216 → 0.204 → 0.199 → 0.158 |
+
+**This overturns the motion-blur story.** The dominant factor is **viewing geometry**: a camera
+looking *along* the motion has ~2× the relative error of one looking *across* it, because few pixels
+move and the same pixel noise is a larger fraction of a smaller signal. **Bigger motion is *more*
+accurate in relative terms** (−0.152), the opposite of "blur ruins fast frames" — blur inflates the
+magnitude (+17 %) without dominating the relative error. **Sharpness is the weakest factor** (−0.067),
+so the blur thread was chasing the smallest term.
+
+### Consequences for what to build
+
+The one estimator that models this is the **Jacobian least-squares**: solve `u̇ = J(X)·v` for the
+velocity directly instead of differencing two triangulations, so each camera is weighted by the
+perpendicular component it can actually observe. Measured **20.53 vs 21.71 mm/s** for two-point DLT —
+a −5 % gain from a *general geometric mechanism*, no tuned constants. It does not stack with the LOO
+consensus (18.95 vs 18.73): both fix the same thing, LOO empirically, the Jacobian by construction.
+
+⚠ **Tried and rejected — all mechanism-free tuning that did not survive the full cohort:** a
+Laplacian sharpness gate (24.3 vs 21.9 ungated), PyrLK's own `minEigThreshold` (default 1e-4 rejects
+0/532 points; every higher value made speed error worse, 19.2 → 22.2+), CLAHE (helps the pooled
+median but is **2.1× worse in the top speed band**, 33.5 → 71.5 — the pooled number hid it), and
+Wiener deconvolution with a flow-derived motion PSF (helps only at >700 mm/s, 33.5 → 28.9, and is
+neutral-to-worse once LOO is applied, at every K from 0.001 to 0.2).

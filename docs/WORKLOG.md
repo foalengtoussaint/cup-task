@@ -2768,3 +2768,41 @@ measurand is.
 ⚠ Also fixed a bug of mine along the way: expressing the cloud centroid in the marker frame via
 `Rs.T @ (cen - Cs)` is MEANINGLESS -- MMC world and mocap world are different coordinate frames,
 and it produced a 1842mm "body offset" (room scale). The lever must be measured within one frame.
+
+### ⚠ CORRECTION to the previous entry: the ambiguity is ~6 mm/s, NOT 42
+
+User: "how is the metric ambiguous by 42 mm/s, is that noise or rotation things?" Both halves of
+that question were worth asking, and answering them corrects my own headline.
+
+**IT IS ROTATION, NOT NOISE** -- three independent confirmations:
+  * observed spread 42.1 vs the rigid-body prediction 2*omega*r = 51.9 mm/s; observed sits BELOW
+    the theoretical max (24 random directions rarely include an antipodal pair). Noise would
+    exceed the prediction, not undershoot it.
+  * corr(observed, predicted) = **+0.719** across trials.
+  * spread SCALES WITH omega (12.6 -> 21.7 mm/s from the 0.3-0.8 to the 0.8-1.5 rad/s band). A
+    noise floor would be flat.
+The cup really does rotate at ~0.75 rad/s, so body points genuinely move at different speeds. That
+part of the previous entry stands.
+
+**BUT THE MAGNITUDE WAS WRONG.** I quoted max-min over 24 sampled directions at a 34mm lever --
+the gap between the two most OPPOSED points, i.e. a worst case, not a typical one. The relevant
+quantity is how far ONE body point's speed sits from the CENTROID's, since that is the actual
+comparison being made. Measured on the 4 REAL markers (physical points, no sampling, no model,
+lever arms 23.2-24.4mm), n=12 trials:
+
+    |marker speed - centroid speed|, median :  4.2 mm/s
+    max-min across the 4 markers            : 11.5 mm/s
+    scaled to the cloud's ~34mm lever       : ~5.9 mm/s
+
+**So the metric ambiguity is ~6 mm/s, not 42.** That is roughly 40% of the ~14 mm/s error being
+optimised -- material, worth stating alongside any result, but NOT larger than the signal.
+
+REVISED VERDICT on the previous entry: "differences smaller than ~40 mm/s are inside the metric's
+ambiguity" is RETRACTED. The correct statement is ~6 mm/s. Tonight's larger deltas (the rigidity
+gate's 15.95 -> 13.58, the fusion's 18.66 -> 15.20) are OUTSIDE that and survive; the small ones
+(a 0.8 mm/s difference between anchor thresholds) are inside it and were never meaningful.
+
+The lever-arm point itself is unchanged and still worth acting on: the oracle body-point scoring
+moved the ratio 0.934 -> 0.989, so a real part of the residual bias is a lever artefact. Defining
+the measurand is still the right next move -- it is just worth ~6 mm/s, not the 3x-the-signal I
+claimed.

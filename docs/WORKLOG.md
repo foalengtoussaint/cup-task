@@ -3210,3 +3210,37 @@ answer: true 40x95mm gives 8.42 vs a degenerate 5x5mm seed's 9.23, and a wrong 2
 16.01. The mechanism is the cloud's EXTENT (23.7mm vs 9.1mm) -- a tiny cloud has no lever arm to
 see rotation. ⚠ Unpaired, the 5x5 seed looks BETTER (9.64 vs 10.05) purely because it only answers
 on the easy 46% of frames; the paired comparison flips it.
+
+### "Reseed every frame but compute velocity on the PREVIOUS seed" -- tested, much worse
+
+User's refinement, and a genuinely different design from the one already disproven: seed a FRESH
+cloud on frame f-1's detection, PyrLK it forward exactly ONE frame, triangulate both ends, Kabsch.
+Unlike reseed-and-compare-seeds, image evidence IS consulted; and every track lives one frame, so
+accumulated drift is structurally impossible.
+
+    method                 median   mean     p90    cov
+    tracked (persistent)    14.70  15.27   53.64  74.2%
+    one-step seed           31.26  32.63  133.32 100.0%    <- 0/12 trials
+
+It does deliver 100% coverage (it can never run out of tracks) but is more than twice as bad, and
+lands near the differentiate-the-detection number (35.92) rather than near the tracked one.
+
+WHY -- measured: a 1-frame PyrLK step on fresh seeds moves them a median of **1.01 px**, which is
+the noise floor rather than the motion. A fresh seed is a SYNTHETIC point on a hypothetical
+cylinder; nothing guarantees real texture is there, so PyrLK has no distinctive structure to lock
+onto and returns an arbitrary sub-pixel displacement. **A persistent track is different in kind: it
+has SETTLED onto actual image texture over many frames** (a highlight, an edge, a printed mark).
+That settling is the information the method runs on, and it cannot be acquired in one frame.
+
+This completes the picture from the previous entry. Three variants, all measured:
+    reseed + compare seeds        = differentiating the detection exactly (35.92, no pixels used)
+    reseed + 1-frame PyrLK        = 31.26 (pixels used, but on unsettled synthetic points)
+    persistent tracks             = 14.70
+The gradient is monotone in HOW LONG A TRACK HAS BEEN FOLLOWING REAL TEXTURE. That is the resource
+the cloud method actually exploits.
+
+⚠ SCALE CORRECTION for the record: an "8.42" quoted earlier was ONE trial (P07 trial_11) on the
+106 frames where two configs both answered -- the easy subset -- and it is mm/s of SPEED error, not
+mm of position. The honest cohort figure is 13.6-14.7 mm/s median speed error against a cup moving
+150-360 mm/s, i.e. ~5-9%. And roughly half of even that is lever-arm/measurand rather than tracker
+error (see the envelope analysis).

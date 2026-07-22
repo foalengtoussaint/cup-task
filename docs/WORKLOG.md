@@ -3277,3 +3277,34 @@ figure is quoted, because "74% coverage" sounds far worse than "a scattering of 
 
 ⚠ Note this also means the earlier coverage comparisons between configs were mostly comparing GATE
 BEHAVIOUR, not tracking robustness.
+
+### ⚠ THE RIGIDITY GATE HAS A SPEED BIAS -- important caveat on everything gated
+
+The gate: fit a SIMILARITY (Umeyama) instead of a rigid transform, so scale `s` is free. A rigid cup
+cannot change size, so |s-1| measures the cloud DEFORMING (tracks sliding relative to each other),
+with no ground truth. Refuse the frame when |s-1| > 0.01. It is the only quality signal that
+predicts error (rho +0.360 by quartile: 11.3 / 13.1 / 18.9 / 36.3 mm/s) where the obvious proxy
+`n_inliers` predicts NOTHING (rho -0.009).
+
+**BUT IT IS NOT A PURE DEFORMATION DETECTOR -- IT IS SUBSTANTIALLY A SPEED FILTER:**
+    fire rate by OMC speed:  50-150  5.6% | 150-400 15.3% | 400-800 41.9% | 800+ **65.3%**
+    corr(|s-1|, speed) = +0.46
+Faster motion means more per-frame track slip, so the cloud deforms more -- the gate is measuring
+something real, but that something is strongly confounded with speed.
+
+**THE CONSEQUENCE, and it matters clinically:**
+    median OMC speed, all moving frames : 249.0 mm/s
+    median OMC speed, KEPT frames       : 173.5 mm/s
+    median OMC speed, REFUSED frames    : 613.0 mm/s
+    p95 OMC speed, all 927.3 -> kept 781.2
+**The gate throws away the fast half of the motion.** For a per-frame accuracy statistic that is
+fine (and is why the gate looks good in every median I have quoted). For **peak_velocity -- a
+reported Murphy measure -- it is a DIRECT DOWNWARD BIAS**, not merely lost coverage.
+
+And on fast frames it barely pays for itself: >400 mm/s, error 41.91 (ungated) -> 36.64 (gated),
+a 13% improvement for discarding 48% of those frames.
+
+RECOMMENDATION: keep the gate for per-frame accuracy work, but **do NOT compute peak velocity from
+gated output**. Either raise the threshold for peak extraction (0.02 keeps 88.3% at 14.99 median)
+or take the peak from the ungated track. This caveat applies to every gated number in this log --
+they are conditional on a speed-biased subsample.

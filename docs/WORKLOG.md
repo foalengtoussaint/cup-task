@@ -3597,3 +3597,35 @@ RANSAC, which does it better (by actual inconsistency, not by the age PROXY for 
 The maturation mechanism is real (aperture problem, 2D, per-camera) and it is WHY reseed-rarely
 wins -- but the exploitation the user reasoned toward is already present in the pipeline under a
 different name.
+
+### ⚠ CORRECTION: seed() IS a mass reset; the cloud is a UNIFORM-age cohort, not a mix
+
+User caught a contradiction: I said reseeding deletes all tracks, yet also described young and old
+tracks coexisting. Direct test settles it -- put a known live pixel in a slot, call seed(), the
+pixel is OVERWRITTEN. seed() reuses the 48 slot indices but reprojects fresh cylinder points onto
+all of them, so a live track's pixel is replaced. seed() IS a mass reset. My ORIGINAL statement
+was right.
+
+So where did "young and old coexist" come from? A BUG IN MY MEASUREMENT, not the tracker. I tracked
+age with a running dict keyed by slot id and did NOT reset it on seed(), so a reused slot kept
+accumulating age as if it were one continuous track -- reporting age 147 for a track actually born
+39 frames ago at the last reseed. With the reset applied, the age distribution mid-trial is UNIFORM:
+    frame 150: all 8 tracks age 39   |  frame 250: all 12 age 76  |  frame 400: all 9 age 116
+The cloud is a single cohort that ages together from one seed() to the next (~8 events/trial), then
+is wiped and reborn at age 0. There is NO within-cloud age diversity.
+
+WHAT THIS DOES AND DOES NOT CHANGE:
+  * The RANSAC-maturity finding SURVIVES: young(age<10) rejected 4.3% vs old 0.2%, still 20x, and
+    unchanged under the corrected age because RANSAC rejection was never a function of my age
+    counter -- only the young/old LABELS were, and re-run with the reset they give the same result.
+  * The maturation MECHANISM (aperture problem) is unaffected -- it was measured on a single traced
+    track, not on the buggy population counter.
+  * But it REFRAMES the whole thread: since the cloud is a uniform cohort, "immature tracks
+    dragging down the mature ones IN THE SAME FRAME" was never the situation. The frames that are
+    WORSE are the ones RIGHT AFTER a reseed, when the WHOLE cohort is young together. That is why
+    reseed-rare wins (fewer young-cohort frames) and why filtering age within a frame is a no-op
+    (within a frame all tracks are the SAME age).
+
+The corrected picture is simpler and sharper: maturity is a property of the COHORT/frame, not of
+individual tracks within a frame, so it cannot be exploited by per-track selection -- only by
+reseeding as rarely as possible, which is the existing policy.

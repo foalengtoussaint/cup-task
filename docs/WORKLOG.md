@@ -2941,3 +2941,26 @@ WORTH KEEPING FROM THIS BATCH -- the control it provided:
 Fitting the motion across many corresponded points BEATS differentiating a single position track
 by 36%, which is the central premise of the whole cloud approach, now measured directly rather
 than assumed.
+
+### Jacobian weighting on the CLOUD: helps the single-point path, does nothing here
+
+Last untried estimator idea. The flow path solves u_dot = J(X) v so each camera is weighted by the
+motion component it can actually SEE (worth -5% there, and viewing geometry is the largest driver
+of per-camera flow error). The cloud throws that away: it triangulates each track first, then
+differences the clouds. So: solve the rigid motion DIRECTLY from the per-camera pixel
+displacements of the tracked points, l1 fuser, same tracks, same frames.
+
+    method              median   mean    p90   ratio
+    kabsch (current)     14.70  15.27  53.64  0.938
+    jacobian-weighted    15.55  16.45  64.10  0.943
+Worse, and it wins on only 4/12 trials.
+
+WHY IT HELPS THE FLOW PATH BUT NOT THE CLOUD -- and this is the useful part. With ONE point, a
+camera looking along the motion contributes a near-zero, noise-dominated reading, and nothing else
+compensates; J is what stops that reading being trusted. With ~11 points spread over the object,
+the geometric diversity is ALREADY THERE -- the points themselves span directions, so per-camera
+visibility weighting is redundant, and the extra machinery only adds variance. **The cloud's
+multiplicity does the job the Jacobian does for a single point.**
+
+That is the last estimator idea I had. The remaining constraints are both structural: hemisphere-
+only camera coverage (rig), and the ~6 mm/s ambiguity in what "cup speed" even means (measurand).

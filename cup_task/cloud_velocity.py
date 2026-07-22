@@ -9,18 +9,25 @@ WHY A CLOUD AND NOT JUST THE KEYPOINT. A single triangulated point gives you tra
 rotation is invisible to it, because a rotating object whose centre is still produces zero motion
 at its centre. The cloud is what makes angular velocity observable at all.
 
-⚠ STATUS, MEASURED ON A SYNTHETIC RIG WITH KNOWN GROUND TRUTH (tests/test_cloud_velocity.py):
-    LINEAR velocity   WORKS -- 4-11% error against a true 0.72 m/s.
-    ANGULAR velocity  DOES NOT -- 3%, 791%, 65%, 89% against a true 4.8 rad/s. DO NOT USE IT YET.
-The asymmetry is structural, not a tuning problem. Translation is carried by the cloud's CENTROID,
-which averages the per-point errors down; rotation is carried by its SPREAD, which does not. And
-the cloud is RE-DETECTED every frame, so its points are not stable physical landmarks (on the test
-rig only 5 of 16 true object points were hit, with over half the cloud 11-27mm from any real
-point) -- exactly the assumption Kabsch needs. RANSAC (kabsch_ransac) makes the fit survive that
-well enough for translation, but 3-7 inliers on a near-planar cloud cannot pin a rotation.
-THE FIX, if angular velocity is needed: TRACK the sub-features across frames with PyrLK instead of
-re-detecting them, which supplies true correspondence. `cup_task.flow_speed` already does exactly
-this for a single point and is the better starting place.
+⚠⚠ THIS MODULE'S PIPELINE DOES NOT WORK ON REAL DATA. USE `cup_task.cloud_track` INSTEAD.
+It is kept because it is the recorded NEGATIVE RESULT that motivates the replacement, and because
+its solver half (kabsch / kabsch_ransac / compute_3d_velocity) is what cloud_track reuses.
+
+  synthetic rig  linear 4-11% error, angular 3-791% (tests/test_cloud_velocity.py)
+  REAL DELTA cup 13667 mm/s vs OMC, against the shipping flow path's 17.3 -- ~780x worse
+
+The synthetic test was far EASIER than reality: it renders crisp isolated blobs on a clean
+background, which are trivially matchable across views. A real cup is not. THE KILLER, measured at
+KNOWN-TRUE correspondences on DELTA P07: cross-view NCC has median **0.01** and clears the 0.65
+gate only **5%** of the time, so match_features_epipolar returns 1-2 matches out of ~15 candidates
+and the cloud collapses to ~3 points. That is not a threshold to tune -- a curved specular cup lit
+differently in each view does not produce cross-view-matchable patches at all. Ruled out first:
+the cup spans 43-69px (LARGER than the 35px ROI, so the ROI is entirely on the object), and wide
+baselines match slightly BETTER not worse (corr(baseline angle, matches) = +0.44).
+
+THE FIX is to never compare appearance across cameras: seed points on a known 3D surface and let
+PyrLK carry them within each camera, so cross-view correspondence is by CONSTRUCTION. That is
+`cup_task.cloud_track`, which reaches 29.7 mm/s on the same data.
 
     from cup_task.cloud_velocity import CloudVelocityTracker
     trk = CloudVelocityTracker(cameras, units_per_metre=1000.0)   # mm calibration

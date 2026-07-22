@@ -3040,3 +3040,52 @@ enters. What remains is common-mode across tracks within a frame (and correlated
 frames), which time-averaging cannot remove either -- it only adds lag. **Spatial averaging gets
 there first; temporal averaging finds nothing left to remove.** That is a different and more
 accurate statement than "the per-track bias is persistent".
+
+### Attacking the point-selection lever (the 6 mm/s one), and where the three open levers stand
+
+The time-vs-selection decomposition said POINT SELECTION is worth 6.20 mm/s and time ~1. So the
+lever is which points the fit trusts. Three things tried:
+
+**1. Robust loss instead of RANSAC** (IRLS l1 / Huber on the rigid fit -- the same hard-reject vs
+soft-downweight question the flow fuser settled in l1's favour). **Here the answer INVERTS:**
+    ransac t=5  16.42 | irls-l1 17.40 | irls-huber 18.18
+Mechanistically right: a slid track is a WRONG CORRESPONDENCE, not a noisy measurement, so it
+should be excluded rather than down-weighted. The flow fuser's cameras are all measuring the same
+true thing with different noise; a slid track is measuring something else.
+
+**2. RANSAC threshold sweep** (never tuned; 5.0mm was a guess):
+    t=5.0 16.42 / p90 75.7 / cov 92.7%      t=1.5 16.48 / 57.1 / 83.0%
+    t=3.0 16.07 / p90 75.0 / cov 89.4%      t=1.0 15.21 / 53.0 / 77.7%
+    t=2.0 15.60 / p90 65.0 / cov 86.4%   <- best balance, beats t=5 on 10/12
+Monotonic in p90 (75.7 -> 53.0) but not in median, and it buys accuracy with coverage. Bootstrap
+CI on (t=2 - t=5) = [-1.60, 0.00] -- barely excludes zero. NOT ADOPTED: the gain sits inside the
+~6 mm/s measurand ambiguity, and this is exactly the shape of the n_seed trap.
+
+**3. Per-track REPROJECTION quality** -- a track whose cameras disagree about where it is (1.0-6.2
+px across tracks, a 6x spread, available at runtime with no ground truth) is a track being pulled
+by a bad camera. RANSAC judges each FRAME PAIR, never a track's history, so this is new information.
+    baseline         17.21 / p90 80.3 / cov 95.4%
+    gate at 3px      15.41 / p90 72.2 / cov 79.0%   (7/12)
+    gate at 2px      16.01 / p90 70.8 / cov 63.6%   (8/12)
+    reproj-WEIGHTED  18.30 / p90 84.6 / cov 96.1%   (3/12)  <- soft weighting loses AGAIN
+Real signal, but a steep coverage price and only 7/12, so it does not clearly beat the rigidity
+gate already shipping. Noted, not adopted.
+
+**THE PATTERN, now seen four times** (LOO-vs-l1 on flow, scale gate, RANSAC-vs-IRLS, reproj gate
+vs weight): on the CLOUD, hard rejection beats soft weighting every time, while on the single-point
+FLOW path soft weighting won. The difference is what the outlier IS -- a bad camera still measures
+the true target with more noise (down-weight it), but a slid track measures a different point
+entirely (exclude it).
+
+### The three remaining levers, honestly
+
+  * **Hemisphere-only camera coverage** -- CLOSED in software. All 5 cameras sit within 85deg of
+    their mean direction as seen from the cup; one face is never imaged. This is also what caps
+    the cylinder fit (patch [20.8, 15.0, 6.8] mm vs a full cup's ~[40, 28, 28]). Fix is camera
+    placement, not code.
+  * **~6 mm/s measurand ambiguity** -- attacked via the cylinder fit, which failed for the reason
+    above. It is downstream of the coverage limit, so it is not independently addressable either.
+  * **Per-track bias** -- the only OPEN one, which is why this section exists. Reprojection quality
+    is a genuine per-track signal (6x spread) and gating on it does help, but it costs 16 points of
+    coverage for a 7/12 win. The deeper fix is to stop tracks sliding in the first place, which is
+    an appearance/tracking problem, not an estimation one.

@@ -3497,3 +3497,36 @@ SO THE ANSWER TO "average many tracks after a point" IS: the tracker already run
 tracks and already averages them; selecting or weighting by maturity is either coverage selection or
 a sub-noise reweighting. The settling is real and it is WHY persistent tracking works -- but it is
 banked automatically by not resetting age, not by a fit-time rule.
+
+### The user's real proposal: NEVER replace tracks, ADD fresh seeds continuously
+
+Clarified after several rounds. Not reseed-and-replace, not topup-dead-slots: keep every track
+that is still tracking, and ADD 48 fresh seeds every K frames on top, so the population only grows
+(bounded by a cap and by natural death as the cup rotates points out of view).
+
+FIRST, a code fact that reframes it: a track is killed ONLY by tracking failure (PyrLK status,
+forward-backward > 1px, or the anchor cull). NOTHING kills a track by age, and between reseeds
+nothing replaces it. So "keep every seed alive" is ALREADY the behaviour between reseeds -- the
+only involuntary mass death is a full seed(), which the user correctly identified as the waste.
+
+Built it properly (accumulating tracker, add 48 seeds every 15 frames, cap 400 live, drop nothing
+voluntarily). n=12:
+    ACCUMULATE-seeds : median 17.68  coverage ~100%   (beats baseline 1/12)
+    baseline (reseed): median 14.70  coverage  74%
+It DOES deliver the coverage the user expected (constantly adding seeds means the cloud never runs
+dry -- 92-100% vs 74%). But accuracy is WORSE.
+
+WHY, and it is the mechanism the user themselves surfaced two questions ago: adding fresh seeds
+continuously means the cloud is ALWAYS diluted with age-0 tracks, whose per-frame step noise is
+~150 mm/s (vs ~8.5 for settled tracks). The baseline reseeds RARELY, so it runs mostly on settled
+tracks; the accumulator always mixes unsettled ones in. So the settling curve does not just explain
+why persistent tracking beats reseeding -- it explains why CONTINUOUS reseeding (even additive,
+even keeping survivors) is worse than RARE reseeding: every addition injects speed noise.
+
+This closes the reseed line of questioning. The optimal policy is exactly the current one -- add
+tracks ONLY when forced (cloud collapse), so the working population is as SETTLED as possible.
+Coverage is the price, and the coverage gaps are 1-frame holes (see the coverage entry), so it is
+the right trade for a speed measurement.
+⚠ Note this is a per-frame-accuracy statement; if a downstream task needed continuity over
+accuracy, the accumulator's 100% coverage at +3 mm/s might be preferable. Kept as a documented
+alternative, not built into CloudTracker.

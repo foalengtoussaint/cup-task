@@ -3530,3 +3530,35 @@ the right trade for a speed measurement.
 ⚠ Note this is a per-frame-accuracy statement; if a downstream task needed continuity over
 accuracy, the accumulator's 100% coverage at +3 mm/s might be preferable. Kept as a documented
 alternative, not built into CloudTracker.
+
+### Decouple alive-vs-trusted (user's real idea) + the maturation mechanism, finally
+
+**USER'S IDEA, precisely: keep every track alive for COVERAGE, but do the FIT only on the SETTLED
+subset.** Neither previous test did this -- the accumulator fit on everything (diluted), the
+age-gate dropped young from both (coverage collapsed). This keeps coverage from the full population
+and accuracy from the mature subset, with a fallback to all-tracks when <6 mature so no frame is
+lost.
+
+    accumulate + fit ALL tracks   : median 17.40
+    accumulate + fit MATURE only  : median 17.43  cov 100%   (fit-mature beats fit-all 8/12)
+    baseline (reseed-rare)        : 14.70 at 74%
+The decoupling WORKS as designed (100% coverage, and trusting mature tracks helps 8/12) but the gain
+is tiny (17.40 -> 17.43 is a wash) and BOTH lose to reseed-rare. Reason: an accumulator that adds
+seeds every 15 frames has a YOUNGER mean population than one that reseeds ~8x/trial, so even
+'fit-mature-only' has fewer settled tracks to choose from at any moment. The settled tracks in the
+reseed-rare baseline are simply OLDER on average. Coverage was never the bottleneck (its gaps are
+1-frame), so buying it back at any accuracy cost is the wrong trade for a speed measurement.
+
+**THE MATURATION MECHANISM, shown at the source (finally).** Traced one seed's PyrLK window frame
+by frame, reporting lambda_min of the STRUCTURE TENSOR (how well the 21x21 window constrains the
+2D shift):
+    age  1-9 : lambda_min low/erratic, step = 9.2, 9.1, **17.8, 0.0, 16.0, 0.0** px  (phantom)
+    age 20-25: lambda_min higher,      step = 4.0, 3.3, 2.3, 1.8 px  (smooth, tracks the real slow-down)
+IT IS THE APERTURE PROBLEM. PyrLK solves for the shift (du,dv) that matches the window; the
+structure tensor's SMALLER eigenvalue is how well that solve is constrained. A window with texture
+in only ONE direction (an edge) pins the shift ALONG it but leaves the PERPENDICULAR component
+FREE -- PyrLK guesses it, and the guess is the step noise. A fresh seed is a SYNTHETIC 3D point,
+so nothing guarantees a 2D-textured feature is exactly there; it starts aperture-limited. Over
+~10 frames PyrLK walks the point onto real texture, lambda_min rises, both shift components become
+determined, and the step goes clean. Settling = the aperture problem resolving. Purely a tracker
+property, nothing to do with the cup's surface being measured.

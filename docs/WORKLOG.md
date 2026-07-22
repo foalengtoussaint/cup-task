@@ -2008,3 +2008,122 @@ YOLO+flow — a strong per-frame detector beats tracking-from-seed. Weights kept
 Also this session: TAPNext speed was mis-measured at 13fps (fp32) -> 28fps with bf16 autocast (user
 caught it). And a methods lesson reinforced repeatedly: CHECK THE TAIL (p90/p95/max) and use ABSOLUTE
 error not correlation, or you get fooled (correlation hid speed magnitude; median hid CT drift-risk).
+
+## 2026-07-21/22 >>> v3 PIPELINE: online/offline split, built + benchmarked + measured end-to-end
+
+**Ask:** "design the new pipeline, choose what will run online and what will run offline (online only
+if ultimately faster or if it looks better on screen), benchmark the speed, get official metrics using
+displacement and speed errors for the relevant joints and the cup, compute segmentation errors and the
+Murphy measures." Then, across the session: score ALL phases not just drinking, use every Murphy
+measure, don't hold phases fixed, and render the graphs. Full writeup: **docs/PIPELINE_V3.md**
+(schema + every table). This entry records the reasoning and the corrections.
+
+### The split, and why
+
+Drawn at THE POINT A STAGE STOPS NEEDING RAW PIXELS. Online: decode, YOLO-pose, cup detect-once +
+UETrack, PyrLK flow (wrist AND cup). Offline: triangulation, consensus, flow 2D->3D lift, SmoothNet,
+speed blend, segmentation, Murphy.
+
+FLOW IS THE ONLY REAL DECISION and the user's criterion settles it: online the frame pair is already
+in hand, so its MARGINAL cost is 0.4-3.4ms/rig-frame (CPU thread pool, PyrLK releases the GIL, GPU
+pass hides the rest); offline it forces a SECOND full decode = 5182ms/trial = 6x the entire offline
+budget (887ms). Same numbers, ~6x cheaper online.
+SMOOTHNET MUST BE OFFLINE: symmetric +-16-frame window = 0.27s of FUTURE. Not a preference.
+
+### Speed (RTX 3060 Ti, 8GB, 38 SMs)
+
+Online rig-fps 1/5/10 cam: pose 237/75/42, cup 170/84/46, BOTH+flow 100/38.5/21.6. Offline 887ms/trial
+(10% of realtime), 90% of it SmoothNet.
+
+**"Saturated" DIAGNOSED, not assumed.** NOT memory (1.1GB of 8.2GB). CUDA-EVENT timing at 5 cams:
+pose 16.06 + cup 11.37 = 27.43ms device work in a 29.7ms loop = **92% GPU busy**, ceiling ~36fps even
+with perfect overlap. That is why threading the two nets is WORSE than serial (0.81/0.87/0.91x) and
+batching gives no economy past 1 cam (raw pre-resized batched forward == full predict()).
+⚠ TRAP: predict() RETURNS BEFORE THE GPU FINISHES — wall-clock around it times LAUNCHES and made an
+earlier pass conclude "99% CPU-bound", the exact opposite. Use torch.cuda.Event.
+Two benchmark artifacts fixed: charging a per-frame 1080p BGR->RGB copy (6.96ms > UETrack's own
+4.04ms step) to the tracker read 91fps instead of 170+; and reporting flow's SERIAL cost (ncam x
+per-wrist) instead of its marginal overlapped cost, overstating it ~5-30x.
+
+### Accuracy (n=12, P07+P08 — see "cohort" below)
+
+DISPLACEMENT = origin-relative ||X(t)-X(t0)|| per the user's definition: rotation-invariant like
+speed, needs no rigid fit, so it does NOT inherit the ~38mm rig<->mocap calibration floor.
+Pose: wrist 4.9mm / elbow 18.5 / shoulder 10.3 / nose 2.6; SmoothNet is position-neutral (+-0.7mm)
+but cuts speed error ~4x (wrist 42.7 -> 10.6 mm/s). Wrist speed BLEND 6.9mm/s per-frame, 20.9 at the
+peak (v1 pos-diff: 42.7 / 142.3).
+Cup: d-corr 0.9996 (reproduces the v2 shootout), displ 2.3mm median, 100% coverage.
+
+### Corrections (each reversed a stated conclusion)
+
+1. **COHORT.** P13 was excluded from speed but kept elsewhere — inconsistent. Its OMC clock drifts
+   3.8%, which corrupts POSITION too (cup displ 10-12mm vs 2-3mm; d-corr 0.974 vs 0.998; it owned the
+   entire 504mm tail). Now excluded EVERYWHERE. n=18 -> 12.
+2. **"USE v1 FOR CUP SPEED" — RETRACTED.** Pure selection bias: v1's 78% coverage is almost entirely
+   the STATIONARY cup (median OMC cup speed 0.6mm/s on frames v1 HAS vs 139.3mm/s on frames it
+   MISSES), so its all-frames median scores "is the still cup still?". On MOVING frames v1 is 1.8x
+   worse and sees half of them. v3 also wins displacement where both exist (4.1 vs 5.0mm).
+3. **CUP SPEED NOISE IS NOT TRACKER ERROR.** ~1mm per-frame positional wobble = 0.15% of a 700mm
+   trajectory, invisible on a displacement plot, becomes ~60mm/s differentiated. During real motion
+   OMC and v3 agree (p90 step 11.6 vs 10.2mm); the whole gap is at rest. So "positions match but
+   speeds differ" was never a bug.
+4. **SEGMENTATION WAS NOT SOLVED.** Reporting the dwell alone (67ms) hid that returning/rest_post were
+   NEVER PRODUCED in 11/12 trials and total_movement_time over-ran by 1.50s.
+
+### The segmentation fix (user's diagnosis)
+
+Cause: grasp_end = "last frame with speed > BACK_OFF(10mm/s)". After the cup lands there is a burst of
+small noise right at that gate, so the boundary was set by whichever signal twitched last; a
+detect-once tracker never falls silent (rest 40mm/s vs OMC 11) so it never fired.
+User: *"the position stops moving at the same time relative to origin... its just that theres some
+noise in the speeds when the cup reaches the table"*. Exactly right — READ THE BOUNDARY OFF THE
+DISPLACEMENT CURVE. Both tracks flatten at the same instant even when their speeds disagree. First
+sustained flat run after the cup returns near rest, anchored inside the transport window.
+RESULT: missing phases 11/12 trials -> **0/83**; back_transport offset -> 167ms; returning onset ->
+200ms; every other boundary 17-125ms; total_movement_time 1.50s -> **0.03s** (now BEATS v1's 0.04).
+Two failed attempts recorded in the doc so they are not retried (sign-only rule: 21/52 misses;
+stability+direction: 3/83). ⚠ I broke a working version twice while "improving" it — the user had to
+say stop.
+
+### Murphy — full set, END-TO-END
+
+8/8 position measures + 7 raw-point angle measures (NOT the ported set: the container needs a MuJoCo
+qpos IK fit and refuses raw-point angles; both sides use the identical formula so the comparison is
+fair, but they are computable-to-SEE only). Phases NO LONGER held fixed — each arm segments with its
+own cup, which is what the pipeline actually delivers now that segmentation is good.
+peak_velocity -42%, time_to_peak_% -52%, movement_units -50%, peak_elbow_ang_vel -32%,
+total_movement_time -20%. Static angles barely move (correctly). time_to_first_peak_velocity is NaN
+in BOTH arms (n=8) — unresolved in the measure itself, not a v3 regression.
+
+### Cup flow — the wrist method transfers (user's idea)
+
+cup_task.flow_speed is target-agnostic; pointed at the cup pixel from the UETrack cache
+(scripts/cup_flow_probe.py, n=12): MOVING-frame speed err pos-diff 77.4 -> **flow 25.3** mm/s, rest
+speed 42.5 -> 4.8 (clears the 10mm/s gate). Unlike the wrist, the BLEND does not win (SmoothNet
+already handles the cup's slower peaks) so plain flow is the pick for reporting cup speed.
+NOT adopted for the segmenter, two measured reasons: in the return region flow ties SmoothNet (11.8
+vs 12.0) with a worse tail (p90 25.5 vs 16.0), and the segmenter needs a POSITION track that flow
+cannot provide. Also exposed the 3D velocity VECTOR (direction is free from the flow triangulation) —
+but flow-projected radial velocity lost to d(disp)/dt on the SmoothNet track (5.8 vs 4.6), because
+smoothing had already removed the noise flow exists to avoid.
+
+### Bugs fixed
+
+- **SmoothNet was TRANSLATING every track ~84mm** — absolute world coords (~1.5m out) fed to a
+  root-relative-trained h36m net, so its learned bias landed as a constant offset. Fixed by centring
+  each window on its own mean: 84mm -> 1.9mm, jitter (-92%) and peak-velocity preserved, speed
+  IMPROVED. Invisible to jitter/speed-corr/peak — all blind to a constant offset. Only origin-relative
+  DISPLACEMENT caught it. See project_smoothnet_offset_bug.
+- **UETrackBatch.update called .tolist() PER CAMERA** = N GPU->CPU syncs re-serialising the batch
+  right after the batched forward (~50% of its CPU time). One transfer: 178 -> 217fps, identical
+  output (0.0001px).
+- **UETrack weights lived in a deleted session scratchpad**, silently breaking every tracker run.
+  Re-fetched to models/trackers/uetrack/ (repo-persistent); wrapper overrides the config path.
+- **Per-axis displacement** measured the MMC<->OMC frame ROTATION, not tracking error (cup read
+  299mm). Origin-relative fixes it.
+- **The cup was never being smoothed** (smooth_tracks excludes it by default).
+
+Commits: b9a4ab5 (v3 split + flow/blend + SmoothNet fix), 928b521 (cohort + cup-speed + GPU
+diagnosis), ae67bc5 (segmentation displacement boundary + all-phase metric + full Murphy).
+Scripts: bench_v3.py, results_v3_delta.py, cup_flow_probe.py. Modules: cup_task/{flow_speed,
+speed_blend}.py.

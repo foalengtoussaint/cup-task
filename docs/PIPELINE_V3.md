@@ -17,25 +17,97 @@ and caches are untouched; a linear time-warp of its OMC would restore all 6 tria
 
 The split is drawn at **the point where a stage stops needing raw pixels.**
 
+### Full schema
+
 ```
-   ── ONLINE (per frame, while the pixels are in hand) ──────────────────────────
-   capture ─┬─► YOLO-pose (batched across cams) ──────► 2D keypoints ──┐
-            ├─► YOLO cup (once) → UETrack (batched) ──► 2D cup points ─┤
-            └─► PyrLK flow at the wrist pixel ────────► 2D velocity ────┤
-                                                                        │  numbers only
-   ── OFFLINE (per trial, on numbers) ───────────────────────────────────▼──────
-      triangulate ─► consensus (cup 3D) ─► SmoothNet (pose 3D) ─► speed BLEND
-                  ─► segmentation (drink phases) ─► Murphy scoring
+ ═══ ONLINE — per frame, N cameras, while the pixels are in hand ════════════════════════
+        (names under each box = the cup_task module that implements it)
+  ┌──────────────┐
+  │ N × capture  │  1080p @60fps, BGR→RGB once per frame
+  └──────┬───────┘  (shared by every consumer below)
+         │
+         ├──────────────────────┬─────────────────────────┬──────────────────────┐
+         ▼                      ▼                         ▼                      ▼
+  ┌─────────────┐      ┌──────────────────┐      ┌───────────────┐      ┌──────────────┐
+  │ YOLO-pose   │      │ YOLO cup DETECT  │      │ PyrLK flow    │      │ PyrLK flow   │
+  │ batched N   │      │  — first frame   │      │ @ wrist px    │      │ @ cup px     │
+  │             │      │      only —      │      │               │      │              │
+  │             │      │        ↓         │      │ CPU threads,  │      │ CPU threads  │
+  │             │      │ UETrack batched  │      │ overlaps GPU  │      │              │
+  │             │      │ N (every frame)  │      │               │      │              │
+  └──────┬──────┘      └────────┬─────────┘      └───────┬───────┘      └──────┬───────┘
+   pose_keypoints          cup_detect               flow_speed            flow_speed
+         │                 cup_track                     │                      │
+         ▼                      ▼                        ▼                      ▼
+    2D keypoints          2D cup points        2D wrist Δpx/frame      2D cup Δpx/frame
+         │                      │                        │                      │
+ ════════╪══════════════════════╪════════════════════════╪══════════════════════╪═══════
+         │      OFFLINE — per trial, numbers only (no pixels, no GPU needed)     │
+         ▼                      ▼                        ▼                      ▼
+  ┌─────────────┐      ┌──────────────────┐      ┌──────────────────────────────────┐
+  │ triangulate │      │ greedy consensus │      │ triangulate {p} and {p+flow},    │
+  │ (DLT, ≥2    │      │ ≥2 cams, 150mm   │      │ difference → 3D VELOCITY VECTOR  │
+  │  cameras)   │      │ continuity gate  │      │ (never differentiates position)  │
+  └──────┬──────┘      └────────┬─────────┘      └────────────────┬─────────────────┘
+    triangulate            consensus                         flow_speed
+         ▼                      ▼                                 │
+   pose 3D (mm)           cup 3D (mm)                             │
+         │                      │                                 │
+         ▼                      ▼                                 │
+  ┌─────────────┐      ┌──────────────────┐                       │
+  │ SmoothNet   │      │ SmoothNet        │                       │
+  │ window 32   │      │ (same filter,    │                       │
+  │ per joint,  │      │  cup track)      │                       │
+  │ centred     │      │                  │                       │
+  └──────┬──────┘      └────────┬─────────┘                       │
+    pose_smooth            pose_smooth                            │
+         │                      │                                 │
+         ├──────────────────────┼─────────────────────────────────┤
+         ▼                      ▼                                 ▼
+  ┌────────────────────────────────────┐              ┌────────────────────────┐
+  │ SEGMENTATION  segment_cup_only     │              │ speed BLEND            │
+  │  • speed + displacement-from-rest  │              │ sigmoid gate on speed: │
+  │  • drink = near mouth AND slow     │              │  slow → flow           │
+  │  • return ends when DISPLACEMENT   │              │  fast → SmoothNet      │
+  │    flattens (not on a speed gate)  │              └───────────┬────────────┘
+  │        ↓ to_murphy_phases          │                    speed_blend
+  │  + reaching / returning from the   │                          │
+  │    HAND's direction of travel      │                          │
+  │  → 7 phases                        │                          │
+  └────────────────┬───────────────────┘                          │
+              segment                                             │
+                   └──────────────────┬───────────────────────────┘
+                                      ▼
+                       ┌──────────────────────────────┐
+                       │ MURPHY SCORING               │
+                       │ 8 position measures          │
+                       │ (medfilt3 + 4Hz internally)  │
+                       │ peak_velocity ← the blend    │
+                       └──────────────┬───────────────┘
+                                    score
+                                      ▼
+                              per-trial measures
 ```
 
-| stage | where | why |
-|---|---|---|
-| decode, YOLO-pose, cup detect + UETrack | **online** | needs the frame; is the capture loop |
-| **PyrLK flow** | **online** | needs the frame PAIR. See below — this is the one real decision. |
-| triangulation, consensus | offline | pure geometry on 2D points; nothing to gain online |
-| SmoothNet | **offline, mandatory** | it is a *non-causal* window filter (±16 frames ≈ 0.27s of FUTURE). Cannot run online without adding latency. |
-| speed blend | offline | needs SmoothNet, so it inherits offline |
-| segmentation, Murphy | offline | needs the whole trial by definition (a dwell is an interval) |
+**Reading the schema.** Four independent things are measured per frame online (pose, cup, and a flow
+vector at each of the two targets); everything downstream is arithmetic on those numbers. The two
+flow branches exist because *differentiating a position track is what injects the noise* — flow
+measures displacement between two frames directly, so it never sees the ~1 mm per-frame positional
+wobble that becomes ~60 mm/s of phantom speed. SmoothNet appears twice (pose and cup) and is the
+same filter both times.
+
+| stage | module | where | why |
+|---|---|---|---|
+| decode, YOLO-pose | `pose_keypoints` | **online** | needs the frame; is the capture loop |
+| cup detect (once) + UETrack | `cup_detect`, `cup_track` | **online** | same |
+| **PyrLK flow** (wrist + cup) | `flow_speed` | **online** | needs the frame PAIR. The one real decision — see below. |
+| triangulation | `triangulate` | offline | pure geometry on 2D points; nothing to gain online |
+| cup consensus (≥2 cams) | `consensus` | offline | same |
+| flow 2D→3D velocity lift | `flow_speed` | offline | geometry on the online flow vectors |
+| SmoothNet (pose **and** cup) | `pose_smooth` | **offline, mandatory** | *non-causal* window filter (±16 frames ≈ 0.27 s of FUTURE). Cannot run online without adding latency. |
+| speed blend | `speed_blend` | offline | needs SmoothNet, so it inherits offline |
+| segmentation (7 phases) | `segment` | offline | needs the whole trial by definition (a dwell is an interval) |
+| Murphy scoring | `score` | offline | needs the phases |
 
 **Why flow is online (the measured justification).** Flow is the only stage that could go either way,
 and the criterion you set — put it online only if it is ultimately faster — decides it cleanly:
@@ -205,10 +277,33 @@ produce. Those frames are genuinely hard, not a tracker defect.
 
 **Conclusion: use v3 for the cup, full stop.** Better typical accuracy (4.1 vs 5.0 mm where both
 exist), 2× the coverage on the frames that matter, better speed where the cup moves, and it is what
-makes the segmentation below work. Position is near-perfect (d-corr 0.9996) while its derivative is
-0.93 — the same position-good / derivative-noisy split the wrist shows, and the reason the wrist gets
-the flow+blend treatment. **The cup has no equivalent yet: applying a flow-style direct-velocity
-measurement to the cup is the clearest open win.**
+makes the segmentation below work.
+
+### Cup SPEED — the same position-good / derivative-noisy split as the wrist
+
+v3's cup position is near-perfect (d-corr 0.9996) but its *derivative* is only 0.93. The cause is
+mechanical: **~1 mm of per-frame positional wobble**, which is 0.15 % of a 700 mm trajectory and
+completely invisible on a displacement plot, becomes **~60 mm/s** once differentiated. (OMC's own
+per-frame step is 0.23 mm → ~14 mm/s; during actual motion the two agree — p90 step 11.6 vs 10.2 mm.
+The gap is entirely at rest.) That noise floor is what used to break the segmenter's 10 mm/s gate.
+
+So the wrist's fix was applied to the cup — `cup_task.flow_speed` is target-agnostic, it just needed
+cup pixels instead of wrist pixels (`scripts/cup_flow_probe.py`, n=12):
+
+| cup speed method | \|err\| all | **MOVING** | corr | at REST | clears 10 mm/s gate |
+|---|---|---|---|---|---|
+| pos-diff | 46.3 | 77.4 | 0.931 | 42.5 | **no** |
+| SmoothNet | **6.6** | 35.9 | 0.995 | 3.4 | yes |
+| **flow (PyrLK)** | 7.5 | **25.3** | 0.989 | 4.8 | yes |
+| blend | 7.3 | 27.4 | 0.994 | 4.6 | yes |
+
+**Flow is 3× better than pos-diff where the cup actually moves** (25.3 vs 77.4 mm/s) — the wrist
+method transfers. Note the *blend* does NOT win here, unlike the wrist: SmoothNet already handles the
+cup's slower peaks, so plain flow is the pick for reporting cup speed.
+
+**But the SEGMENTER uses SmoothNet, not flow** — two measured reasons: (1) in the return region the
+two tie (11.8 vs 12.0 mm/s) and flow has a worse tail (p90 25.5 vs 16.0); (2) the segmenter needs a
+3D *position* track to compute displacement-from-rest, which flow cannot provide.
 
 ---
 
@@ -228,34 +323,111 @@ peak** — and peak velocity is a Murphy measure, so this propagates straight to
 
 ---
 
-## 5. Segmentation (drink phases) — n=12
+## 5. Segmentation — ALL 7 phases, n=12
 
-Same segmenter on both sides, so the **cup track is the only variable.**
+⚠ **Score every phase, not just the drink dwell.** An earlier version of this document reported only
+the dwell (67 ms) and called segmentation solved. That was misleading: the dwell is the *easiest*
+boundary — the cup stops dead at the mouth — and reporting it alone **hid a defect that broke 11 of
+12 trials**. The table below is the honest metric: onset, offset and duration error for each of the
+7 Murphy phases, plus a **miss** count (a phase that was never produced at all, which is worse than a
+mis-timed one).
 
-| | median \|err\| | p90 |
+Same segmenter on every row, so the **cup track is the only variable.** v3 = UETrack + SmoothNet.
+
+| phase | miss | \|Δonset\| | \|Δoffset\| | \|Δduration\| |
+|---|---|---|---|---|
+| rest_pre | 0/12 | 0 ms | 17 ms | 17 ms |
+| reaching | 0/12 | 17 ms | 42 ms | 42 ms |
+| forward_transport | 0/12 | 42 ms | 67 ms | 125 ms |
+| drinking | 0/12 | 67 ms | 17 ms | 108 ms |
+| back_transport | 0/12 | 17 ms | 167 ms | 258 ms |
+| returning | 0/11 | 200 ms | 17 ms | 183 ms |
+| rest_post | 0/12 | 17 ms | 0 ms | 17 ms |
+| **ALL** | **0/83** | **17 ms** | **17 ms** | |
+
+**Every phase is produced in every trial, and every boundary is within 1–12 frames.**
+
+### The defect the dwell-only metric hid, and the fix
+
+`grasp_end` used to be *"the last frame with speed > BACK_OFF (10 mm/s)"*. Once the cup lands there is
+a burst of small noise right around that gate — set-down contact, tracker residual, mocap marker
+wobble — so the boundary was decided by whichever signal twitched last rather than by the event. A
+detect-once tracker never falls silent at all (rest speed ~40 mm/s vs OMC's ~11), so:
+
+- `returning` / `rest_post` were **never produced in 11/12 trials**
+- `back_transport` swallowed the trial tail
+- `total_movement_time` over-ran by **1.50 s**
+
+**Fix: read the boundary off the DISPLACEMENT curve, not the speed curve.** The cup landing is where
+displacement-from-rest stops changing, and *both tracks flatten at the same instant even when their
+speeds disagree*. Take the FIRST sustained flat run after the cup returns near rest (everything after
+landing is noise), anchored inside the transport window so an outward pause cannot satisfy it.
+
+| | before | after |
 |---|---|---|
-| **dwell** | **67 ms** | 255 ms |
-| onset | 50 ms | 128 ms |
-| offset | 25 ms | 202 ms |
+| missing phases | 11/12 trials | **0/83** |
+| back_transport offset | unbounded | **167 ms** |
+| returning onset | unbounded | **200 ms** |
+| total_movement_time error | 1.50 s | **0.03 s** |
 
-67 ms median dwell error = **4 frames at 60 fps**, on dwells of 0.6–1.7 s (≈5 % of the interval).
-Onset is 3 frames, offset 1.5. 9 of 12 trials are within 120 ms; the tail (P07_12 +300 ms, P08_12
-+267 ms) is where the cup is occluded at the apex and the track is interpolated.
+Two failed attempts are recorded so they are not retried: a **sign-only** rule (`radial >= 0`, no
+magnitude floor) fires during the *outward* trip and collapsed the window (21/52 misses); a
+**two-condition stability + direction** rule was better but still lost phases (3/83). Displacement
+flattening is what works.
 
-## 6. Murphy measures — v1 raw pose vs v3 — n=12
+**Residual (167/200 ms).** This is one shared boundary — back_transport-end = returning-onset — and
+checking the raw 100 Hz mocap shows it is genuinely ambiguous rather than a tracking error: in the
+disputed gaps the cup moves a median of 14.3 mm/s over a 4.8 mm range (a still cup is ~1 mm/s, ~1 mm).
+Participants keep adjusting the cup for up to ~1.4 s after setting it down. In ~2 trials v3
+over-smooths that real motion, in ~1 it invents motion the mocap does not show, and in ~1 OMC's own
+threshold exits early while motion continues. Neither side is simply right.
 
-Phases held FIXED (from the OMC cup), so the **pose source is the only variable.**
+## 6. Murphy measures — v1 vs v3, |error| vs OMC — n=12
+
+**END-TO-END**: each arm segments with its OWN cup track (v1 with v1's, v3 with v3's, OMC with the
+OMC cup), so these numbers include BOTH the pose and the segmentation — what the pipeline actually
+delivers. Now that the segmentation is good, holding phases fixed would flatter both arms by handing
+them ground-truth boundaries they would never have live. (`--fixed-phases` still isolates the pose
+for attribution.)
+
+### Position measures — the ported set, 8/8
 
 | measure | n | v1 \|err\| | v3 \|err\| | change |
 |---|---|---|---|---|
-| total_movement_time | 12 | 0.00 | 0.00 | — |
+| total_movement_time (s) | 12 | 0.04 | **0.03** | −20 % |
 | **peak_velocity** (mm/s) | 10 | 45.22 | **26.41** | **−42 %** |
-| **number_of_movement_units** | 12 | 2.00 | **0.50** | **−75 %** |
-| max_trunk_displacement (mm) | 5 | 7.01 | 7.01 | 0 % |
+| time_to_peak_velocity (s) | 12 | 0.06 | **0.05** | −14 % |
+| **time_to_peak_velocity_percent** | 12 | 22.91 | **10.94** | **−52 %** |
+| time_to_first_peak_velocity (s) | 8 | nan | nan | — |
+| time_to_first_peak_velocity_percent | 8 | nan | nan | — |
+| **number_of_movement_units** | 12 | 2.00 | **1.00** | **−50 %** |
+| max_trunk_displacement (mm) | 5 | 7.01 | 7.08 | +1 % |
 
-The two measures that read the *derivative* both improve sharply — they are exactly the ones jitter
-was corrupting. `total_movement_time` is phase-derived (phases are fixed here, so it cannot move) and
+The measures that read the *derivative* improve most — exactly the ones jitter was corrupting.
 `max_trunk_displacement` is a slow positional measure SmoothNet correctly leaves alone.
+⚠ `time_to_first_peak_velocity` returns NaN in **both** arms (n=8) — an unresolved issue in the
+measure itself, not a v3 regression; not yet investigated.
+
+### Angle measures — 7, raw-point
+
+⚠ **NOT the ported container set.** The container computes angles from a MuJoCo `qpos` IK fit and
+explicitly refuses raw-point angles ("would inherit pose jitter"); cup-task has no body model. Both
+sides use the identical formula, so the MMC-vs-OMC comparison is fair, but these are
+computable-to-*see*, not for clinical scoring.
+
+| measure | n | v1 \|err\| | v3 \|err\| | change |
+|---|---|---|---|---|
+| elbow_extension_reaching (°) | 12 | 6.35 | **5.99** | −6 % |
+| shoulder_flexion_reaching (°) | 10 | 20.65 | 20.46 | −1 % |
+| shoulder_flexion_drinking (°) | 11 | 21.47 | 22.10 | +3 % |
+| shoulder_abduction_reaching (°) | 12 | **2.19** | 3.12 | +42 % |
+| shoulder_abduction_drinking (°) | 12 | 8.73 | **8.50** | −3 % |
+| **peak_elbow_ang_vel** (°/s) | 12 | 66.88 | **45.49** | **−32 %** |
+| interjoint_coordination (r) | 3 | 0.00 | 0.06 | — |
+
+Same pattern: the angular *velocity* measure improves sharply (−32 %) while the static angles barely
+move. The shoulder-flexion errors (~20°) are large for both arms — a raw-point angle definition gap,
+not a tracking difference. `interjoint_coordination` has n=3 and is not interpretable.
 
 ---
 
@@ -273,16 +445,40 @@ was corrupting. `total_movement_time` is phase-derived (phases are fixed here, s
    persistent) and the wrapper now overrides the config path at load time.
 3. **Displacement was first computed per-axis**, which measured the MMC↔OMC frame rotation rather
    than tracking error (the cup read 299 mm). Origin-relative displacement removes the issue.
+4. **`segment_cup_only` ended the return on a speed threshold**, which a detect-once tracker never
+   satisfies — 11/12 trials lost their terminal phases and `total_movement_time` over-ran by 1.50 s.
+   Now ends on displacement flattening (§5). Only visible once *all 7 phases* were scored.
+5. **The cup was never being smoothed.** `pose_smooth.smooth_tracks` excludes it by default (it has
+   its own tracker), but its ~1 mm per-frame wobble → ~60 mm/s of phantom speed is exactly what
+   SmoothNet fixes: rest speed 40 → 2.8 mm/s, position moved only 0.76 mm.
+
+### Measurement traps hit during this run (all reversed a conclusion)
+
+- **A metric that hides the defect.** Dwell-only segmentation looked excellent (67 ms) while 11/12
+  trials were structurally broken. Score every phase.
+- **Selection bias.** "v1 has better cup speed" was true only because v1's 78 % coverage is almost
+  entirely the *stationary* cup (0.6 mm/s on frames it has, 139.3 mm/s on frames it misses).
+- **Derivative-blind metrics.** Jitter, speed-correlation and peak-velocity are all blind to a
+  constant offset, which is how an 84 mm SmoothNet translation survived a full validation.
+- **Position plots cannot show speed noise.** 1 mm of wobble is invisible on a 700 mm trajectory and
+  dominates its derivative — the reason "positions match but speeds differ" was not a bug.
+- **`predict()` returns before the GPU finishes.** Wall-clock timing around it measures kernel
+  *launches*; it made an earlier pass conclude "99 % CPU-bound" when the GPU was 92 % busy. Use
+  `torch.cuda.Event`.
+- **Filtered signals hide real motion.** "OMC is just noise-chasing at the return boundary" was wrong
+  — the raw 100 Hz mocap shows genuine 46–95 mm/s cup adjustments there. Check the raw data before
+  blaming the reference.
 
 ## 8. What to do next
 
 1. **LOPO-tune the blend gate** (350/120 hand-set on P07+P08) before trusting it on a new cohort;
    `speed_blend.fit_gate` is written for this.
-2. **Two-GPU or lighter cup backbone** if 5-cam 60 fps live capture is required.
-3. **Cup speed — the clearest open win.** v3's cup POSITION is near-perfect (d-corr 0.9996) but its
-   differentiated speed is only 0.93 / 77 mm/s on moving frames. That is exactly the profile the
-   wrist had before flow. Applying the same direct-velocity measurement to the cup (PyrLK at the cup
-   pixel → triangulate {p} and {p+flow}) should transfer straight over; `cup_task.flow_speed` is
-   already target-agnostic, so this is wiring, not new method. (Superseded an earlier note here that
-   suggested v1 for cup speed — that was an artifact of v1 only covering the STATIONARY frames.)
-4. **P13 clock drift**: a linear time-warp of its OMC would return 6 trials to the speed cohort.
+2. **Two-GPU or lighter cup backbone** if 5-cam 60 fps live capture is required (§2 — the GPU is
+   92 % busy at 5 cams, so this is a hardware limit, not a scheduling one).
+3. **Wire cup flow into the reporting path.** Validated (§3: 25.3 vs 77.4 mm/s on moving frames) but
+   `cup_flow_probe.py` is still a probe — `score.py` does not yet read it. Keep the segmenter on
+   SmoothNet.
+4. **`time_to_first_peak_velocity` is NaN** for both arms (n=8). Unresolved in the measure itself.
+5. **P13 clock drift**: a linear time-warp of its OMC would return 6 trials to the cohort (n=12 → 18).
+6. **The 167/200 ms return boundary** needs a better *definition* of "the cup is down" (participants
+   keep adjusting it for ~1.4 s), not a better track. Both sides are ambiguous there.

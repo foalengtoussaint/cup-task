@@ -3418,3 +3418,41 @@ and not because NCC is the wrong metric (census scores higher and discriminates 
 because **a nearly-textureless specular cup produces patches that are not DISTINGUISHABLE from
 their neighbours along the epipolar line** -- the true match beats 41 decoys at barely above chance.
 Seeding never has to solve this: it picks points in 3D and asks every camera about the same one.
+
+### Do tracks improve with age? YES, strongly -- but gating on age is coverage selection
+
+User: "does the algorithm get better as you get deeper in the seed, and can we use that?"
+
+**THE EFFECT IS REAL AND LARGE.** Per-track residual from the frame's consensus rigid motion,
+bucketed by how many frames the track has been alive (n=12 trials):
+    age  0-14: 0.38 mm   |  45-59: 0.09 mm
+    age 15-29: 0.17 mm   |  60-74: 0.07 mm
+    age 30-44: 0.14 mm   |  90+  : 0.05 mm      -> **7.6x better from birth to maturity**
+
+⚠ CONTROLLED FOR THE SURVIVOR CONFOUND (maybe good tracks simply live longer). WITHIN-TRACK, the
+SAME tracks early vs late: first 10 frames of life 0.43 mm -> after 30 frames **0.07 mm**,
+improving on **20 of 23** tracks. So it is genuine SETTLING, not selection. This is the same
+resource identified in the reseed analysis -- a track has to spend time locking onto real image
+texture -- now measured directly.
+
+**BUT USING IT AS A GATE DOES NOT WORK.** Unpaired it looks spectacular:
+    baseline      17.21 median / cov 95.4%
+    age>=10 only  13.74 / 70.9%   (beats baseline 12/12)
+    age>=20 only  10.86 / 52.9%   (11/12)
+PAIRED on the frames where BOTH answer, the effect nearly vanishes:
+    baseline 11.06   age>=20 10.86   **better on only 7/12, median delta -0.23 mm/s**
+The apparent 37% gain was almost entirely COVERAGE SELECTION -- age>=20 only answers when mature
+tracks exist, and those are the easy frames. Same trap as the 5x5-seed "win" and the n_seed sweep;
+the paired test is what catches it every time.
+
+(An `age-weighted` variant returned numbers identical to baseline -- a bug in my weighting, not a
+null result. Not worth fixing given the paired result above.)
+
+**WHAT IT IS ACTUALLY GOOD FOR.** Age is not a useful per-frame gate, but the settling curve
+explains and quantifies several earlier results at once:
+  * why `topup` costs accuracy (it injects age-0 tracks, residual 0.38 vs 0.05 mm)
+  * why reseeding every frame collapses to the detection (nothing ever settles)
+  * why one-step seeding fails (1.01 px of PyrLK motion on unsettled points)
+  * why persistent tracking beats everything (it is the only design that accumulates settling)
+The actionable version is not "prefer old tracks at fit time" but **"avoid actions that reset
+age"** -- which is exactly the existing policy of reseeding as rarely as possible.

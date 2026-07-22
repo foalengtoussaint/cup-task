@@ -2964,3 +2964,40 @@ multiplicity does the job the Jacobian does for a single point.**
 
 That is the last estimator idea I had. The remaining constraints are both structural: hemisphere-
 only camera coverage (rig), and the ~6 mm/s ambiguity in what "cup speed" even means (measurand).
+
+### Temporal pooling cannot work here, and one measurement explains why
+
+Recapping the pipeline exposed the obvious gap: the motion fit is PAIRWISE. Every consecutive
+frame pair is fitted from scratch using ~11 points from 2 frames, while a trial has 525 frames of
+the same rigid object. So: pool over time.
+
+**Attempt 1 -- per-track LOCAL LINEAR fit** (velocity = slope of a straight line over 2w+1 frames,
+the ML velocity under white position noise, then a robust average of per-track slopes):
+    pairwise (current) 14.70 | w=2 19.10 | w=4 19.71 | w=7 22.21   ratio 0.938 -> 0.900
+Monotonically worse, with the ratio falling -- textbook smoothing lag.
+
+**Attempt 2 -- per-track QUADRATIC (constant-acceleration / Savitzky-Golay) fit**, which removes
+the model error a straight line suffers while keeping the averaging:
+    pairwise 14.70 | w=3 19.53 | w=5 19.74 | w=8 23.27
+Essentially IDENTICAL to the linear failure. A better motion model did not help, which is the clue.
+
+**WHY, measured directly: the per-track position residual is almost perfectly AUTOCORRELATED.**
+Autocorrelation of each track's residual about its own local quadratic (n=48 track-axes):
+    lag 0 +1.000 | lag 1 **+0.994** | lag 2 +0.988 | lag 3 +0.979 | lag 4 +0.968 | lag 5 +0.955
+White noise would sit near 0 for every lag > 0 and would average down as sqrt(N). This is a
+slowly-varying **per-track BIAS** -- the track sitting slightly off its true surface point and
+STAYING there -- not noise. **Averaging over time cannot reduce a persistent bias**, so pooling
+buys zero independent evidence and pays full model error.
+
+That single number rules out the whole family: linear windows, quadratic windows, and the RTS
+smoother all lost for the same reason. It also explains why AVERAGING ACROSS TRACKS works (the
+pairwise fit uses ~11 points whose biases are independent of each other) while averaging across
+TIME does not.
+
+Supporting measurement -- the true path is not straight at these scales either: the OMC cup path
+deviates from a straight line by 0.33mm over 5 frames, 1.41mm over 9, 4.63mm over 15, against a
+per-point position noise of ~0.07mm. Curvature exceeds noise by 5x at the SMALLEST window, so even
+if the residual were white, the trade would be marginal.
+
+CONCLUSION: spatial averaging (across points) is the lever here; temporal averaging is not. The
+current pairwise Kabsch is already the right shape of estimator.

@@ -2907,3 +2907,37 @@ WHAT WOULD MAKE IT WORK: many more surviving tracks spread over more of the cup 
 sweep says the tracker cannot supply that -- 240 seeds was worse across the cohort), or fusing the
 fit across time rather than per frame. Not pursued: the patch size is the binding constraint and
 nothing tonight moves it.
+
+### Four more cloud ideas, all measured, none adopted -- and one is a RIG limit
+
+**1. Accumulate the cloud across frames to grow the patch** (bring every frame's cloud into a
+common body frame by chaining Kabsch, so points seen at different times pile up). 5880 points over
+525 frames, and the patch BARELY GROWS: extent [22.5, 18.0, 11.5] vs a single frame's
+[20.8, 15.0, 6.8] (a full cup would be ~[40, 28, 28]). Accumulation adds DENSITY, not EXTENT,
+because the tracks keep re-seeding onto the same visible face.
+
+**2. WHY -- and this is a RIG property, not a tracker one.** All 5 cameras lie within **85deg of
+their mean direction** as seen from the cup, i.e. they span a hemisphere or less, so ONE FACE OF
+THE CUP IS NEVER IMAGED. (Pairwise camera angles about the cup run 27-166deg, so the coverage is
+wide but one-sided.) No estimator can recover a surface the cameras never see, which is the real
+reason the cylinder fit cannot be stabilised. Camera placement, not estimation, is the ceiling
+here.
+
+**3. Geometric "push-in"** -- the visible surface of a sphere/cylinder sits ~0.5R toward the
+cameras, so push the cloud centroid back along the mean camera direction by 0.5*40mm. Uses only
+KNOWN geometry, no fitting. Result: 22.93 -> 22.31 median. Inside the ~6 mm/s metric ambiguity, so
+NOT a real gain -- although the ratio moving 0.975 -> 0.988 is directionally right for removing a
+lever bias.
+
+**4. RTS smoother on the cloud centroid** (`triangulate.kf_rts_smooth`, previously unused here).
+MUCH WORSE: 44.93 vs 22.88 median for the raw centroid difference. Its q=200^2 / r=30^2 tuning is
+for GAPPY CONSENSUS POSITIONS -- it exists to coast through the ~24% of frames where the cup is
+occluded -- and applied to a dense per-frame cloud track it over-smooths (ratio 0.870, the most
+under-read of anything tested). Not a bug in the smoother; a mismatch of purpose.
+
+WORTH KEEPING FROM THIS BATCH -- the control it provided:
+    cloud speed (Kabsch)  14.70 median   ratio 0.938
+    centroid difference   22.88 median   ratio 0.976
+Fitting the motion across many corresponded points BEATS differentiating a single position track
+by 36%, which is the central premise of the whole cloud approach, now measured directly rather
+than assumed.

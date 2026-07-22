@@ -135,6 +135,25 @@ velocity is a Murphy measure.
 the wrist) — SmoothNet already handles the cup's slower peaks — so **plain flow** is the pick for
 reporting cup speed.
 
+### Gating the flow cameras — two gates, two different failure modes
+
+**The two targets fail for different reasons**, which is why the winning gate is the symmetric one:
+
+| | **CUP** | **WRIST** |
+|---|---|---|
+| cause | **occlusion** — the hand covers it | **motion blur** — a fast wrist smears the patch |
+| structure | one camera, sustained (cam_1 drove the whole tail) | **all** cameras, transient — median run **1 frame**, 59 % single-frame |
+| spread | concentrated | uniform: per-camera 12–19 %, per-trial 14–20 % — no bad camera, no bad trial |
+| when | cup at REST, hand passing | scales with **speed**: rest 0.2 %, slow 16.4 %, mid 47.7 %, fast 56.0 % |
+| by phase | — | drinking 2.5 % vs reaching 25.8 %, returning 25.7 %, back_transport 28.3 % |
+| a median fixes it? | **yes** (19.6 ≈ LOO's 19.4) | **no** (22.8 — *worse than no gate*) |
+
+The wrist's blur hits **several cameras on the same frame**, so 3-of-5 disagree on 21 % of frames
+(13 % for the cup) — a median is then itself one of the bad values. Per-frame wrist error by how many
+cameras disagree: 0 → LOO 13.4 / median 12.4; 1 → 18.4 / 21.1; **2 → 24.7 / 42.8**; 3 → 46.9 / 49.3.
+LOO's advantage is concentrated where exactly 2 cameras are bad. ⚠ At 3+ nothing works (46.9 mm/s):
+too few good cameras remain. This is the same blur that causes flow's +61 mm/s peak over-shoot (§3).
+
 ### Consensus-gating the flow cameras
 
 Flow originally used *every* camera that produced a point. Restricting it to the cameras the
@@ -175,40 +194,54 @@ the excursion frame by frame: the cup pixel moves 6 px in 24 frames (it is still
 up to **4.9 px/frame**, and the spurious magnitude rises and falls exactly as the **wrist approaches
 in image space** (160 → 91 px away).
 
-**It is OCCLUSION — the hand passing between the camera and the cup.** 2D proximity alone does not
-explain it (within 150 px: median 0.024 px, p95 1.296; farther: 0.021 / 0.239 — *identical medians*,
-only a heavier tail). Splitting by the 3D depth order instead is far sharper — cup flow at rest,
-cohort-wide:
+**It is OCCLUSION — the hand passing between the camera and the cup.** And the test must be
+**angular**, not a pixel distance. A 150 px proxy barely separates anything (within 150 px: median
+0.024 px, p95 1.296; farther: 0.021 / 0.239 — *identical medians*), because a fixed pixel threshold
+does not scale with distance: the worst contaminated frames sat at ~9° ≈ **215 px** at 1358 mm, i.e.
+*outside* the 150 px cut, so they were being classed "not occluded".
 
-| case | n | median | p95 |
-|---|---|---|---|
-| **wrist IN FRONT (between camera and cup)** | 386 | **0.957 px** | **3.499 px** |
-| wrist BEHIND the cup | 2629 | 0.019 px | 0.327 px |
-| wrist far in 2D (>150 px) | 3281 | 0.021 px | 0.239 px |
+Measuring the angle at the camera centre between the ray to the cup and the ray to the wrist, split
+by depth order — cup flow at rest, cohort-wide:
 
-**A 50× jump in the median** when the hand actually occludes. When the wrist is merely *near* in the
-image but **behind** the cup, flow is completely clean — indistinguishable from far away. So PyrLK
-is not being disturbed by a nearby object; it is tracking **the hand's texture** where the hand
-covers the cup's patch, and reporting the hand's motion as the cup's.
+| angle | occluder **IN FRONT** | occluder BEHIND |
+|---|---|---|
+| 0–5° | median **0.879 px** (p95 2.570) | 0.016 px (0.351) |
+| 5–10° | median **0.800 px** (p95 4.407) | 0.021 px (0.212) |
+| 10–15° | 0.010 px (0.228) | 0.018 px (0.190) |
+| 15–25° | 0.049 px (0.232) | — |
+
+**~45× the clean floor inside 10° with the hand in front, and it vanishes past 10°.** Both halves of
+the test are load-bearing: *behind* is clean at every angle. So PyrLK is not disturbed by a nearby
+object — it is tracking **the hand's texture** where the hand covers the cup's patch and reporting the
+hand's motion as the cup's.
 
 It hits the cup and not the wrist because the wrist *is* the moving object — its window's dominant
 motion is the true signal — whereas a static cup loses the least-squares fit to whatever now occupies
 its patch. This is also why the consensus cannot catch it: cup *position* stays right in every camera
 (the tracker still knows where the cup is); only its *motion* is contaminated.
 
-**Dropping occluded cameras helps but is not sufficient** (occlusion = wrist within 150 px in 2D
-*and* nearer to that camera than the cup):
+### Dropping occluded cameras — and it reverses the segmentation verdict
 
-| | baseline | occlusion-dropped |
+`flow_speed.occluded_by`: within a 10° cone of the camera→target ray **and** nearer to the camera.
+Now wired into both the online and offline paths (`target_xyz` + `occluder_xyz`).
+
+| | baseline | 150 px proxy | **angular <10°** |
+|---|---|---|---|
+| rest p95 | 81.3 | 37.2 | **11.9 mm/s** |
+| MOVING-frame error | 25.3 | 26.0 | **22.0 mm/s** |
+
+**7× reduction in the tail, and it improves moving-frame accuracy too.** Crucially 11.9 mm/s is now
+*below* the 15 mm/s onset gate — the one thing that had disqualified flow as a segmenter signal:
+
+| first crossing of FWD_ON vs OMC | median | p90 |
 |---|---|---|
-| rest p95 | 81.3 | **37.2** mm/s |
-| MOVING-frame error | 25.3 | 26.0 mm/s |
+| SmoothNet | 400 ms | 1152 ms |
+| **flow + angular occlusion mask** | **250 ms** | 1138 ms |
 
-The tail halves at no cost to accuracy — but 37 mm/s is still above the 15 mm/s onset gate, and the
-crossing vs OMC stays **633 ms** against SmoothNet's 400 ms. **Not wired in**: it does not change the
-segmentation verdict, so it is recorded rather than adopted. Candidate remedies for the residual:
-smaller/adaptive PyrLK window, forward-backward consistency check, or rejecting flow vectors whose
-direction matches the occluding hand's.
+⚠ **This reverses the earlier conclusion in §4** that flow is the worse gating signal. That was an
+artifact of the occlusion contamination, not a property of flow. The segmenter has **not** been
+switched over — it still needs a position track for displacement-from-rest, which flow cannot
+provide — but flow is now the better *onset* signal and combining the two is an open item.
 
 **But the segmenter uses SmoothNet, not flow.** Flow is the better *reporting* signal and the worse
 *gating* signal:

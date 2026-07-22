@@ -68,23 +68,34 @@ class FlowSpeedOnline:
     """
 
     def __init__(self, calib: dict, fps: float = FPS, min_cams: int = 2,
-                 gate_consensus: bool = True):
+                 gate_consensus: bool = True, gate_flow: bool = True):
         self.calib = calib
         self.fps = fps
         self.min_cams = min_cams
         self.gate_consensus = gate_consensus       # see speed_from_cached_flow for the measurement
+        self.gate_flow = gate_flow                 # leave-one-out on the flow vectors themselves
         self._prev: dict[str, np.ndarray] = {}
         self._prev3d = None
 
     def update(self, gray_by_cam: dict[str, np.ndarray],
-               wrist_px_by_cam: dict[str, np.ndarray]) -> float:
-        """One rig-frame. gray_by_cam = {cam: HxW uint8}, wrist_px_by_cam = {cam: (2,) or None}."""
+               wrist_px_by_cam: dict[str, np.ndarray],
+               target_xyz=None, occluder_xyz=None) -> float:
+        """One rig-frame. gray_by_cam = {cam: HxW uint8}, wrist_px_by_cam = {cam: (2,) or None}.
+
+        Pass `target_xyz` + `occluder_xyz` (this frame's 3D points, e.g. cup and acting wrist) to
+        enable the occlusion mask -- see `occluded_by` and `speed_from_cached_flow`.
+        """
         avail = {}
         for cam, gray in gray_by_cam.items():
             px = wrist_px_by_cam.get(cam)
             if self._prev.get(cam) is not None and px is not None and np.isfinite(px).all():
                 avail[cam] = np.asarray(px, dtype=float)
             self._prev[cam] = gray
+
+        if target_xyz is not None and occluder_xyz is not None:
+            avail = {c: p for c, p in avail.items()
+                     if c in self.calib
+                     and not occluded_by(target_xyz, occluder_xyz, self.calib[c])}
 
         use = avail
         if self.gate_consensus and len(avail) >= 2:
@@ -102,7 +113,146 @@ class FlowSpeedOnline:
             if fl is not None and np.isfinite(fl).all():
                 obs_p[cam] = px
                 obs_pv[cam] = px + fl
+        if self.gate_flow and len(obs_p) >= 3:
+            keep = flow_consensus_cams(obs_p, obs_pv, self.calib, self.fps)
+            if len(keep) >= self.min_cams:
+                obs_p = {c: obs_p[c] for c in keep}
+                obs_pv = {c: obs_pv[c] for c in keep}
         return speed_from_flow_obs(obs_p, obs_pv, self.calib, self.fps, self.min_cams)
+
+
+OCCLUDER_CONE_DEG = 10.0     # angular radius around the camera->target ray
+
+
+def camera_center(cal) -> np.ndarray:
+    """Camera centre in world coordinates: C = -Rᵀ t."""
+    return -np.asarray(cal.R).T @ np.asarray(cal.t).ravel()
+
+
+def flow_consensus_cams(obs_p: dict, obs_pv: dict, calib: dict, fps: float = FPS,
+                        tol: float = 20.0, max_drop: int | None = None) -> list:
+    """LEAVE-ONE-OUT consensus on the FLOW VECTORS -> the cameras to keep.
+
+    Drop the camera whose removal most changes the fused velocity, while that change exceeds `tol`
+    mm/s.
+
+    WHY IT HELPS -- and it is NOT an occlusion detector. Measured against the geometric occlusion
+    test it has only 33% recall on occluded camera-frames, and 44% of what it drops is not occluded
+    at all. What it actually does is make the 3D fusion ROBUST: triangulating flow is a
+    least-squares fit across cameras, which has a breakdown point of zero, so a single bad vector
+    shifts the answer. This replaces it with an outlier-resistant estimator. It never needs to know
+    WHY a camera is wrong (occlusion, motion blur, a texture mismatch) -- only that it disagrees in
+    3D. That is why it generalises to both targets while the occlusion mask does not.
+
+    It is genuinely robustness and not "reject big motion": dropping the largest-|flow| camera
+    instead makes the cup WORSE (34.0 vs 25.3 mm/s ungated), because that discards the camera with
+    the best view of the motion. A median over camera PAIRS scores the same as this (19.6 vs 19.4),
+    confirming the mechanism is robust fusion rather than anything specific to leave-one-out.
+
+    Preferred over the geometric `occluded_by` mask: no 3D tracks, no angular threshold, no
+    assumption about which object is the occluder. Measured (n=12):
+        CUP    MOVING err 25.3 -> 19.4 mm/s, rest p95 81.3 -> 14.8, onset 633 -> 300ms
+        WRIST  MOVING err 21.7 -> 18.7 mm/s (the occlusion mask instead gives 92.3 -- see below)
+
+    THE TWO TARGETS FAIL FOR DIFFERENT REASONS, which is why one symmetric gate is needed:
+
+                    CUP                          WRIST
+      cause         OCCLUSION (hand covers it)   MOTION BLUR (fast wrist smears the patch)
+      structure     one camera, sustained        ALL cameras, transient (median run 1 frame,
+                    (cam_1 drove the whole tail) 59% single-frame; per-camera 12-19%, per-trial
+                                                 14-20% -- no bad camera, no bad trial)
+      when          cup at REST, hand passing    drops scale with SPEED: rest 0.2%, slow 16.4%,
+                                                 mid 47.7%, fast 56.0%; by phase drinking 2.5%
+                                                 vs reaching 25.8% / returning 25.7%
+      median works? YES (19.6 ~ LOO's 19.4)      NO (22.8 -- WORSE than no gate at all)
+
+    The wrist needs LOO specifically: blur hits SEVERAL cameras on the same frame, so 3-of-5
+    disagree on 21% of frames (13% for the cup) and a median is then itself one of the bad values.
+    Iterative targeted removal survives that; a median does not. Per-frame error by how many
+    cameras disagree (wrist, moving frames): 0 -> LOO 13.4 / median 12.4; 1 -> 18.4 / 21.1;
+    2 -> 24.7 / 42.8; 3 -> 46.9 / 49.3. LOO's advantage is concentrated at 2 disagreeing cameras.
+    ⚠ At 3+ nothing works (46.9 mm/s) -- too few good cameras remain.
+
+    ⚠ IT IS A BET, NOT A GUARANTEE. On the frames where it drops something it improves the estimate
+    only 60% of the time on the wrist (72% on the cup) -- it is worth it because the wins are much
+    bigger than the losses (median |err| 46.8 -> 30.9 wrist, 51.3 -> 19.1 cup). The win rate is flat
+    across every speed band (59-61%), so it is not exploiting one regime. Direction: it LOWERS the
+    reported speed (wrist -13.0, cup -4.9 mm/s median) because the dropped cameras read TOO FAST
+    (+51.3 mm/s on the wrist) -- exactly what blur predicts, since a smeared patch makes PyrLK
+    over-shoot. (The cup's dropped cameras are biased the other way, -18.3, consistent with its
+    different failure mode.)
+
+    `max_drop` caps how many cameras may be removed. Measured MOVING-frame error by cap:
+        WRIST  0:21.7  1:19.4  **2:18.1**  3:18.7   <- 3 drops is a 55% coin flip, so cap at 2
+        CUP    0:25.3  1:23.7  2:20.2  **3:19.4**   <- keeps improving; one sustained bad camera
+    """
+    cams = [c for c in obs_p if c in obs_pv and c in calib]
+    n0 = len(cams)
+    while len(cams) >= 3:
+        if max_drop is not None and n0 - len(cams) >= max_drop:
+            break
+        base = velocity_from_flow_obs({c: obs_p[c] for c in cams},
+                                      {c: obs_pv[c] for c in cams}, calib, fps, 2)
+        if not np.isfinite(base).all():
+            break
+        worst, wc = -1.0, None
+        for c in cams:
+            sub = [x for x in cams if x != c]
+            v = velocity_from_flow_obs({k: obs_p[k] for k in sub},
+                                       {k: obs_pv[k] for k in sub}, calib, fps, 2)
+            if not np.isfinite(v).all():
+                continue
+            d = float(np.linalg.norm(v - base))
+            if d > worst:
+                worst, wc = d, c
+        if wc is None or worst < tol:
+            break
+        cams = [x for x in cams if x != wc]
+    return cams
+
+
+def occluded_by(target_xyz, occluder_xyz, cal,
+                cone_deg: float = OCCLUDER_CONE_DEG) -> bool:
+    """Is `occluder_xyz` between this camera and `target_xyz`?
+
+    ⚠ CUP ONLY -- never pass the cup as an occluder of the WRIST. The relationship is not
+    symmetric: a hand occludes a resting cup, but a HELD cup does not meaningfully occlude the
+    wrist. Measured, cup-as-occluder-of-wrist fires on 72.5% of camera-frames (the cup is near the
+    wrist for most of the task because it is being held) and starves the triangulation: wrist
+    MOVING error 21.7 -> 92.3 mm/s. Prefer `flow_consensus_cams`, which is symmetric and needs no
+    3D input.
+
+    ANGULAR test, not a pixel distance. Measure the angle at the camera centre between the ray to
+    the target and the ray to the occluder, and require BOTH:
+        (a) that angle is within `cone_deg`, and
+        (b) the occluder is NEARER to the camera than the target.
+
+    Angle rather than pixels because a pixel threshold does not scale with distance -- the same
+    150px means a very different physical separation at 1m and at 2m, and that mis-classification is
+    exactly what hid the effect at first (the contaminated frames sat at ~9deg = ~215px at 1358mm,
+    beyond a 150px cutoff, so they looked "not occluded").
+
+    Both halves are load-bearing. Measured on the cup at rest, flow magnitude by band:
+        angle      occluder IN FRONT        occluder BEHIND
+        0-5 deg    median 0.879 px          0.016 px
+        5-10 deg   median 0.800 px          0.021 px
+        10-15 deg  median 0.010 px          0.018 px
+    Contamination is ~45x the clean floor inside 10deg with the occluder in front, and vanishes
+    outside it; BEHIND is clean at every angle. Hence cone_deg=10 and the depth check.
+    """
+    t = np.asarray(target_xyz, float)
+    o = np.asarray(occluder_xyz, float)
+    if not (np.isfinite(t).all() and np.isfinite(o).all()):
+        return False
+    C = camera_center(cal)
+    vt, vo = t - C, o - C
+    nt, no = np.linalg.norm(vt), np.linalg.norm(vo)
+    if nt < 1e-6 or no < 1e-6:
+        return False
+    if no >= nt:                                    # occluder is behind the target
+        return False
+    ang = np.degrees(np.arccos(np.clip(vt @ vo / (nt * no), -1.0, 1.0)))
+    return bool(ang < cone_deg)
 
 
 def velocity_from_flow_obs(obs_p: dict, obs_pv: dict, calib: dict,
@@ -177,7 +327,10 @@ def radial_velocity(vel_xyz: np.ndarray, pos_xyz: np.ndarray, origin: np.ndarray
 
 def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.ndarray],
                            calib: dict, n: int, fps: float = FPS,
-                           min_cams: int = 2, gate_consensus: bool = True) -> np.ndarray:
+                           min_cams: int = 2, gate_consensus: bool = True,
+                           gate_flow: bool = True,
+                           target_xyz=None, occluder_xyz=None,
+                           cone_deg: float = OCCLUDER_CONE_DEG) -> np.ndarray:
     """OFFLINE path: per-camera 2D points + precomputed per-camera flow -> (n,) 3D speed track.
 
     Calls the SAME speed_from_flow_obs as the online class, so the offline replay of a live session
@@ -192,6 +345,15 @@ def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.n
     far, so the gate catches it, while a pose error is the right person's slightly-wrong joint and
     reprojects plausibly.
 
+    `target_xyz` + `occluder_xyz` (both (n,3), optional) enable the OCCLUSION mask: a camera is
+    dropped on frames where the occluder passes between it and the target (see `occluded_by`).
+    For the cup, pass the cup track and the acting wrist -- when the hand covers the cup, PyrLK
+    tracks the HAND'S texture and reports the hand's motion as the cup's. Measured on the cup:
+        rest p95   81.3 -> 11.9 mm/s      (7x; now UNDER the 15mm/s onset gate)
+        MOVING err 25.3 -> 22.0 mm/s      (also improves)
+    That single mask is what makes flow usable as a segmenter gate at all: first crossing of
+    FWD_ON vs OMC goes 633ms -> 250ms, beating SmoothNet's 400ms.
+
     NOTE the points are the RAW DETECTED pixels (YOLO keypoint / UETrack point), never a
     reprojection of the 3D consensus. Flow must be measured where the image evidence is; a
     reprojected point would inherit the triangulation's own error and defeat the purpose of
@@ -199,10 +361,15 @@ def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.n
     """
     out = np.full(n, np.nan)
     cams = [c for c in flow if c in wrist_px and c in calib]
+    tgt = None if target_xyz is None else np.asarray(target_xyz, float)
+    occ = None if occluder_xyz is None else np.asarray(occluder_xyz, float)
     prev3d = None
     for f in range(n):
         avail = {c: wrist_px[c][f] for c in cams
                  if f < len(wrist_px[c]) and np.isfinite(wrist_px[c][f]).all()}
+        if tgt is not None and occ is not None and f < len(tgt) and f < len(occ):
+            avail = {c: p for c, p in avail.items()
+                     if not occluded_by(tgt[f], occ[f], calib[c], cone_deg)}
         use = avail
         if gate_consensus and len(avail) >= 2:
             from cup_task import consensus as _cons
@@ -217,6 +384,11 @@ def speed_from_cached_flow(wrist_px: dict[str, np.ndarray], flow: dict[str, np.n
             if f < len(flow[c]) and np.isfinite(flow[c][f]).all():
                 obs_p[c] = p
                 obs_pv[c] = p + flow[c][f]
+        if gate_flow and len(obs_p) >= 3:
+            keep = flow_consensus_cams(obs_p, obs_pv, calib, fps)
+            if len(keep) >= min_cams:
+                obs_p = {c: obs_p[c] for c in keep}
+                obs_pv = {c: obs_pv[c] for c in keep}
         out[f] = speed_from_flow_obs(obs_p, obs_pv, calib, fps, min_cams)
     return out
 

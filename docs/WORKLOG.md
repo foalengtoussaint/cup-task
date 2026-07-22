@@ -3001,3 +3001,42 @@ if the residual were white, the trade would be marginal.
 
 CONCLUSION: spatial averaging (across points) is the lever here; temporal averaging is not. The
 current pairwise Kabsch is already the right shape of estimator.
+
+### ⚠ CORRECTION: temporal averaging is ~NEUTRAL. The gain I credited to it was POINT SELECTION.
+
+User: "why does temporal averaging not work?" Pressing on the mechanism found my explanation was
+WRONG, twice over.
+
+**Error 1 -- I measured the wrong residual.** I quoted the POSITION residual autocorrelation
+(+0.994 at lag 1) as proof that per-track error is a persistent bias that averaging cannot remove.
+But a constant bias CANCELS IN A DIFFERENCE, so position autocorrelation is irrelevant to a
+velocity. The quantity that matters is the autocorrelation of the residual's FIRST DIFFERENCE:
+    POSITION residual  lag1 +0.994  lag2 +0.988  lag3 +0.979
+    VELOCITY residual  lag1 **+0.311**  lag2 +0.254  lag3 +0.293
+Mostly independent -> averaging SHOULD reduce it by ~sqrt(N). My stated mechanism was backwards.
+
+**Error 2 -- a confounded comparison.** My window fits dropped RANSAC while the baseline kept it,
+so I was comparing window-without-RANSAC against Kabsch-with-RANSAC and attributing the whole
+difference to TIME. Isolating the two by adding `pairwise-alltracks` (= the window family at w=0,
+so it differs from w=2 ONLY in time and from Kabsch ONLY in point selection):
+
+    kabsch+ransac        14.70   mean 15.27   p90  53.64
+    pairwise-alltracks   19.37   mean 20.06   p90  74.75
+    window w=2           19.10   mean 19.62   p90  98.97
+
+    point-selection effect (ransac vs all tracks) : **-6.20 mm/s, better on 10/12**
+    TIME effect            (w=2 vs w=0)           : **-0.95 mm/s, better on 7/12**
+
+So temporal averaging is roughly NEUTRAL-to-slightly-positive, and RANSAC is worth ~6 mm/s. The
+earlier "temporal pooling cannot work" conclusion is RETRACTED.
+
+**But combining them still gives nothing.** RANSAC + averaging the resulting VELOCITY VECTORS over
++-w frames: w=1 14.75 (2/12), w=2 16.54 (1/12), w=3 17.74 (0/12) vs the 14.70 baseline. Neutral at
+w=1, worse beyond.
+
+THE ACTUAL RECONCILIATION: each per-frame estimate ALREADY averages across ~11 tracks whose errors
+are independent of each other, so the independent component is largely suppressed before time
+enters. What remains is common-mode across tracks within a frame (and correlated across nearby
+frames), which time-averaging cannot remove either -- it only adds lag. **Spatial averaging gets
+there first; temporal averaging finds nothing left to remove.** That is a different and more
+accurate statement than "the per-track bias is persistent".

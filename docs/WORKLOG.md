@@ -3339,3 +3339,38 @@ the SAME point rather than nominating its own candidates. The cup surface never 
 distinctive from two angles simultaneously -- PyrLK only needs enough local texture to FOLLOW the
 point within one camera, which is a far weaker requirement than "independently detected as a corner
 from both viewpoints".
+
+### It was never about corners -- dense matching fails identically
+
+User: "why are you looking for contours necessarily?" Correct challenge: nothing in the method
+requires corners, and Shi-Tomasi's "locally distinctive in THIS image" criterion is itself
+viewpoint-dependent, so blaming the corner detector may have been blaming a symptom.
+
+TESTED CORNER-FREE. Take DENSE true 3D surface points visible in both cameras (no detector at all)
+and measure NCC at KNOWN-CORRECT correspondences, 15x15 patches, n=300:
+    median NCC **0.055**   p90 0.403   max 0.653   fraction >0.5: **4%**
+And selecting for texture does NOT help:
+    low texture  median NCC 0.039 | mid 0.134 | **high texture 0.040**
+
+So the ceiling is a property of the IMAGERY, not of the feature detector. The corner story was a
+symptom; dense matching hits the same wall.
+
+**WHY, measured on the same frame:**
+    cam_2: mean 132.6  sd 38.6  cup 43px across
+    cam_3: mean 143.8  sd 29.1  cup 66px across
+    cam_5: mean  57.9  sd 14.6  cup 69px across
+  * SCALE differs 1.6x between cameras (43 vs 69 px for the same cup)
+  * EXPOSURE differs 2.5x in mean level (57.9 vs 143.8)
+  * the surface is SPECULAR, so highlights sit at different PHYSICAL points per viewpoint
+NCC removes an affine intensity change. It does NOT remove a scale change, foreshortening, or a
+moving highlight.
+
+**AND THE DEEPEST REASON: the cup is nearly TEXTURELESS.** It is a plain vessel, so what gradient
+exists is mostly SHADING (viewpoint-dependent) rather than surface MARKINGS (viewpoint-invariant).
+That is exactly why texture level fails to predict matchability -- the texture is the wrong KIND.
+A patterned or logo'd cup would likely match fine; this one cannot.
+
+This closes the cross-camera-matching question properly. It is not the detector, not the threshold,
+not the descriptor choice, and not corners-versus-dense: **a plain specular cup viewed from 27-166
+degrees apart does not present the same appearance twice**, and any appearance-based matcher
+inherits that. Seeding avoids the question entirely by choosing points in 3D first.

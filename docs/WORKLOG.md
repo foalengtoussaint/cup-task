@@ -2402,3 +2402,78 @@ Code moved into cup_task/flow_speed.py (projection_jacobian + solve_velocity), v
 bit-identical to the probe on 200 random cases before switching the default. flow_consensus_cams
 pins itself to fuser="dlt2" internally -- its `tol` was tuned against that fuser, so letting it
 inherit the new default would silently change what the threshold means.
+
+## 2026-07-22 (cont.) >>> MULTI-CAMERA SURFACE CLOUD (branch feat/multicam-cloud-velocity)
+
+User asked for a cloud-based 3D tracker (Shi-Tomasi sub-features -> epipolar NCC matching ->
+triangulate -> Kabsch between frames) and later clarified it was "a direction more than precise
+instructions". Built, measured, found the spec's architecture unworkable for a specific and
+measurable reason, and replaced the broken stage.
+
+### The spec's architecture cannot work here, and it is not a tuning problem
+
+First build (cloud_velocity.py) scored 13667 mm/s against OMC on the DELTA cup vs the shipping
+flow path's 17.3 -- ~780x worse. The user asked the question that cracked it: "I don't get why it
+doesn't work on one timepoint". Correct instinct -- a SINGLE timepoint involves no correspondence-
+across-time at all, so if it fails there the across-time story is irrelevant. It does fail there:
+1-2 matches out of ~15 candidates per camera pair.
+
+Two wrong diagnoses of mine, both killed by measurement:
+  * "re-detection breaks correspondence across frames" -- true but NOT the blocker; the single
+    timepoint is already broken.
+  * "wide baselines break appearance matching" -- REFUTED: corr(baseline angle, n matches) = +0.44,
+    i.e. wide pairs match slightly BETTER. cam_1-cam_5 at 142deg gets 2 matches, cam_3-cam_4 at
+    29deg gets 0.
+
+THE ACTUAL CEILING: take TRUE correspondences (project the same 3D point into two cameras) and ask
+what NCC the patches get. Median **0.01**, and only **5%** clear the 0.65 gate. The gate is not too
+strict -- the patches genuinely do not match. A curved specular cup lit differently per view does
+not produce cross-view-matchable texture at 11x11. NO detector, threshold or descriptor fixes a
+signal that is not there. (Ruled out first: the cup spans 43-69px, LARGER than the 35px ROI, so
+the ROI is entirely on the object and background contamination is not the cause.)
+
+### The fix: correspondence by CONSTRUCTION (cloud_track.py)
+
+Never compare appearance across cameras. Seed points ON a cup-sized cylinder in 3D (position from
+the consensus tracker, radius known) and project them into every camera -- point k in cam A and
+point k in cam B are the same physical point BECAUSE THEY WERE THE SAME 3D POINT. Then PyrLK each
+track forward within its own camera, which is the user's point: PyrLK already supplies t->t+1
+correspondence for free, and within-camera is the only place correspondence is obtainable at all.
+Forward-backward check drops drifting tracks. Track identity survives the 3D lift, so consecutive
+clouds are corresponded with nothing matched anywhere.
+
+### The lever-arm bug -- a real geometry error, worth remembering
+
+After the seeding fix the cloud still read 2.10x the true speed on moving frames. Isolating it:
+    OMC truth            556.8 mm/s
+    Kabsch t_vec        1146.7 mm/s   ratio 2.10
+    raw centroid delta   413.3 mm/s   ratio 0.77
+The TRACKING was fine; the REFERENCE POINT was wrong. Kabsch returns t = centroid_B - R@centroid_A,
+which is the translation of the **world origin**, not of the object. With the cloud ~1700mm from
+that origin, a small rotation error swings R@centroid_A through that LEVER ARM and appears as a
+huge phantom translation. Report the CENTROID's motion instead. Regression test pins it via a
+stationary spinning object (mutation reproduces 5.099 m/s of phantom speed).
+
+### Where it landed (n=12, DELTA cup, vs OMC)
+
+    cloud  29.7 mm/s  93.2% coverage      (13667 -> 883 -> 411 -> 29.7 over the session)
+    flow   18.7 mm/s  100%                 SHIPPING, still better overall
+Cloud wins on 3 of 12 trials. NOT a replacement -- flow is better and cheaper (no video decode).
+
+ANGULAR velocity is the one thing a single tracked point CANNOT do, and it now has real truth: the
+C3D carries several `cluster_cup*` markers (results_v3_delta._omc_cup averages them away, which is
+right for position and throws away exactly this). Kabsch on the separated markers = true cup
+rotation (cloud_rotation_truth.py):
+    correlation +0.639,  at rest 0.047 vs OMC 0.020 rad/s
+    ⚠ magnitude ratio 1.67, per-trial 0.52-3.69 -- the SHAPE tracks, the SCALE does not.
+So: a real signal, independently validated, NOT yet a usable measurement. If cup tilt is ever
+wanted (drinking is a rotation), this is the thread; the open problem is the scale, not the shape.
+
+An inlier gate (min_inliers=8) refuses to answer on thin evidence rather than emitting a confident
+wrong number -- measured 5-7 inliers -> 531 mm/s error vs 113 at 8-11, with blow-ups to 17 m/s.
+⚠ AND a harness trap worth remembering: H._lp INTERPOLATES ACROSS NaN, so coverage measured after
+low-passing always reads 100% and a refusal gate looks like it does nothing. Measure coverage on
+the RAW signal.
+
+Kept: cloud_velocity.py stays as the recorded negative result (it is why we know cross-view NCC is
+a dead end). Branch NOT merged.

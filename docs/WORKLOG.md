@@ -2520,3 +2520,53 @@ zigzag. Kept nseed=48. Same failure the l1 retraction was about: a headline from
 CONCLUSION: the cloud's remaining error is NOT in the cloud. It is inherited from the consensus
 seed track, and the rest-noise is correlated so more points cannot fix it. Tuning this pipeline
 further is not the lever; the seed track is. Left at nseed=48 / min_inliers=8 / reseed_below=8.
+
+### The fix that worked: use the keypoint and the consensus gate we already had
+
+User: "keep in mind we have a keypoint at each frame and we already have a mechanism to filter the
+bad tracks." Both were being ignored by the cloud path. That was the entire remaining error.
+
+WHAT WAS WRONG -- the cloud was NOT RIGID. Points that should sit at a fixed radius on a ~40mm cup
+wandered with **29mm std**, and pairwise distances swelled 1.6%/frame at speed (spread
+0.948-1.047). Kabsch ASSUMES rigidity, so that deformation was silently absorbed into the motion
+estimate: under-read 15-30% while moving, over-read 4.6x at rest. Two hypotheses killed first:
+PyrLK is NOT losing the fast tracks (survival 99.5-102.8% at EVERY speed band), and reseeding less
+is worse (coverage 95% -> 34%).
+
+CAUSE: `_lift()` triangulated each track from whatever cameras happened to have it, with NO
+consensus gate. One camera's drifting track drags the 3D point and nothing catches it -- which is
+precisely what `consensus3` exists for. It was being applied to the OBJECT but never PER TRACK.
+Plus: there is a detection every frame, so a track that has slid off the object is detectable
+geometrically (too far from this frame's keypoint), with no appearance model at all.
+
+    config                cup MOVING err   coverage    cloud radius wander
+    before (neither)          29.7          93.2%           29 mm
+    per-track consensus       22.2          97.7%           11.7 mm
+    + anchor 40px             18.0          97.7%
+    + anchor 30px             16.0          96.6%    <- DEFAULT
+    + anchor 25px             15.2          93.5%           5.9 mm
+    flow (SHIPPING)           18.7         100%
+    (15px anchor kills every track -> 0% coverage)
+
+**The cloud now BEATS the shipping flow path** (16.0 vs 18.7 median, 15.4 vs 18.6 mean at 25px).
+This one REPLICATES -- monotonic across the sweep and 30px wins on 11/12 trials -- unlike the
+n_seed sweep that looked great on the tuning trial and reversed on the cohort.
+
+ROTATION also improved with the rigid cloud: corr vs OMC-marker truth **+0.639 -> +0.772**.
+⚠ But the SCALE got WORSE (ratio 1.67 -> 1.99) and is consistently ~2x. Checked and NOT a
+stride/half-angle artifact (OMC truth at stride1 0.139 vs stride2 0.138 rad/s). Caveat on the
+truth itself: only 4 cup markers spanning 25-48mm, and OMC's own median angular speed is 0.139
+rad/s -- a tight cluster moving slowly, so the reference is not itself precise, and the cloud's
+residual jitter plausibly inflates the median ratio. ANGULAR IS STILL NOT A USABLE MEASUREMENT;
+the shape is now good, the scale is not.
+
+Also tested and REJECTED: fitting every frame to ONE rigid reference model built from the tracks'
+median centroid-relative offsets (rigid_model_probe.py). Worse than chaining (44.4 vs 36.1),
+because no single rigid shape fits the sliding tracks -- median residual to the best-fit model was
+55mm on a 40mm object. And a common-subset centroid (average only points present in BOTH frames)
+was slightly worse than the current intersect-then-Kabsch (16.9 vs 14.2).
+
+The centroid question: rotation IS about the cloud's own centroid (both clouds are centered before
+the SVD, which is what decouples R from t). That centroid is NOT the cup's physical centre -- it
+sits 34.6mm off the detected cup position -- but the offset is STABLE (std 4.7-5.5mm/axis), and a
+constant offset cancels in a difference, so it is harmless.

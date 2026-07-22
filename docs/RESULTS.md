@@ -501,3 +501,52 @@ Laplacian sharpness gate (24.3 vs 21.9 ungated), PyrLK's own `minEigThreshold` (
 median but is **2.1× worse in the top speed band**, 33.5 → 71.5 — the pooled number hid it), and
 Wiener deconvolution with a flow-derived motion PSF (helps only at >700 mm/s, 33.5 → 28.9, and is
 neutral-to-worse once LOO is applied, at every K from 0.001 to 0.2).
+
+### Is the flow error irreducible? No — but the fixable part is not where it looks
+
+**Magnitudes:** per-camera flow error is **0.34–1.16 px** median, on predicted flows of 1.9–5.9 px.
+Sub-pixel throughout.
+
+**The information floor is far below that.** The LK noise floor `σ_noise/√λ_min` (sensor noise over
+the patch's structure-tensor conditioning) is **0.025 px**; observed error is **0.708 px** — **28×
+above it**. So there is *plenty* of texture: the error is not a lack of features to track.
+
+**It is MODEL error.** PyrLK assumes the patch only translates with constant brightness. Testing that
+directly — shift frame *t+1* back by the measured flow and compare the same window, **integer shifts
+only so no interpolation is involved**:
+
+| | grey levels |
+|---|---|
+| static control (target still, no shift) | **0.87** ← true noise floor |
+| aligned by the measured flow | 10.51 (12× floor) |
+| **best of ANY integer shift (±4 px search)** | **7.09** (8.1× floor) |
+
+The last row is the point: searching every translation within ±4 px, the **best possible** one still
+leaves 7.09 — no translation can match these patches. The wrist deforms and rotates, and the window
+straddles hand/forearm/background at different depths.
+
+⚠ **But that gap is NOT recoverable, and chasing it makes things worse.** The best-RMS shift is
+*further* from the true (OMC) flow than PyrLK: **0.92 vs 0.71 px**, winning on only 40 % of frames.
+Appearance-matching is the wrong objective — the optimal-looking shift overfits the deformation.
+
+**Affine LK does not help either** (tested because "the patch deforms, so allow rotation/scale"
+sounded principled). ECC on identical patches, so only the model differs:
+
+| | median | p90 |
+|---|---|---|
+| PyrLK (current) | **0.67** | 3.00 |
+| ECC translation-only | 0.75 | 2.86 |
+| ECC affine, 6 params | **0.91** | 3.84 |
+
+Affine is **21 % worse than translation-only on the same solver** and beats PyrLK on 39 % of frames.
+The extra parameters absorb noise and deformation instead of isolating a cleaner translation — the
+same lesson as the best-RMS shift, twice over: **fitting the patch better ≠ estimating motion better.**
+
+*(Methods note: a first attempt had ECC translation-only scoring 7.05 px, i.e. as bad as affine — a
+sign/convention bug in extracting the warp. A synthetic known-shift check recovers +2.04/−3.05 for a
+true +2.0/−3.0 with no sign flip. Always sanity-check an estimator on synthetic ground truth before
+comparing it to anything.)*
+
+**Conclusion:** the translation model is not the limiting factor, and better patch-matching is a dead
+end. The dominant term remains **viewing geometry** (perpendicularity, −0.215), and the only estimator
+that models it is the **Jacobian least-squares** (−5 %, general mechanism, no tuned constants).

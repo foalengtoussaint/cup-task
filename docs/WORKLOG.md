@@ -3089,3 +3089,43 @@ entirely (exclude it).
     is a genuine per-track signal (6x spread) and gating on it does help, but it costs 16 points of
     coverage for a 7/12 win. The deeper fix is to stop tracks sliding in the first place, which is
     an appearance/tracking problem, not an estimation one.
+
+### Stopping tracks from sliding, using the per-frame detection: works, and makes things WORSE
+
+User: "stop tracks from sliding in the first place -- consider that we have an actual detection on
+each frame." The detection was only ever used as a VETO (`anchor_px`, drop tracks >30px away),
+never as a CORRECTION, which is a real gap.
+
+**THE DRIFT IS REAL AND SYSTEMATIC.** Per track, offset-from-detection over a trial:
+    slow drift (first quarter -> last quarter)   median 15.37 px, p90 140.87 px
+    frame-to-frame jitter of the same offset     median  0.99 px
+A 15x ratio -- PyrLK is incremental, so each frame starts from the previous slightly-wrong
+position and the error ACCUMULATES into a walk across the surface. A detection is an independent,
+NON-accumulating measurement every frame, so a rigidly-attached track must hold a constant offset
+from it; any low-frequency change in that offset is drift by definition.
+
+**THE CORRECTION WORKS, MECHANICALLY.** `_deslide` (EWMA of the offset, correct only the slow part
+so real relative motion survives):
+    deslide off      drift median 15.37 px   p90 140.87
+    tau=60           drift median  1.80 px   p90  13.22    <- 10x less sliding
+    tau=30           drift median  2.05 px   p90  13.21
+    tau=10           drift median  9.27 px   p90  62.12    (too fast: cancels REAL motion too)
+
+**AND SPEED GETS WORSE, monotonically with correction strength:**
+    off     14.70 median / p90 53.64 / cov 74.2%
+    tau=60  18.72 / 52.74 / 75.6%   (beats off on 2/12)
+    tau=30  23.13 / 63.47 / 74.0%   (0/12)
+
+WHY -- measured, not guessed. The detection's OWN frame-to-frame movement is 0.88-1.54 px median
+(p90 up to 17.6 px), i.e. comparable to or WORSE than the 0.99 px track jitter being corrected.
+So the fix injects detection noise into every track, and injects it COHERENTLY -- all tracks get
+pulled toward the same point. Coherent error is precisely what the cloud's spatial averaging over
+~11 tracks CANNOT remove (same lesson as RAFT-vs-PyrLK: correlated error survives fusion).
+Meanwhile the drift it removes is SLOW, so it largely cancels in a frame-to-frame difference and
+was costing little to begin with.
+
+**THE GENERAL LESSON:** drift and jitter are not interchangeable. For a VELOCITY estimate, slow
+drift is nearly free (it differences away) while per-frame noise is expensive -- so "the tracks are
+sliding" was a true observation that turned out to be the wrong thing to fix. Kept in the code
+(`deslide=`, default None) because it demonstrably stops the sliding; anyone wanting POSITION
+rather than velocity from this cloud should reach for it.

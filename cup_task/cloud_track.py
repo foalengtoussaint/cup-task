@@ -93,7 +93,7 @@ class CloudTracker:
                  units_per_metre: float = 1000.0, reseed_below: int = RESEED_BELOW,
                  min_inliers: int = 8, gate_consensus: bool = True,
                  anchor_px: float | None = 30.0, max_scale_dev: float | None = 0.01,
-                 retire_deformed: bool = True):
+                 retire_deformed: bool = True, deslide: float | None = None):
         self.calib = calib
         self.radius, self.height, self.n_seed = radius, height, n_seed
         self.fb_tol, self.min_cams = fb_tol, min_cams
@@ -136,6 +136,12 @@ class CloudTracker:
         # then PLATEAUS, so retiring by age would not help), which is why the removal is targeted
         # at the offending tracks instead of the oldest ones.
         self.retire_deformed = retire_deformed
+        # DESLIDE: EWMA time-constant (frames) for correcting slow track drift against the
+        # per-frame detection. ⚠ DEFAULT OFF -- it works mechanically (drift 15.37 -> 1.80 px
+        # median, p90 140.9 -> 13.2) but makes SPEED WORSE (14.70 -> 18.72 at tau=60, 23.13 at
+        # tau=30, beating the baseline on only 2/12 and 0/12 trials). See _deslide for why.
+        self.deslide = deslide
+        self._offset_ref: dict[str, np.ndarray] = {}
         self._track_prev3d: dict[int, np.ndarray] = {}
         self._px: dict[str, np.ndarray] = {}      # cam -> (K,2) current pixel per track (NaN = lost)
         self._prev_gray: dict[str, np.ndarray] = {}
@@ -160,6 +166,7 @@ class CloudTracker:
                     pts[k] = u
             self._px[cam] = pts
         self._prev_gray = {c: g.copy() for c, g in gray.items()}
+        self._offset_ref = {}         # offsets are per-seed; a reseed invalidates them
         self._prev_cloud = None       # a reseed breaks track identity; do not difference across it
         self._prev_ids = None
         self._track_prev3d = {}       # ids are REUSED after a reseed -- stale continuity would
@@ -223,6 +230,45 @@ class CloudTracker:
                 pts.append(X); ids.append(k)
         return (np.array(pts) if pts else np.empty((0, 3))), np.array(ids, int)
 
+    def _deslide(self, kp_by_cam: dict) -> None:
+        """Correct slow track DRIFT by re-anchoring each track's offset to the frame's detection.
+
+        THE MECHANISM. PyrLK is incremental: every frame starts from the previous (already slightly
+        wrong) position, so small errors ACCUMULATE into a systematic walk across the object's
+        surface. Measured per track, offset-from-detection over a trial:
+            slow drift (first quarter -> last quarter)  median 15.37 px, p90 140.87 px
+            frame-to-frame jitter of the same offset    median  0.99 px
+        A 15x ratio: the slide is a slow SYSTEMATIC WALK, not noise. That is exactly the component
+        a detection can remove -- it is an independent, non-accumulating measurement of where the
+        object is on every frame, so a track rigidly attached to the object must hold a CONSTANT
+        offset from it. Any low-frequency change in that offset is drift by definition.
+
+        Correct only the SLOW component (EWMA of the offset, `deslide_tau` frames): the fast part
+        is real relative motion (parallax, rotation carrying the point across the image) and must
+        be preserved, or we would be pinning every track rigidly to the detection and destroying
+        the very cloud geometry the rotation estimate depends on.
+        """
+        if self.deslide is None:
+            return
+        a = 1.0 / max(self.deslide, 1.0)
+        for cam, pts in self._px.items():
+            kp = kp_by_cam.get(cam)
+            if kp is None or not np.isfinite(np.asarray(kp, float)).all():
+                continue
+            kp = np.asarray(kp, float)
+            ref = self._offset_ref.setdefault(cam, np.full_like(pts, np.nan))
+            cur = pts - kp
+            live = np.isfinite(cur).all(1)
+            fresh = live & ~np.isfinite(ref).all(1)
+            ref[fresh] = cur[fresh]                       # first sighting defines the offset
+            upd = live & np.isfinite(ref).all(1)
+            if upd.any():
+                # the drift estimate is the SLOW part of (current offset - reference offset)
+                drift = cur[upd] - ref[upd]
+                pts[upd] -= a * drift                     # pull back along the drift direction
+                ref[upd] += a * drift * (1.0 - a)         # let the reference follow real motion
+            self._px[cam] = pts
+
     def _anchor(self, kp_by_cam: dict) -> None:
         """Kill tracks that have drifted too far from THIS frame's detected keypoint.
 
@@ -262,6 +308,7 @@ class CloudTracker:
             return None
         self._track_forward(gray)
         if kp_by_cam:
+            self._deslide(kp_by_cam)      # correct slow drift BEFORE culling on it
             self._anchor(kp_by_cam)
         cloud, ids = self._lift()
 

@@ -2841,3 +2841,34 @@ where the hand occludes it.
 IMPLICATION: the ceiling on measurand-fixing alone is roughly half the current error, and it is
 concentrated in the frames where the cup is rotating. The other half needs actual tracker work,
 and for the cloud specifically that means the occluded-cup case.
+
+### ⚠ CORRECTION: nobody here measures the cup centroid, and the "34mm lever" is not what I said
+
+User: "how do you measure the cup centroid?" Answer: I do not. THREE different points were being
+called the cup position tonight, and none of them is the geometric centre:
+
+    A  mean of the 4 `cluster_cup_*` markers   (TRUTH side, mocap world)
+    B  UETrack's triangulated point            (MMC world) -- seeds the cloud
+    C  tracked-cloud centroid                  (MMC world) -- what the cloud reports
+
+  * **A is a marker CLUSTER stuck on one patch of the cup**, not a symmetric arrangement around it:
+    pairwise marker distances 25.3-48.2mm, each sitting ~24mm from their own mean, on a cup of
+    radius ~40mm and height ~95mm. So A is a consistent RIGID REFERENCE, offset from the true
+    centre by an unknown amount.
+  * B is wherever the tracker's box centre happens to land, triangulated. Also not the centre.
+  * C sees only the near hemisphere, so it is biased toward the camera-facing surface.
+
+**The "34mm lever arm" is |C - B| = 34.5mm (sd 4.3), i.e. cloud-centroid to UETRACK-POINT.** It is
+NOT the distance to the cup's centre, and I used it as though it were a lever from the centre of
+rotation. |C - A| is not even computable -- different world frames (the same mistake that produced
+the 1842mm nonsense).
+
+WHAT SURVIVES: the rotation is real (spread scales with omega, corr +0.719 with 2*omega*r), and the
+lever-vs-genuine envelope split still holds, because it only uses the MARKERS' OWN 6-DoF pose plus
+a 34mm MAGNITUDE -- two rigid points 34mm apart really do differ by that much wherever the centre
+is. WHAT DOES NOT: calling A or B "the cup centroid", and any statement about where the cloud sits
+relative to the cup's actual centre.
+
+TO ACTUALLY MEASURE IT you need the cup's GEOMETRY fitted to observed surface points, so the centre
+is inferred from the surface rather than read off whatever point a detector emitted. The cloud is
+the only signal here that can support that -- it has surface points, not a box centre.

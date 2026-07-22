@@ -38,7 +38,8 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 
-from cup_task.cloud_velocity import FrameResult, compute_3d_velocity   # reuse the solver
+from cup_task.cloud_velocity import (FrameResult, compute_3d_velocity,   # reuse the solver
+                                     kabsch_ransac, umeyama)
 
 LK = dict(winSize=(21, 21), maxLevel=3,
           criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
@@ -91,7 +92,8 @@ class CloudTracker:
                  n_seed: int = 24, fb_tol: float = FB_TOL, min_cams: int = MIN_CAMS,
                  units_per_metre: float = 1000.0, reseed_below: int = RESEED_BELOW,
                  min_inliers: int = 8, gate_consensus: bool = True,
-                 anchor_px: float | None = 30.0):
+                 anchor_px: float | None = 30.0, max_scale_dev: float | None = 0.01,
+                 retire_deformed: bool = True):
         self.calib = calib
         self.radius, self.height, self.n_seed = radius, height, n_seed
         self.fb_tol, self.min_cams = fb_tol, min_cams
@@ -116,6 +118,24 @@ class CloudTracker:
         # sweep that looked good on one trial and reversed across the cohort. 30px is the default
         # because 25px buys 0.8mm/s for 3 points of coverage.
         self.anchor_px = anchor_px
+        # RIGIDITY GATE. Fit a SIMILARITY (Umeyama) alongside the rigid fit and refuse the frame
+        # when the fitted scale strays more than this from 1. A rigid cup cannot change size, so
+        # s != 1 measures the cloud DEFORMING (tracks sliding), with no ground truth needed.
+        # Measured n=12, cup, moving frames -- error by |s-1| quartile:
+        #     most rigid 11.3 | 13.1 | 18.9 | most deformed 36.3 mm/s   (3.2x spread, rho +0.360)
+        # As a gate at 0.01: keeps 75.6% of frames, median 16.83 -> 14.05, p90 79.8 -> 54.7,
+        # >100mm/s 7.4% -> 3.4%.
+        # ⚠ This is the ONLY quality signal here that works: rho(n_inliers, err) = -0.009, i.e.
+        # min_inliers has NO predictive power, and raising it actively hurts (>=12 keeps 27% of
+        # frames and makes the median WORSE, 19.96 vs 16.20). Scale finds what inlier count misses.
+        # None disables.
+        self.max_scale_dev = max_scale_dev
+        # On a frame the rigidity gate rejects, kill the individual tracks that RANSAC found
+        # inconsistent, rather than only refusing the frame. Sliding is per-track noise, not
+        # accumulated drift (measured: per-track radius drift jumps to ~4mm in the first 30 frames
+        # then PLATEAUS, so retiring by age would not help), which is why the removal is targeted
+        # at the offending tracks instead of the oldest ones.
+        self.retire_deformed = retire_deformed
         self._track_prev3d: dict[int, np.ndarray] = {}
         self._px: dict[str, np.ndarray] = {}      # cam -> (K,2) current pixel per track (NaN = lost)
         self._prev_gray: dict[str, np.ndarray] = {}
@@ -219,6 +239,16 @@ class CloudTracker:
             d = np.linalg.norm(pts - np.asarray(kp, float), axis=1)
             pts[d > self.anchor_px] = np.nan
 
+    def _retire(self, ids) -> None:
+        """Permanently drop these track ids in every camera (they will be replaced at the next
+        reseed). Killing the point in the PIXEL state is what makes it stay dead -- the 3D lift
+        reads from there, so a track removed here cannot re-enter the cloud."""
+        for k in np.atleast_1d(np.asarray(ids, int)).ravel():
+            for pts in self._px.values():
+                if 0 <= k < len(pts):
+                    pts[k] = np.nan
+            self._track_prev3d.pop(int(k), None)
+
     def update(self, gray: dict, cup_xyz: np.ndarray, dt: float,
                kp_by_cam: dict | None = None) -> FrameResult | None:
         """One frame. `cup_xyz` = cup 3D position (seeding + reseeding).
@@ -244,9 +274,28 @@ class CloudTracker:
                 # so the two clouds are corresponded with no matching whatsoever.
                 common, ia, ib = np.intersect1d(self._prev_ids, ids, return_indices=True)
                 if len(common) >= 3:
-                    v = compute_3d_velocity(self._prev_cloud[ia], cloud[ib], dt,
-                                            self.units_per_metre)
-                    if (v["linear_velocity"] is not None
+                    A, B = self._prev_cloud[ia], cloud[ib]
+                    v = compute_3d_velocity(A, B, dt, self.units_per_metre)
+                    # Rigidity check on the SAME inliers the motion was fitted to, so the number
+                    # describes the points that actually produced the answer.
+                    scale_ok = True
+                    if self.max_scale_dev is not None and len(A) >= 4:
+                        _, _, mask = kabsch_ransac(A, B, thresh=5.0)
+                        if mask is not None and mask.sum() >= 4:
+                            _, _, s = umeyama(A[mask], B[mask])
+                            res.scale = s
+                            scale_ok = abs(s - 1.0) <= self.max_scale_dev
+                            # A deformed frame is not correctable -- measured, no power of s
+                            # recovers it (36.81 -> 36.64 at best) because the deformed frames
+                            # carry the SAME 0.938 ratio as the rigid ones. But the deformation is
+                            # not shared equally: retire the tracks that individually violate
+                            # rigidity, so the NEXT frame is built from better points instead of
+                            # being refused too.
+                            if not scale_ok and self.retire_deformed:
+                                self._retire(common[~mask] if len(mask) == len(common) else [])
+                        else:
+                            scale_ok = False
+                    if (v["linear_velocity"] is not None and scale_ok
                             and v["n_inliers"] >= self.min_inliers):
                         res.linear_velocity = v["linear_velocity"]
                         res.linear_speed = v["linear_speed"]

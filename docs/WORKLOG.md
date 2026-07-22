@@ -2683,3 +2683,43 @@ SCOPE, and the guard rail: the rule is a claim about the error's SIGN, not a gen
 `signed_error_split()` exists to check the assumption before applying it elsewhere -- on a
 symmetric-error signal `max` is biased HIGH and the mean is correct, which is pinned by a test.
 Validated on the CUP only; the wrist needs its own signed-error measurement first.
+
+### Umeyama scale: a REAL quality signal (adopted) -- but the deformation is NOT correctable
+
+Added `umeyama()` (Kabsch + scale) alongside `kabsch()`. A rigid cup cannot change size, so a
+fitted s != 1 is a direct, GROUND-TRUTH-FREE measurement of the cloud deforming. Verified exact on
+synthetic data (recovers s to 1e-9; Kabsch cannot fit a 10% scale change, resid > 1mm).
+
+**IT PREDICTS ERROR, and it is the only thing here that does.** n=12, cup, moving frames, error by
+|s-1| quartile:
+    Q1 most rigid 11.3 | Q2 13.1 | Q3 18.9 | Q4 most deformed 36.3 mm/s     (3.2x spread)
+    Spearman rho(|s-1|, err) = +0.360
+    ⚠ compare rho(n_inliers, err) = **-0.009** -- the existing min_inliers gate has NO predictive
+      power whatsoever, and RAISING it actively hurts (>=12 keeps 27% of frames and makes the
+      median WORSE, 19.96 vs 16.20). Scale finds exactly what inlier count misses.
+
+As a gate at |s-1| < 0.01 (n=12, cloud only):
+    no gate  15.95 median / p90 63.40 / >100mm/s 3.4% / cov 92.7%
+    gate     13.58 median / p90 54.73 / >100mm/s 2.3% / cov 72.5%   <- ADOPTED (max_scale_dev)
+Monotonic in the threshold (0.05->0.002 gives 16.24, 14.99, 14.05, 12.55, 11.45), which is what a
+real signal looks like.
+
+**BUT THE DEFORMATION CANNOT BE CORRECTED -- three attempts, all worse than doing nothing:**
+  1. **Scalar powers of s on the speed** (/s, *s, /s^2): 36.81 -> 36.64 at best on deformed
+     frames. Because deformed frames carry the SAME 0.938 ratio as rigid ones -- the deformation
+     DETECTS bad frames without biasing them in a recoverable direction.
+  2. **Global running rigid shape** (accumulate each track's mean offset, fit every frame to it):
+     **60.62 vs 14.82 raw** -- catastrophic. Same failure as the earlier rigid_model_probe: a mean
+     shape built from sliding tracks is a BAD reference, and then every frame is fitted to it.
+  3. **Local similarity undo** (measure s on the consecutive pair only, rescale B about its own
+     centroid before differencing -- nothing accumulated): **17.64 vs 14.82**. Iterating the
+     correction changes nothing at all (17.64 both).
+
+Also tried and REJECTED: **retiring the tracks RANSAC rejects on a deformed frame** (14.70 vs the
+gate's 13.58 -- it disturbs the cloud more than it cleans it), and **retiring by track AGE**, which
+the data says would not help anyway: per-track radius drift jumps to ~4mm in the first 30 frames
+and then PLATEAUS (0.25, 4.32, 3.72, 3.49, 4.29, 2.61 ... mm). Sliding is per-frame NOISE, not
+accumulated drift.
+
+CONCLUSION: the scale is a DETECTOR, not a corrector. Refusing the frame is the right response,
+and it is worth 15.95 -> 13.58 at the cost of 20 points of coverage.

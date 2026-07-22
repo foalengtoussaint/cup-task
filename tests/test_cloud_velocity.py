@@ -157,6 +157,43 @@ def test_translation_is_centroid_motion_not_origin_translation():
         "test is not exercising the lever arm; move the cloud further from the origin"
 
 
+def test_umeyama_recovers_scale_and_kabsch_does_not():
+    """Umeyama recovers a known scale exactly; Kabsch (s forced to 1) must absorb it elsewhere.
+
+    This is why the scale is worth computing on the real cloud: a rigid cup CANNOT change size, so
+    a fitted s != 1 is a direct measurement of the cloud deforming (tracks sliding on the surface).
+    Kabsch has no term for it and has to push that error into R and t instead.
+    """
+    from cup_task.cloud_velocity import umeyama
+    P = object_points()
+    R_true = rot([0.2, 1.0, -0.3], 0.15)
+    t_true = np.array([8.0, -4.0, 2.0])
+    for s_true in (1.0, 1.05, 0.90):
+        Q = s_true * (R_true @ P.T).T + t_true
+        R_, t_, s_ = umeyama(P, Q)
+        assert np.isclose(s_, s_true, atol=1e-9), f"scale {s_} != {s_true}"
+        assert np.allclose(R_, R_true, atol=1e-9), "rotation wrong under scaling"
+        assert np.allclose(s_ * (R_ @ P.T).T + t_, Q, atol=1e-8), "reconstruction wrong"
+
+    # Kabsch on a scaled cloud: the rotation still comes out right, but the fit cannot be exact
+    Q = 1.10 * (R_true @ P.T).T + t_true
+    Rk, tk = kabsch(P, Q)
+    resid = np.linalg.norm((Rk @ P.T).T + tk - Q, axis=1)
+    assert resid.max() > 1.0, "Kabsch should NOT be able to fit a 10% scale change"
+
+
+def test_umeyama_scale_is_one_for_rigid_motion():
+    """The signal only means something if it reads exactly 1 when nothing deforms."""
+    from cup_task.cloud_velocity import umeyama
+    rng = np.random.default_rng(4)
+    P = object_points()
+    for _ in range(20):
+        R_true = rot(rng.normal(size=3), rng.uniform(0.01, 0.4))
+        Q = (R_true @ P.T).T + rng.normal(0, 20, 3)
+        _, _, s = umeyama(P, Q)
+        assert np.isclose(s, 1.0, atol=1e-9), f"rigid motion gave s={s}"
+
+
 def test_units_conversion_is_explicit():
     """The same displacement in mm and in m must give the same m/s."""
     P = object_points()

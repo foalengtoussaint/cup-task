@@ -75,6 +75,10 @@ class FrameResult:
     angular_velocity: np.ndarray | None = None  # (3,) rad/s
     angular_speed: float | None = None          # rad/s
     rotation_matrix: np.ndarray | None = None   # (3,3) frame t -> t+1
+    # Fitted similarity scale (Umeyama) between the two clouds. A rigid object gives 1.0, so
+    # |scale-1| is a ground-truth-free CONFIDENCE signal -- it measures how badly the rigid model
+    # was violated this frame. Populated by CloudTracker; see its `max_scale_dev`.
+    scale: float | None = None
     cloud: np.ndarray = field(default=None, repr=False)   # (N,3), kept for the next frame
 
 
@@ -270,6 +274,32 @@ def kabsch(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     d = np.sign(np.linalg.det(Vt.T @ U.T))
     R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
     return R, cb - R @ ca
+
+
+def umeyama(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
+    """Similarity transform A -> B: returns (R, t, s) with B ~= s*(R @ A.T).T + t.
+
+    Kabsch with the scale term Umeyama (1991) adds, and here the SCALE IS THE POINT rather than a
+    nuisance. A rigid cup cannot change size, so any s != 1 is the cloud DEFORMING -- tracks
+    sliding across the surface between frames. Plain Kabsch forces s = 1 and has to absorb that
+    deformation somewhere, which is precisely the mechanism measured earlier: pairwise distances
+    swelling 1.6%/frame at speed while the reported speed under-read by 15-30%.
+
+    So `s` is a free, per-frame CONFIDENCE SIGNAL that needs no ground truth: it says how badly the
+    rigid model is being violated on this frame. Whether it actually predicts error is an empirical
+    question -- see scripts/umeyama_scale_probe.py.
+    """
+    A = np.asarray(A, float); B = np.asarray(B, float)
+    ca, cb = A.mean(0), B.mean(0)
+    Ac, Bc = A - ca, B - cb
+    H = Ac.T @ Bc
+    U, S, Vt = np.linalg.svd(H)
+    d = np.sign(np.linalg.det(Vt.T @ U.T))
+    D = np.diag([1.0, 1.0, d])
+    R = Vt.T @ D @ U.T
+    var = (Ac ** 2).sum()
+    s = float((S * np.array([1.0, 1.0, d])).sum() / var) if var > 1e-12 else 1.0
+    return R, cb - s * (R @ ca), s
 
 
 def kabsch_align_vectors(A: np.ndarray, B: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

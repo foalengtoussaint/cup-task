@@ -2723,3 +2723,48 @@ accumulated drift.
 
 CONCLUSION: the scale is a DETECTOR, not a corrector. Refusing the frame is the right response,
 and it is worth 15.95 -> 13.58 at the cost of 20 points of coverage.
+
+### ⚠⚠ THE METRIC IS AMBIGUOUS BY MORE THAN THE ERROR WE ARE OPTIMISING
+
+User: "consider that there's 4 cup points" -- and, on my first attempt to use them, "don't actually
+use the omc to make the cloud, I just meant that for the truth." Correct on both counts: feeding
+markers into the tracker would be circular and would produce a pipeline that cannot run without a
+mocap lab. Used as TRUTH ONLY, the 4 markers expose a flaw in how everything tonight was scored.
+
+THE PROBLEM. Every number so far compares the speed of the CLOUD'S CENTROID against the speed of
+the OMC MARKER CENTROID. Those are two DIFFERENT PHYSICAL POINTS on the cup -- measured 34mm apart,
+because the cloud only ever sees the near hemisphere. For pure translation that is harmless (all
+points move alike), but under ROTATION v_P = v_C + omega x (P - C), and the cup rotates throughout
+drinking.
+
+HOW BIG IS IT? With >=3 markers the cup's full 6-DoF pose is known, so we can evaluate the truth at
+ANY body point. Sampling 24 directions at the measured 34mm lever:
+
+    **speed spread across body points 34mm apart: 42.1 mm/s**
+    (per trial 35.7-47.0, against median truths of 157-358 mm/s)
+
+The error being chased all evening is ~14 mm/s. **The metric ambiguity is 3x LARGER than the
+signal.** "Cup speed" is not well-defined without specifying WHICH POINT on the cup.
+
+Consequently, scoring at a fitted body point instead of the centroid:
+    truth               median   mean    p90   ratio
+    centroid-truth       14.07  14.75  51.23  0.934
+    bodypoint-truth       9.07   9.18  38.98  0.989
+⚠ bodypoint-truth is an ORACLE (lever direction picked per trial as the best of 24, scored against
+the error it minimises) so the 9.07 is a CEILING, not an adoptable result. But the RATIO is the
+tell: 0.934 -> 0.989 means **the shared under-read I chased through four dead hypotheses
+(resampling, chording, indexing, cup-lag) is largely a LEVER-ARM ARTEFACT**, not a tracker defect.
+A fitted direction should not systematically remove a bias unless the bias is real.
+
+WHAT THIS INVALIDATES: not the RANKINGS (both estimators were scored the same way, so cloud-vs-flow
+comparisons stand) but the PRECISION. Differences smaller than ~40 mm/s between methods are inside
+the metric's own ambiguity. That includes most of tonight's tuning deltas.
+
+WHAT TO DO INSTEAD, if this thread continues: report the speed of a DEFINED body point (e.g. the
+cup centroid recovered from the tracked cloud's own geometry, not its visible-hemisphere mean), or
+report a rotation-invariant quantity. Fixing the estimator further is not the lever; defining the
+measurand is.
+
+⚠ Also fixed a bug of mine along the way: expressing the cloud centroid in the marker frame via
+`Rs.T @ (cen - Cs)` is MEANINGLESS -- MMC world and mocap world are different coordinate frames,
+and it produced a 1842mm "body offset" (room scale). The lever must be measured within one frame.

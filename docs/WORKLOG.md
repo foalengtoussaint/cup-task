@@ -2570,3 +2570,43 @@ The centroid question: rotation IS about the cloud's own centroid (both clouds a
 the SVD, which is what decouples R from t). That centroid is NOT the cup's physical centre -- it
 sits 34.6mm off the detected cup position -- but the offset is STABLE (std 4.7-5.5mm/axis), and a
 constant offset cancels in a difference, so it is harmless.
+
+### ⚠ RETRACTION: "the cloud beats the flow path" was a MIX EFFECT
+
+User: "when the wrist is on the cup you're not necessarily going to get the same results, also
+check if the distribution of the errors, also based on the speed is similar." Both checks were
+right to demand, and together they overturn the headline.
+
+STRATIFYING BY HAND PROXIMITY (wrist-cup 3D distance; note the wrist JOINT never gets closer than
+~123mm to the cup CENTRE even in a firm grasp, so the bands are quartiles of the real
+distribution, not absolute "touching" thresholds). Restricted to MOVING frames so speed does not
+confound:
+
+    band                  n     cloud    flow
+    Q1 closest (held)   1090     17.6    16.3   <- FLOW wins where the hand holds the cup
+    Q2                   911     16.7    17.4
+    Q3 (freer)           258     12.5    13.9   <- cloud wins only when the cup is unobstructed
+
+Cloud coverage also degrades with the hand present (93.6% Q1 vs 98.8% Q4). ⚠ The UNSTRATIFIED
+quartile table looks like a huge cloud win (0.7 vs 1.6 in Q4) but that is the SPEED CONFOUND --
+far-from-hand frames are also the stationary ones.
+
+ERROR DISTRIBUTION on moving frames -- identical in the body, DIVERGENT IN THE TAIL:
+    method   p25    MED    p75    p90    p95    p99     max
+    cloud    7.0   16.0   34.9   75.5  113.3  214.8   447.7
+    flow     7.5   16.5   33.4   57.9   77.5  133.3   203.0
+    frames over threshold:  >100mm/s  cloud 6.4% vs flow 2.5%
+                            >200mm/s  cloud 1.3% vs flow 0.0%
+By speed band the cloud is competitive to 400mm/s then COLLAPSES: 800+mm/s gives 102.1 vs 59.0.
+Both UNDER-read at speed (ratio 0.90-0.95) -- that bias is shared, not cloud-specific.
+
+VERDICT: the cloud TIES on the median (16.0 vs 16.5) and LOSES where it matters -- held cup, high
+speed, and the whole upper tail. By the repo's own rule (judge by the fraction of frames crossing
+a usable threshold, not the median) FLOW IS STILL THE BETTER ESTIMATOR. The earlier "cloud beats
+flow at 16.0 vs 18.7" is retracted: that pooled median is dominated by easy slow unoccluded
+frames, which is exactly the selection trap the detect-once/Siamese retraction was about.
+
+WHAT REMAINS TRUE: the per-track consensus gate + keypoint anchor are a real, replicating
+improvement to the CLOUD (29.7 -> 16.0, radius wander 29mm -> 5.9mm, monotonic, 11/12 trials).
+The cloud is now a viable estimator rather than a broken one -- it is just not a better one, and
+its unique output (rotation) is still scale-unreliable.

@@ -2806,3 +2806,38 @@ The lever-arm point itself is unchanged and still worth acting on: the oracle bo
 moved the ratio 0.934 -> 0.989, so a real part of the residual bias is a lever artefact. Defining
 the measurand is still the right next move -- it is just worth ~6 mm/s, not the 3x-the-signal I
 claimed.
+
+### How much error is the LEVER ARM and how much is genuine? ~50/50
+
+User: "how much of the speed difference is sitting outside of this marker speed spread, also what
+is this lever arm thing."
+
+THE LEVER ARM, plainly: the distance from the point being measured to the body's centre of
+rotation. On a rigid body v_point = v_centroid + omega x r, so a point at distance r picks up
+|omega|*r of extra tangential speed. The cloud's centroid sits ~34mm from the cup's centroid
+(it only ever sees the near hemisphere), so at the measured omega ~0.75 rad/s it legitimately
+carries ~26 mm/s that the marker centroid does not. That is not error -- it is two different
+points on the same rigid body genuinely moving at different speeds.
+
+THE SPLIT. For each frame, build the ENVELOPE of speeds that ANY body point 34mm out could
+legitimately have (48 sampled directions, using the markers' 6-DoF pose). Error INSIDE the
+envelope is explainable by point choice; the EXCESS beyond it is genuine tracker error that no
+choice of measurand can excuse. n=6 trials, moving frames:
+
+    method   TOTAL err (med/p75/p90)   EXCESS beyond envelope (med/p75/p90)   frames w/ excess
+    cloud      18.4 / 39.5 / 80.2            0.0 / 13.2 / 41.3                     50%
+    flow       19.9 / 37.6 / 61.8            0.0 / 12.3 / 28.3                     48%
+
+**Roughly half the error is the lever arm and half is real.** On ~50% of frames the cloud's speed
+falls INSIDE the legitimate envelope -- zero excess, the tracker is not wrong at all, it is
+reporting a different point. On the other half there is genuine error, and the tail is where it
+lives (p90 41.3 cloud / 28.3 flow).
+
+NOTE the asymmetry: flow's total p90 (61.8) and the cloud's (80.2) differ by 18, but their GENUINE
+p90s differ by 13 (28.3 vs 41.3). So the cloud's worse tail is disproportionately REAL error, not
+point-choice -- which is consistent with the earlier stratified finding that the cloud degrades
+where the hand occludes it.
+
+IMPLICATION: the ceiling on measurand-fixing alone is roughly half the current error, and it is
+concentrated in the frames where the cup is rotating. The other half needs actual tracker work,
+and for the cloud specifically that means the occluded-cup case.

@@ -3909,3 +3909,82 @@ coherence; (2) averaging detects but does not correct -> right, it smears; (3) u
 inform spatial -> the actual best method. Gain is modest (0.172 -> 0.155, ~10%) because the cup's
 axis genuinely wanders, weakening the temporal-axis estimate, but it is the correct method and wins.
 This is the resolution of the entire jitter/rotation thread.
+
+## 2026-07-23 >>> AGE MECHANISM SETTLED + VOLUME SEEDING & THE CARVE THREAD (one clip: P07 t11)
+
+All on P07 trial_11_L, mostly the r=140 volume-ball big-seed cache (scratchpad `resid_tracks.pkl`,
+schema: track3d[id][f] = (X, resid_kept, n_kept, resid_all_worstcam, n_obs), consensus-gated).
+Sister caches: `moves_tracks.pkl` (r=60), `oversized_tracks.pkl` (r=140 UNGATED — superseded).
+
+### 1. Maturation is SURVIVORSHIP, not self-improvement (longitudinal, per-track id)
+The earlier cross-sectional age bins could not distinguish "tracks improve with age" from "noisy
+tracks die young". Re-ran with globally-unique ids ((generation, slot) — slot ids RECYCLE across
+reseeds, merging them was a latent bug) and split residual-at-young-age by EVENTUAL lifespan:
+    died young (<=4f): 1.31mm @ age 1-4   |   survived >40f: 0.28mm @ age 1-4
+Survivors were ALREADY ~5x quieter at birth. Birth residual predicts lifespan; individual tracks
+do not settle (p10 flat 0.016->0.009mm). Small real settling only in the first ~2 frames (seed
+pixel is a projected guess; first PyrLK step corrects it). So: warmup works because a fresh cohort
+has not yet SHED its bad members, not because members improve. No age gate needed — confirmed.
+
+### 2. What filters off-cup points: the ANCHOR, and nothing else
+Traced every lifted track vs the detection (normal seed r=40 + anchor30): 100.0% of RANSAC
+inliers on-cup. Oversized shell r=120 + anchor: total collapse (every seed >30px from detection).
+Oversized + anchor OFF: RANSAC inliers 0.0% on-cup (median 147mm) — RANSAC finds the LARGEST
+mutually-rigid set, and the static ROOM is more rigid than a moving cup. Renders:
+out/offcup_{normal,oversized}_P07_cam_3.mp4. The rigidity machinery cannot reject background;
+only the detection anchor does.
+
+### 3. Seeding density/shape (one clip — NOT cohort-replicated, do not promote yet)
+More points on the same rim: interior optimum n=48 (11.76 -> 9.67mm/s), reverses by n=200 (12.92,
+on-cup% 99.6 -> 54). FILLED disk (radius ~ sqrt(U)*40, points on the cup FACE not just the rim)
+n=48 = best of board: 7.86mm/s, cov 70%. Volume BALL r=40..60 fills the cup body but grows an
+off-cup halo RANSAC endorses; ball never beats the filled disk. Lottery is real but bounded by the
+object's apparent size; rim seeds sit on aperture-limited silhouette, face seeds get 2D texture.
+
+### 4. "Moves as one" — what works and what does not (user thread)
+(a) Motion-correlation vs the cloud's own median velocity: FAILS as a cup test — reference is the
+cloud itself (circular) and hand+arm genuinely co-move with the cup. User reframe: hand-on-cup IS
+part of the rigid body; the enemy is only static background + far scene junk.
+(b) Per-frame rigid-consensus membership: FAILS — static background is maximally rigid; with a big
+seed it IS the consensus (kept med dist 421mm at back_transport). Same trap as (2).
+(c) AGREEMENT WITH THE TRACKER's VELOCITY (|v_track − v_cup_v3| < 80mm/s, external reference, not
+circular): WORKS during motion — kept med 51-72mm vs rejected 212-454mm. Blind when the cup is
+slow: keep-rate 89% @ cup<100mm/s -> 2% @ >900mm/s (a still point is within 80mm/s of a still
+cup). Quantified: the filter has ~no power <100mm/s, full power >300mm/s.
+
+### 5. Consensus gate: dropped by MISTAKE, restored, conclusions survive
+The carve caches were built with bare triangulate_dlt (gate lost while inlining around a branch
+import). Rebuilt gated: 95% of triangulations pass; drinking kept 800->704, med 106->101mm — the
+apex blob is NOT loose-triangulation junk, it is genuinely tracked slow points. BUT the gate is
+weak where it matters: 2-OBS-CAM tracks have NO cross-check (two rays always ~agree) and are
+~half the cloud.
+
+### 6. Residual statistics: measure DISAGREEMENT, not post-gate tightness
+volume_shape.png (1.35 vs 11.56px) used ungated all-cams residual; my later "residual is weak"
+used residual over the CONSENSUS-KEPT cams — post-selection, the gate had already deleted the
+disagreeing camera = the evidence. Correct statistic = worst-cam reprojection over ALL observing
+cams (resid_all): apex separation 4.2x (3.5 vs 14.8px) vs 2.8x post-gate. 2-obs-cam: NO power
+under either (0.8x, inverted). Policy that falls out: fast frames -> motion filter (2-cam fine,
+and >=3cam tracks nearly VANISH in fast frames — blur — 7 pts @ f109); slow frames -> drop 2-cam
+(coverage-free: >=3cam still 323/frame med, 0.2% frames <8pts) and gate on resid_all. Apex carve
+best case ~83-90mm — still ~2x cup: overlapping distributions + 2-cam blindness are the floor.
+
+### 7. THE CYLINDER IS FINDABLE IN THE CLOUD — no detector anchor (best result of the thread)
+RANSAC cylinder on the raw per-frame cloud (axis candidates x circle construction, shell scoring):
+a FULL RING of inliers exists even at the drink apex (87/873 on-shell @ fixed R=40; free-radius
+3-point fit picks R=37.9mm apex / 34.4mm back_transport on 72-79 inliers). The r=140 ball seed has
+no ring prior — the ring is image structure. Cross-check for free: the detector's cup3 lands ON
+the found shell, one radius off-axis (41mm perp) = exactly the known near-hemisphere surface bias.
+⚠ the 40mm "cup radius" used ALL SESSION was an assumed default from surface_seed, never measured;
+data says ~35-38mm. out/found_cylinder.png. Shell-membership is a cleaner cup definition than any
+distance threshold; single trial, 2 reliable frames, score's /sqrt(R) normalization unchecked.
+
+### Corrections ledger for this entry
+(i) age-mix "young+old coexist" was a slot-id-reuse measurement bug (mass reset is real);
+(ii) consensus gate silently dropped, restored — empirically minor here, methodically not;
+(iii) "residual is weak" retracted — wrong statistic (post-gate); disagreement resid is 4.2x;
+(iv) fwd-transport free-radius fit (24mm on 22 inliers) is noise, don't cite;
+(v) 40mm cup radius was assumption-propagated-as-fact; flagged everywhere it was used.
+Figures: out/{survivor_clouds,volume_shape,carve_shape_grid,carve_oversized_grid,carve_by_tracker,
+carve_by_resid,moves_as_one,implied_shape,implied_shape_perframe,implied_shape_window,
+found_cylinder}.png + offcup/carve_overlay/volume_seed mp4s (out/ is gitignored — local only).

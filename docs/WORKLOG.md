@@ -4047,3 +4047,16 @@ ball48 gate-off: ~94% coverage, better than v3 in every speed bin, best-in-class
 600-1200). Remaining holes = P07 rig occlusion (not method). Open: wire ball48+no-gate as
 defaults; the cup speed_blend (cloud where it speaks, v3/SmoothNet bridging true holes) for
 Murphy peak_velocity.
+
+### Addendum: position, and integrating the speed (n=12, ball48 gate-off)
+POSITION: the cloud is a speed instrument, not a position one. Displacement-from-origin vs OMC:
+v3 2.23mm (d-corr .9997) > ship centroid 5.78 > ball48 centroid 11.57 (loses 11/12 paired to v3).
+Volume centroid churns with track membership (points born/dying relocate it with zero real motion);
+the near-hemisphere-bias argument was aimed at the wrong metric (displacement is offset-invariant).
+INTEGRATING the cloud velocity: pure dead-reckoning drifts (30mm med, 114 worst; speed preserved
+13.8); leaky pull to v3 (tau=1s) = a KNOB on a Pareto frontier (pos 8.2 / speed 22.8) — v3 noise is
+high-freq (jitter->derivative), cloud noise is low-freq (bias->drift), any blend inherits a mix; NO
+setting beats both champions. Niche keeper: gap-REANCHORED integration has the best p90 position of
+everything incl. v3 (46 vs 59mm) — drift bounded, immune to v3's detection-tail excursions.
+DIVISION OF LABOR CONFIRMED BOTH DIRECTIONS: position from v3 (2.2mm), speed from the cloud
+(11.9mm/s), never derive one from the other. Caches: position_cache.pkl, integrate_cache.pkl.

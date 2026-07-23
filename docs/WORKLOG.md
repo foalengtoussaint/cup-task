@@ -4089,3 +4089,17 @@ PARKED KEEPER: the segment cloud measures SEGMENT ANGULAR VELOCITY (corr 0.6-0.8
 nothing else in the pipeline measures this; adjacent to peak_elbow_ang_vel (the Murphy measure the
 authors said raw keypoints are too jittery for). Two segment clouds -> elbow angle rate from rigid
 fits. Caches: pose_cloud_series.pkl, forearm_cache.pkl (scratchpad).
+
+### The skeletal idea LANDS: peak elbow angular velocity from two rigid segment clouds (n=12)
+The articulated form of the user's arm idea — forearm + upper-arm as SEPARATE rigid clouds, elbow
+flexion rate = (omega_fore − omega_upper)·n_hat (flexion axis from low-passed keypoint segment
+vectors; the RATE never touches a differentiated keypoint). Cohort vs OMC elbow angle rate:
+    per-frame: raw-kp-diff 14.2 (corr .958) | SmoothNet-diff 9.8 (.978) | cloud 29.4 (.718)
+    PEAK (p95): raw +29.2% | SmoothNet +25.2% | CLOUD +3.6% (|err| 11.9%)
+Keypoint-differentiated angles OVERSHOOT the peak systematically (~+25-29%) and SmoothNet does NOT
+fix it (the overshoot is jitter reaching the derivative; smoothing the positions is not enough).
+The cloud's texture-measured rotation is nearly UNBIASED at the peak. Division of labor: waveform
+from SmoothNet-diff (corr .978), peak_elbow_ang_vel from cloud omega_rel — the Murphy angle
+measure the iDrink authors called unmeasurable without mocap IK, now ~4% median bias, markerless.
+2-trial probe replicated on the full 12. Cache: elbow_cohort.pkl (scratchpad). Same-cohort caveat
+(P07+P08 unaffected side); per-frame corr .72 = peaks only, not waveforms.

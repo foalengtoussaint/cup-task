@@ -4060,3 +4060,32 @@ setting beats both champions. Niche keeper: gap-REANCHORED integration has the b
 everything incl. v3 (46 vs 59mm) — drift bounded, immune to v3's detection-tail excursions.
 DIVISION OF LABOR CONFIRMED BOTH DIRECTIONS: position from v3 (2.2mm), speed from the cloud
 (11.9mm/s), never derive one from the other. Caches: position_cache.pkl, integrate_cache.pkl.
+
+## 2026-07-23 (cont.) >>> POSE: ball48 on the wrist, and the SKELETAL-RIGIDITY thread (n=12 + probes)
+
+### Wrist: cloud TIES the shipping blend; regime-wise ranking corrected
+ball48 gate-off seeded at the SmoothNet wrist (anchor = per-cam wrist px): err 15.97 @93% cov vs
+sn 19.7 / flow 18.2 / shipping blend(flow,sn) 15.5. Paired cloud-vs-blend +0.48 (5/12) = TIE.
+blend(cloud,sn) 14.63 cross-trial but paired vs blend(flow,sn) +0.39 (6/12) = TIE. Seed radius
+25-vs-40: tie. ⚠ BY SPEED BIN the "cloud = best single path" claim needs correcting: cloud ties
+flow at 50-150 (8.6/8.6), edges ahead 150-300 (19.2/20.8), ties 300-600, and LOSES the peaks
+(600-1200: cloud 32.9, flow 26.0, sn 25.3 — SmoothNet owns wrist peaks; that's what the blend
+already encodes). Cup won its fast bin because the cup is RIGID; wrist tissue at 1000mm/s blurs
+like everything else and has no model prior. Conclusion: cloud can REPLACE flow in the blend
+(simplification: one mechanism for cup+wrist) at zero accuracy cost — not an accuracy win.
+
+### Skeletal rigidity (user idea): forearm-carried wrist — REFUTED AS IMPLEMENTED, mechanism measured
+Seed the wrist->elbow segment (filled cylinder r=45, anchor off), Kabsch the FOREARM (a real rigid
+body), transport the wrist point with (R,t): err 32.0 vs wrist-ball 16.0, degrading 18->36->69->86
+across speed bins. WHY (measured vs OMC, not asserted): the cloud's segment omega_perp vs the OMC
+wrist-elbow axis rate = 0.19-0.20 rad/s error on a 0.6-0.8 rad/s signal (corr +0.60/+0.70);
+x130mm lever predicts 24-26 mm/s transport error — matches the measured 30-33. The lever converts
+per-frame rotation jitter into wrist speed (THIRD lever-arm bite today). WHOLE ARM (shoulder->
+wrist as one body): worse still (45.8 / 107.7; omega corr collapses to +0.35) — elbow FLEXION is
+the drink's main dof; one rigid fit across a flexing joint averages two rotations.
+Live route (unwired): temporal axis-smoothed rotation before transport — needs ~40% jitter cut
+(0.19 -> ~0.12 rad/s) to break even with the local wrist ball.
+PARKED KEEPER: the segment cloud measures SEGMENT ANGULAR VELOCITY (corr 0.6-0.87, no markers) —
+nothing else in the pipeline measures this; adjacent to peak_elbow_ang_vel (the Murphy measure the
+authors said raw keypoints are too jittery for). Two segment clouds -> elbow angle rate from rigid
+fits. Caches: pose_cloud_series.pkl, forearm_cache.pkl (scratchpad).

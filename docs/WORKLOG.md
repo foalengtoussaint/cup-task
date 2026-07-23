@@ -3988,3 +3988,62 @@ distance threshold; single trial, 2 reliable frames, score's /sqrt(R) normalizat
 Figures: out/{survivor_clouds,volume_shape,carve_shape_grid,carve_oversized_grid,carve_by_tracker,
 carve_by_resid,moves_as_one,implied_shape,implied_shape_perframe,implied_shape_window,
 found_cylinder}.png + offcup/carve_overlay/volume_seed mp4s (out/ is gitignored — local only).
+
+## 2026-07-23 (cont.) >>> COHORT: filled seeds, vs-v3, gap census, and the RIGIDITY GATE RETIRED
+
+n=12 (P07+P08 t10-15), all vs OMC cup speed (low-passed, moving>50mm/s, median |err|). Per-frame
+caches: cache/cohort_seed_cache.pkl (v3/ship/cyl48/ball48 + inlier counts + cup3 + OMC) and
+scratchpad nogate_cache.pkl / scale_conditional.pkl. Runs ~20s/trial (5 cams).
+
+### 1. Cohort seed test: SHIP (spec defaults) vs filled cylinder n=48 vs filled ball r=40 n=48
+    config    median   mean   worst   cov%
+    v3         35.9    36.8   46.2    100     (production PIPELINE_V3 cup speed = diff'd SmoothNet)
+    ship       13.6    14.7   27.2     52
+    cyl48      11.7    12.1   17.7     70
+    ball48     13.2    12.3   15.7     67
+⚠ the single-clip "cyl48 is 1/3 better" (7.86 vs 11.76) did NOT replicate on the median: paired
+cyl48−ship = +0.12 (tie), 5/12 wins. The REAL cohort effect of filled-volume seeding is the TAIL
++ COVERAGE: worst trial 27.2→15.7-17.7, cov 52→70, and the fast bin 179→49-56 (below). ball48:
+9/12 paired wins vs ship, best worst-case — the promotion candidate. Mechanism (measured on the
+ship blowup trials P08 t10/t11): ship's inliers sit AT the min_inliers=8 floor (med 8, p10 7) →
+70% of frames refused (cov 30%) + thin-evidence fits; filled-48 runs at 11-13 inliers → cov 72%.
+Filled seeding = EVIDENCE HEADROOM, felt exactly where tracks die (fast frames).
+
+### 2. vs the shipped v3 pipeline: ~3x better, verified PAIRED on SHARED frames
+ball48 beats v3 on 12/12 trials on the SAME moving frames, median paired diff −18.0mm/s (v3 25-39
+vs ball 9-16). No coverage confound — but the confound EXISTS in the naive read: v3's error on the
+frames ball48 REFUSES is 40-137mm/s (they're the hardest frames), so ball48's overall median is
+flattered by refusing them; where both speak, ball48 still wins everywhere. Error by speed bin,
+v3 vs ball48: 21→7, 29→13, 40→24, 91→49. v3's deficit is structural (differentiated position =
+jitter floor; SmoothNet rounds peaks) — same diagnosis as the wrist flow work.
+
+### 3. Gap census (WHY and WHERE the ball48 holes are)
+Instrumented refusal reasons (P07 t11 long-gap trial, P08 t11 clean): gaps are RIGIDITY-GATE
+refusals (55/75 and 47/52) + the warmup shadow after the retire→reseed chain they trigger. ZERO
+low_inliers, zero lost detections. WHERE: ON the transport speed peaks (missing frames OMC med
+782/521mm/s vs covered 127/268); P07's 0.5s gap spans its entire 1100mm/s peak. Gaps pooled:
+median 1 frame, p90 5, 89% of missing time in <=10-frame holes (bridgeable); the long P07 ones are
+the known rig/apex problem. So the gate was eating peak_velocity's frames — which forced the next
+question.
+
+### 4. THE RIGIDITY GATE IS RETIRED for well-fed clouds (user-driven, two-step)
+(a) Gate-off ball48, 12 trials: per-trial paired says gate wins 10/12 (+1.44) BUT per-SPEED-BIN
+gate-off is better in EVERY bin (7.2→7.0, 13.4→11.7, 24.2→19.1, 48.9→37.7) and cov 67→94%.
+Simpson's paradox: the gated median is computed on the easy 67% it deigns to cover — the same
+coverage-flattery as (2), this time flattering the gate. The 706 previously-refused frames, when
+emitted, carry median 23.5mm/s error at 547mm/s true speed (~4% relative; 7.8% >100mm/s) — far
+better than the alternatives for those frames (hole, or v3 at 40-137).
+(b) USER HYPOTHESIS CONFIRMED — deformation is not a negative criterion once you adjust for speed:
+    unconditional rho(|s-1|,err)=+0.28, rho(speed,err)=+0.56, rho(speed,|s-1|)=+0.49
+    WITHIN speed bins: rho = +0.06/+0.01/−0.01/+0.05 ≈ ZERO; quartile medians flat.
+The gate's celebrated +0.36 was SPEED IN A COSTUME. It genuinely helped SHIP — but because
+refusing fast frames helped an evidence-starved cloud, not because deformation flags bad fits.
+Under ball48 there is nothing to salvage (a "confidence flag" would be a worse speedometer than
+the speed estimate itself). CLOUD_TRACKER.md's "only quality signal that works" line corrected.
+NOT yet wired into class defaults (needs a decision: ball48 seed + max_scale_dev=None).
+
+### Where this leaves the cup-speed design
+ball48 gate-off: ~94% coverage, better than v3 in every speed bin, best-in-class peaks (37.7 @
+600-1200). Remaining holes = P07 rig occlusion (not method). Open: wire ball48+no-gate as
+defaults; the cup speed_blend (cloud where it speaks, v3/SmoothNet bridging true holes) for
+Murphy peak_velocity.

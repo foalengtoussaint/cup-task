@@ -94,8 +94,11 @@ class CloudTracker:
                  min_inliers: int = 8, gate_consensus: bool = True,
                  anchor_px: float | None = 30.0, max_scale_dev: float | None = 0.01,
                  retire_deformed: bool = True, deslide: float | None = None,
-                 topup_every: bool = False, warmup: int = 5):
+                 topup_every: bool = False, warmup: int = 5, median_step: bool = True):
         self.calib = calib
+        # Report the median per-point step as linear speed instead of the centroid step, which
+        # under-reads rotating motion. Default on; see the velocity block in update() for the why.
+        self.median_step = median_step
         self.radius, self.height, self.n_seed = radius, height, n_seed
         self.fb_tol, self.min_cams = fb_tol, min_cams
         self.units_per_metre = units_per_metre
@@ -384,6 +387,19 @@ class CloudTracker:
                 if len(common) >= 3:
                     A, B = self._prev_cloud[ia], cloud[ib]
                     v = compute_3d_velocity(A, B, dt, self.units_per_metre)
+                    # ⚠ REPORTED SPEED = MEDIAN PER-POINT STEP, not the centroid step in `v`.
+                    # The centroid step averages the inlier positions THEN differences, which
+                    # cancels the part of each point's motion pointing in different directions --
+                    # i.e. the rotation component (omega x r differs per point) -- so it UNDER-reads
+                    # rotating motion. Taking the median of each point's OWN step keeps it. Measured
+                    # n=12: cup 15.55 -> 13.87 (10/12), wrist 15.41 -> 15.30 (9/12). No fitted
+                    # constant. See WORKLOG 'the centroid step UNDER-reads rotation'.
+                    if self.median_step and len(A) >= 4:
+                        _, _, mkv = kabsch_ransac(A, B, thresh=5.0)
+                        if mkv is not None and mkv.sum() >= 4:
+                            ms = float(np.median(np.linalg.norm(
+                                (B[mkv] - A[mkv]), axis=1))) / self.units_per_metre / dt
+                            v = dict(v); v["linear_speed"] = ms
                     # Rigidity check on the SAME inliers the motion was fitted to, so the number
                     # describes the points that actually produced the answer.
                     scale_ok = True

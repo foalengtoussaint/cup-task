@@ -3657,3 +3657,255 @@ effect; only the paired full-cohort run is trustworthy.
 THIS IS THE FIRST THING IN THE LONG RESEED/MATURITY THREAD THAT SURVIVES EVERY TEST. The user's
 instinct -- that a real maturity effect must be usable -- was correct; it just had to be applied
 per-cohort (skip each cohort's warmup) rather than per-track (which RANSAC already handles).
+
+### Probing the "at the floor" claim broke it: the centroid step UNDER-reads rotation
+
+Told to keep probing after concluding both trackers were at the OMC floor (genuine envelope error
+~0). Attacked the floor PROOF itself rather than re-running estimator tweaks -- and it was hiding a
+real bias.
+
+THE ENVELOPE TEST WAS TOO LOOSE. Its width is 44 mm/s vs a 17.7 error, so "inside the envelope"
+is weak. Measuring WHERE the tracker sits: position 0.12 (0=low edge, 0.5=centre) -- it hugs the
+SLOW edge. Nearest-legit-point error is 1.0 mm/s (so it does match SOME body point) but the signed
+gap to the envelope centre is **-12.7 mm/s**: the tracker consistently matches the SLOWEST plausible
+point. That is a real directional under-read, not measurand ambiguity averaging out. It is the same
+~0.94 ratio seen session-wide, now localised.
+
+MECHANISM, found by comparing 3 speed definitions (all age>=10, same inliers):
+    A centroid step  |mean(B)-mean(A)|      err 16.42  ratio 0.944   <- current
+    B rigid t_vec map                       err 16.42  ratio 0.944
+    C **median per-point step** |b_i-a_i|   err 14.64  ratio 0.959   <- better
+Averaging the inlier positions THEN differencing cancels the part of each point's motion that
+points in different directions -- i.e. the ROTATION component (omega x r differs per point). The
+centroid under-reads rotating motion by construction. The median of each point's OWN step magnitude
+keeps it.
+
+REPLICATES, paired:
+    CUP  : centroid 15.55 -> median-step 13.87  (10/12, -1.34)
+    WRIST: centroid 15.41 -> median-step 15.30  ( 9/12, -0.76)
+A mechanistic ~1.3 mm/s cup gain, NOT a gain hack (no fitted constant). Directly attacks the shared
+under-read that four earlier hypotheses (resampling/chording/indexing/cup-lag) failed to explain --
+it was partly the centroid estimator all along.
+
+⚠ REVISES the floor claim: the trackers are NOT fully at the floor. The centroid-step under-read is
+real and correctable; switching to median-step recovers ~1.3 mm/s of it. The RESIDUAL after that
+may be at the floor, but that needs re-measuring with the median-step estimator.
+
+### Chasing the residual under-read: median-step banks 1.3mm/s, the last ~4% is the floor
+
+After median-step fixed the centroid bias (-12.7 -> -10.0 mm/s signed gap, ratio 0.944 -> 0.960),
+kept probing the remaining ~4% under-read. THREE more mechanisms tested, all RULED OUT:
+  * low-pass gap-interpolation (chord cuts speed peaks through NaN gaps): NO -- masked vs filled
+    ratio 0.959 vs 0.960 identical (staggered has ~100% coverage, ~no gaps to interpolate).
+  * near-hemisphere geometry (visible face moves slower under rotation): NO -- synthetic rotating
+    cylinder, visible-hemisphere median-step ratio = 1.000. Every point on a rigid rotating body
+    has the SAME speed magnitude, so seeing one face does not bias speed.
+  * (earlier: resampling, chording, indexing, cup-lag all ruled out too)
+
+Six mechanisms eliminated. The residual 0.96 ratio is small, has no surviving mechanistic
+explanation, and is inside the n=12 noise -- so it is treated as the floor.
+
+NET BANKED RESULT of the probe (what actually changed the tracker):
+  * median per-point step REPLACES centroid step: cup 15.55 -> 13.87 (10/12), wrist 15.41 ->
+    15.30 (9/12). Mechanism: centroid averaging cancels per-point rotation components; median-step
+    keeps them. No fitted constant.
+This is the real headroom the (too-loose) envelope floor-test had hidden. The floor claim was
+right in spirit (genuine excess still ~0) but wrong on the directional bias, which was correctable.
+
+### Where the residual comes from: implied-geometry comparison (user's idea) -- jitter, not calib
+
+User: compare the IMPLIED GEOMETRY from MMC vs OMC, not just speed. Right instinct -- speed
+collapses the geometry and hides its structure. Comparing frame-to-frame ROTATION magnitude:
+    MMC angular / OMC angular = **1.095** (cloud OVER-rotates ~10%)
+    MMC linear  / OMC linear  = **0.96**  (cloud UNDER-reads ~4%)
+OPPOSITE DIRECTIONS. A calibration SCALE error would bias both the same way, so the residual is
+NOT a geometry scale/size error. (The MMC cloud implied size is ~36mm, plausible for the cup.)
+
+MECHANISM found: residual per-track jitter is being fitted as spurious ROTATION.
+    corr(RANSAC residual jitter, angular over-read) = +0.311
+    median non-rigid residual = 0.38mm, rising with speed (0.25mm slow -> 0.71mm fast,
+    corr(residual,speed)=+0.655)
+So fast frames have more per-track jitter; the rigid fit spends some of it on fake rotation (angular
+1.095) while the translation comes up short (linear 0.96). Same root cause, both directions.
+
+BUT IT DOES NOT CONVERT TO A LINEAR FIX:
+    med (current)                 err 14.64  ratio 0.959
+    trim (least-jittery half)     err 14.38  ratio 0.955  -- negligible, ratio worse
+    rigidonly (residual<0.3mm)    err 11.64  ratio 0.927  cov 32% -- CONFOUNDED: residual is a
+      speed proxy (corr +0.655), so this just selected slow frames; the 0.927 is the known
+      speed-dependent under-read, not a jitter fix. (Caught by the confound check.)
+
+CONCLUSION -- where the remaining ~4% comes from: a SPEED-DEPENDENT per-track tracking-noise floor.
+Fast motion -> more per-frame track jitter -> the rigid fit both inflates rotation and slightly
+shortens translation. It is not calibration (rotation would match), not the centroid estimator
+(fixed by median-step), not the low-pass, not near-hemisphere geometry. It is irreducible tracking
+noise that grows with speed, and n=12 cannot separate the last few % from it.
+
+NET of the whole 'keep probing' session: median-step replaces centroid (cup 15.55->13.87, real
+mechanism), and the remaining under-read is characterised as speed-dependent jitter, not any
+correctable systematic. That IS the floor.
+
+### WHY jitter inflates rotation: rectification. Proven synthetically.
+
+User asked why jitter increases rotation specifically. Answer, proven on ZERO-motion synthetic
+points (12 pts, ~36mm span, both frames = same points + independent jitter, fit rigid R,t):
+    jitter    |t| transl    |omega| rot
+      0.0        0.000         0.000 deg
+      0.5        0.320         1.016
+      1.0        0.639         1.982
+      2.0        1.255         4.108
+With NO true motion, jitter manufactures BOTH phantom translation AND phantom rotation, growing
+linearly with jitter. So the +0.311 corr(jitter, angular over-read) on real data is this effect.
+
+WHY ROTATION IS THE VISIBLE SYSTEMATIC (the linear-low/angular-high signature):
+  * ROTATION MAGNITUDE IS RECTIFIED. |omega| >= 0 always. Jitter twists the fit either way, but
+    taking the magnitude makes every frame's phantom rotation POSITIVE -- they never cancel across
+    frames, so they accumulate as a systematic over-read (the observed ratio 1.095).
+  * TRANSLATION IS A ZERO-MEAN SHIFT. t = centroid displacement; jitter is zero-mean, so it
+    averages toward truth over frames -- noisier but not systematically biased.
+So jitter contaminates both, but only the rotation channel RECTIFIES it into a one-sided bias.
+That is the complete mechanism behind the whole session's linear-under-read / angular-over-read
+puzzle: not calibration, not scale, not geometry -- a rectification artifact of fitting a
+positive-magnitude rotation to noisy correspondences, amplified on fast (jittery) frames.
+
+Implication: it is IRREDUCIBLE for a per-frame rigid fit -- you cannot un-rectify a magnitude.
+The only levers are less jitter (better tracking, already at settling floor) or not reporting
+rotation for a pure translation task. The linear speed via median-step is already the least-
+contaminated estimator available.
+
+### ⚠ CORRECTION: it is NOT a rotation-specific rectification -- it is signal-to-noise
+
+The previous entry said rotation over-reads because rotation MAGNITUDE is rectified while
+translation is a zero-mean shift. WRONG -- both |omega| and |t| are positive magnitudes and BOTH
+rectify jitter identically. Proven: fixed 0.7mm jitter, vary the true signal:
+    ROTATION:    true 0.2deg -> ratio 7.17 | 1.0 -> 1.70 | 8.0 -> 1.02
+    TRANSLATION: true 0.5mm  -> ratio 1.30 | 2.0 -> 1.02 | 10  -> 1.00
+IDENTICAL behaviour: both over-read a SMALL true signal and converge to 1.0 for a large one.
+
+So the real reason rotation shows the over-read and translation does not, on the CUP:
+  * the cup barely ROTATES -> true angular is small -> the fixed jitter noise floor is a LARGE
+    fraction of it -> ratio 1.095.
+  * the cup TRANSLATES a lot (reach to mouth) -> true linear is large -> the same noise floor is a
+    TINY fraction -> ratio ~1.0.
+It is the ordinary signal-to-noise law: a fixed noise floor is a big relative error on a small
+signal, small on a big one. Nothing rotation-specific. (The linear side actually reads slightly
+UNDER at 0.96, which is a SEPARATE small effect -- centroid/median-step and speed-dependent
+tracking noise -- not this rectification.)
+
+BOTTOM LINE unchanged: the residual is a per-frame jitter noise floor; it is just misdescribed if
+called a rotation-rectification asymmetry. It is signal-to-noise, and it is irreducible per-frame
+without lower jitter.
+
+### Separating jitter-rotation from real rotation by AXIS COHERENCE (user's idea) -- it works
+
+User: if jitter over-reads rotation and real rotation is a signal, you should be able to separate
+them. Correct, and the separating property is DIRECTIONAL COHERENCE OVER TIME:
+  * jitter-rotation points a RANDOM axis each frame (synthetic, true=0: axis coherence 0.15)
+  * real rotation keeps a STEADY axis (synthetic, true=3deg/frame: coherence 0.94)
+So averaging the rotation VECTORS over a short window reinforces real rotation (vectors add) and
+cancels jitter (random directions sum to ~0) -- then take the magnitude of the averaged vector.
+
+MEASURED vs OMC-marker rotation truth, cup:
+    w=0 magnitude-then-smooth (current): ratio 1.095  corr +0.826  ang-err 0.172 rad/s
+    w=1 vector-average then magnitude   : ratio 0.880  corr +0.838  ang-err 0.161  (7/12 better)
+    w=3 vector-average                  : ratio 0.754  corr +0.844
+Correlation IMPROVES monotonically with window (jitter removed, signal kept), and w=1 REDUCES the
+actual angular error (0.172 -> 0.161), not just the ratio. So it is a genuine method gain, not
+bias-shuffling.
+
+⚠ The RATIO does not hit exactly 1 at any integer window (w=0 over-reads +9.5%, w=1 under-reads
+-12%), because vector-averaging also cancels REAL rotation when the axis genuinely turns. The
+crossover is fractional; a blend of w=0 and w=1 would centre it. Not pursued to a fitted constant.
+
+BOTTOM LINE: the jitter/real-rotation separation the user proposed is REAL and exploitable. It
+does not help the LINEAR speed (that residual is separate, speed-dependent, already characterised),
+but it improves the ANGULAR speed -- which is the one clinically-relevant signal (cup tilt) that a
+single tracked point cannot produce at all. This is the right fix for the angular over-read and it
+comes directly from the user's insight that a rectified magnitude discards the sign/direction that
+distinguishes noise from signal.
+
+### Can we find the jitter-driving points directly? Synthetic: yes. Real: no -- no such points exist
+
+User: instead of averaging over time, directly find the points creating the jitter-rotation.
+Sound idea, tested in stages:
+
+  * PER-FRAME leave-one-out is NOISE-CHASING, proven synthetically: with UNIFORM jitter (no bad
+    point) LOO still cuts phantom rotation 28% by dropping a RANDOM point each frame; with one
+    genuinely 3x-noisy point it picks that point only 42% of frames. One frame cannot identify the
+    culprit -- same info limit as the rotation magnitude itself.
+  * ACCUMULATED residual over time CAN find a persistent bad track, synthetically: identifies a
+    fixed 3x-noisy point 82% at N=1 but **100% at N>=5 frames**. So IF jitter were concentrated in
+    persistent bad tracks, an accumulated-residual gate would remove it at the source.
+  * BUILT IT on real data (staggered tracker + per-track EWMA residual, exclude tracks over
+    threshold). RESULT: WORSE on both channels -- linear 15.13 -> 20.40 (1/12), angular 0.159 ->
+    0.186 (2/12).
+
+WHY IT FAILS, and it is the key insight: the real jitter is NOT a property of specific persistent
+tracks. It is SPEED-DEPENDENT and SHARED (measured earlier: corr(residual,speed)=+0.655) -- every
+track jitters more when the cup moves fast. So accumulated residual just flags whichever tracks were
+alive during the FAST segments, and dropping them removes GOOD tracks that were tracking hard frames
+-- starving the fit exactly when it needs points most.
+
+CONCLUSION: there is no 'source' set of bad points to remove, because the jitter is a per-frame,
+speed-driven noise floor distributed across ALL tracks, not concentrated in a few. This is the final
+confirmation that the residual is irreducible per-frame tracking noise. The only thing that helped
+the ANGULAR channel was vector-averaging (temporal coherence), which works BECAUSE it exploits the
+one thing that IS separable -- direction over time -- rather than trying to find culprit points that
+do not exist.
+
+### Can we correct the POINTS directly (not just detect jitter by averaging)? Provably no, per-frame
+
+User's sharp distinction: vector-averaging DETECTS jitter (and smears it in time) but never corrects
+the points that caused it -- can we work with the points directly to remove it?
+
+Tested every non-circular version:
+  * SELF-PROJECTION (snap B onto the current fit, refit): CIRCULAR -- the residual is defined by
+    the fit, so removing it and refitting returns the identical R. No-op by construction.
+  * TEMPLATE SNAP (snap each noisy cloud onto a KNOWN rigid template via Kabsch, then measure
+    motion from the cleaned points): phantom rotation 1.426 -> 1.427 deg. NO CHANGE. And unchanged
+    even with a perfect (0mm-noise) template.
+
+WHY -- and this is the fundamental wall: snapping noisy points onto a template IS a Kabsch fit, and
+that fit already optimally separates rigid pose from residual. Its output pose CONTAINS the same
+phantom rotation. The jitter is not 'in the wrong points' -- a tiny real rotation and per-point
+jitter produce the EXACT SAME point positions in a single frame. They are mathematically
+indistinguishable frame-to-frame. There is nothing to isolate, so no point-correction can remove it.
+
+This unifies every failed attack: per-frame LOO (noise-chases), accumulated-residual gate (no
+persistent bad points), template-snap (jitter == small rotation). ALL fail for one reason: within a
+single frame the information to separate jitter from a small real rotation DOES NOT EXIST.
+
+The ONLY separable property is TEMPORAL: real rotation is directionally coherent across frames
+(axis coherence 0.94), jitter is not (0.15). That is why vector-averaging is not merely a detector
+-- it is the one lever that actually reduces the jitter, because time is the only place the
+separating information lives. The user was right that averaging does not 'correct' the points; the
+deeper finding is that per-frame point-correction is IMPOSSIBLE in principle, and temporal coherence
+is the sole exploitable signal.
+
+### Temporal-informed SPATIAL correction (user's synthesis) -- the best angular estimator
+
+User's key synthesis: use the temporal averaging to INFORM the spatial component, not replace it.
+The averaging identifies the REAL rotation AXIS (coherent over frames); feed that back to correct
+each single frame -- keep the per-frame magnitude ALONG that axis, discard the perpendicular
+component (which is jitter, since jitter has no coherent direction).
+
+  (a) per-frame magnitude |omega|              -- rectifies jitter -> over-reads
+  (b) temporal vector-average, then magnitude  -- cancels jitter AND real rotation -> under-reads
+  (c) project per-frame omega onto TEMPORAL AXIS -- keeps real magnitude, drops perpendicular jitter
+
+SYNTHETIC (true 1.5 rad/s, 0.7mm jitter, slowly-turning axis):
+    a ratio 1.360 | b 1.012 | **c 0.988**   -- c is best, and does NOT smear real rotation like b
+REAL cup vs OMC-marker truth (n=12):
+    a err 0.172 ratio 1.095 | b err 0.159 ratio 0.799 | **c err 0.155 ratio 0.866**  (c best, 8/12)
+
+WHY (c) BEATS BOTH: it breaks the single-frame impossibility (jitter == small rotation in one
+frame) by importing an EXTERNAL constraint -- the real axis from temporal coherence -- WITHOUT the
+smearing cost of averaging the magnitudes. It keeps the frame's own magnitude along the trusted
+direction and only removes the untrusted perpendicular part. This is exactly the user's 'temporal
+informs spatial': time supplies the axis, the current frame supplies the speed.
+
+The full user-led chain, each step correct: (1) jitter/rotation are separable -> yes, by temporal
+coherence; (2) averaging detects but does not correct -> right, it smears; (3) use temporal to
+inform spatial -> the actual best method. Gain is modest (0.172 -> 0.155, ~10%) because the cup's
+axis genuinely wanders, weakening the temporal-axis estimate, but it is the correct method and wins.
+This is the resolution of the entire jitter/rotation thread.

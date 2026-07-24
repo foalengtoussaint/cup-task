@@ -85,3 +85,19 @@ Monday in a browser → drop in cup-task/models/).
 4. Confirm Panoptic subset finished (fetch.log → "PANOPTIC SUBSET DONE").
 Then: build single-person multi-view dataloader (random 3-6 view sampling) → YOLO-neck→fusion
 head (soft-triangulation) → pretrain → LOPO finetune on DELTA/OMC → score on apex/jitter.
+
+## ✅ SMOKE TEST PASSED (2026-07-24, on SynBody calib+transl, before images finished)
+scripts/mv3d_smoke_fusion.py. Real 8-cam SynBody calib + real 3D (transl) → project → +3px noise +
+2/8 WILD views → differentiable weighted-DLT + tiny learned confidence head. Results:
+- pipeline runs end-to-end, stable, ~100mm (relative test — 100mm is the injected-noise floor, not a
+  real accuracy number).
+- LEARNED fusion BEATS plain equal-weight DLT: 96.7 vs 116.3 mm (~17%) with 2/8 corrupted.
+- head LEARNS to down-weight bad views: w_good 0.31 > w_bad 0.26 (gap grows over training).
+- ⚠ RETIRED THE KEY RISK: CDRNet's "DLT instability" IS REAL — first run blew up to 1e8 mm. FIX =
+  per-row Hartley normalization (scale each DLT row to unit norm) + float64 solve + guard the
+  homogeneous divide. Clean-data DLT recovers 3D to 3e-14mm; the blowup was ill-conditioning from
+  wild views, not the algorithm. This normalized weighted-DLT is the fusion core to keep.
+NOT yet: full skeleton (used single root `transl`; need SMPL-X body model or images+YOLO neck for
+joints), and real 2D from the YOLO neck (images still downloading). Fusion head + loop are PROVEN.
+NEXT once img.zip done + SMPL-X model: swap single point → full joints, swap projected-3D → YOLO-neck
+2D; keep the normalized weighted-DLT head.

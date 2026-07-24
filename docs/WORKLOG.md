@@ -4740,3 +4740,33 @@ worst-case). The CUP is the outlier because it uses the RAW stick-cluster mean w
 body-projection and no anatomical anchor to cancel against. 
 FLAG: if any Murphy measure uses the SINGLE hand_L marker (not the wrist midpoint), it would carry
 the full single-marker lever (~+4% or more) -- check which marker each pose measure is defined on.
+
+
+================================================================================
+2026-07-24 (cont.)  Volumetric unpooling on POSE (wrist): ties triangulation (as expected)
+================================================================================
+
+User: "try volumetric pooling with a Gaussian on the pose; weight the confidence too; use
+displacement for accuracy." YOLO-pose is coordinate REGRESSION (no heatmap -- confirmed: task=pose,
+kps[joint]=[x,y,conf], no score_map), so placed a synthetic Gaussian at each camera's regressed
+wrist keypoint, WEIGHTED BY ITS CONFIDENCE, unpooled into a 40^3 voxel grid, soft-argmax. Metric =
+displacement-from-start vs OMC (frame-invariant), fast(>150)/slow buckets, n=12 P07+P08 t10-15.
+
+RESULT (median |disp err| mm):
+    triangulation (baseline): all 5  fast 7  slow 5
+    Gaussian unpool          : all 5  fast 7  slow 5   <- EXACT TIE at every bucket
+
+WHY (same lesson as the cup unpool tying v3): confidence-weighted Gaussian unpool and
+confidence-weighted triangulation both find "the 3D point most consistent with the per-camera 2D
+observations." When the observations AGREE (pose wrist is well-localised), they converge. Fusing
+identical, already-agreeing evidence adds no information.
+
+BONUS: pose wrist is GOOD -- 5mm overall, 7mm at speed vs OMC, with NO rotation-lever inflation
+(anatomical target + midpoint OMC). Much tighter than the cup, and honest (same physical point).
+
+PARALLEL COMPLETE:
+    cup:  unpool ties v3           (same center evidence, double-counted)
+    pose: unpool ties triangulation(same keypoint evidence, cameras agree)
+=> volumetric unpooling is a lever for NEITHER object. Gains must come from better per-camera
+EVIDENCE or removing CORRELATED errors, not a smarter fuser. For pose there isn't even a problem:
+wrist is 5-7mm, lever-free. Script: pose_unpool.py.

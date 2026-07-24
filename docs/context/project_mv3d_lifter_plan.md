@@ -24,14 +24,20 @@ machinery in Panoptic/MVGFormer/VoxelPose. Supervise on one body per sample. Thi
 fusion head much simpler than the papers (no person-matching, no detection head): just
 "multi-view 2D of THE person → 3D."
 
-## Datasets (BEDLAM majority, single-person)
-- **BEDLAM** — synthetic, PERFECT 3D GT (SMPL-X) + exact calib, arbitrary cameras, huge
-  diversity. Best supervision (no mocap/stick-lever noise). 🔒 GATED on HuggingFace
-  (Intelligent-Systems/BEDLAM, gated:auto → 401 GatedRepo). UNLOCK: accept license on HF +
-  `huggingface-cli login` with token in this env. Then pull single-person batches.
-- **AIST++** — single-dancer, real, off-eye-level cameras + fast dynamic motion (matches drink
-  apex). 🔒 downloads via google.github.io/aistplusplus_dataset/download.html (GCS direct
-  paths 403). UNLOCK: registered download link → drop annotations locally.
+## Datasets — ⚠ BEDLAM RULED OUT (it's MONOCULAR)
+⚠ 2026-07-24: HF token unlocked BEDLAM; inspected one 0.2MB gt tar. **BEDLAM IS MONOCULAR** —
+each seq_NNNNNN is ONE camera at a fixed pose; different seqs are different scenes/people/times
+(cam positions differ, bodies_min=bodies_max=1 per seq, one cam_config per seq). It has PERFECT
+GT but NO synchronized multi-view, so it CANNOT train multi-view triangulation (nothing to
+triangulate across a single instant). BEDLAM is out for the fusion head. (Its whole fame is
+single-IMAGE 3D pose.) Only useful role would be pretraining a monocular 2D→3D prior — not our
+innovation — so skip it. Good we checked with one tar not 100s of GB.
+
+MULTI-VIEW datasets that actually work (synchronized cameras, same person same instant):
+- **AIST++** — ✅ multi-view: 9 SYNCHRONIZED cameras, single dancer, off-eye-level + fast
+  dynamic motion (matches drink apex). IDEAL fit. 🔒 NOT on HuggingFace (HF token doesn't reach
+  it); downloads via google.github.io/aistplusplus_dataset/download.html. UNLOCK Monday: grab
+  annotations (motions + cameras + keypoints3d) from that page → drop locally.
 - **Panoptic** — ✅ DOWNLOADING NOW (real dome multi-view, random-view sampling). Subset:
   6 seqs (160422_ultimatum1, 160906_ian1/ian2/pizza1, 171204_pose1/pose2) × 6 HD cams
   (00,03,06,12,18,23) + calibration + hdPose3d_stage1_coco19. ⚠ HD videos are ~1.5-2GB EACH

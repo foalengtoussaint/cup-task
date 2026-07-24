@@ -4153,3 +4153,78 @@ Direct wrist ball 15.9. Chain sums two noisy vectors, one lever-amplified; direc
 at the point. Also: WHY angular-peak works but linear-transport doesn't = noise FATE — signed
 projection+lowpass CANCELS (elbow rate unbiased), vector MAGNITUDE RECTIFIES to DC bias (transport,
 unfixable), differentiation AMPLIFIES in-band (keypoint peak overshoot). Same 0.19rad/s everywhere.
+
+
+================================================================================
+2026-07-24  DL feature matching for cross-view correspondence: SIFT fails, LoFTR WORKS
+================================================================================
+
+Picking up the parked question: can a learned matcher succeed at cross-view cup
+correspondence where the geometric-seed trick sidesteps it? The old record said "NCC
+median 0.01, 5% clear a 0.65 gate" and later "at chance in the discrimination test".
+Re-ran the whole thing properly. Verdict flipped for LoFTR.
+
+THE RIGHT SCORING METRIC (kept from the old discrimination work, then made stricter):
+appearance score is a mirage; a matcher must (1) pick the true correspondence, (2) have it
+TRIANGULATE ONTO THE CUP. Final harness: crop a box around the projected cup in BOTH cams,
+detect/match inside it, epipolar-gate (<3px of the true epipolar line from calib F),
+triangulate (DLT), count matches landing on the cup. Truth pair geometry from calib K,R,t.
+n=40 frames, P07 trial_11, pairs by TRUE optical-axis separation (41/36/73/89/168deg).
+
+--- SIFT: a graded wall, NOT flat failure (my first "at chance" was a HANDICAPPED test) ---
+* My first pass forced upright fixed-scale descriptors at projected pixels -> reproduced the
+  NCC ~chance number. That was SIFT stripped of scale/orientation invariance = basically NCC.
+  WRONG test. Canonical SIFT (own keypoints, ratio test) is better than that.
+* Canonical SIFT, GLOBAL frame matching: cup matches drown in the scene. Only ~1/frame, and
+  the ratio test kills the low-contrast cup matches against 100k scene decoys.
+* Restricting to a BOX around the cup helped -- BUT the box (300px) swallows the whole torso
+  (cup is at the mouth); "restricted to the crop" != "restricted to the cup". 93% of
+  epipolar-consistent matches triangulated ~380mm away = correct correspondences ON THE BODY.
+  (User caught this: "you can make the crop smaller.")
+* TIGHT crop hugging the cup (~40-100px box, cup ~40px), SIFT thresholds loosened
+  (contrast .02, edge 20, 5 octave layers): on-cup fraction inverts to 38-96%, BUT yield is
+  still MEDIAN 0-1 usable cup points/frame. The matchable content is the printed FIDUCIAL
+  MARKER on the bottle + hand; the smooth cup body gives SIFT almost nothing, and it dies at
+  the blurred drink apex. So SIFT: usable only on <=41deg pairs, ~1 pt/frame. Not enough to seed.
+
+--- LoFTR (kornia, pretrained outdoor, GPU): ~10x SIFT, GENUINELY USABLE on narrow pairs ---
+  tight crop PAD=50 (200px LoFTR input), conf>0.5, same triangulate-onto-cup harness:
+    pair          sep    on-cup/frame   epi-ok   on-cup%
+    cam_3-cam_4   41deg      10           74%       50%
+    cam_2-cam_3   36deg       3           49%       59%
+    cam_2-cam_4   73deg       0 @conf.5 -> 3 @conf.2   (wall is threshold-strictness, not absolute)
+* 1s for 40 frames on GPU (cost-trivial). Detector-free dense matching finds correspondences
+  on the SMOOTH CUP BODY that SIFT's keypoint detector cannot -- the actual win, verified by eye.
+* WIDE pair (73deg): default conf 0.5 gave median 0; lowering to 0.2 recovers median 3 on-cup
+  (plateaus at 0.2). So wide-baseline cup matches EXIST at lower confidence, not a hard zero.
+
+--- RIGOR: are these the SAME physical point, or coherent-blob shift? (user: "same points?") ---
+  cam_3-cam_4, 446 on-cup matches:
+  * reprojection residual into their OWN two views: MEDIAN 0.84px (p90 1.39) -- near-perfect,
+    impossible if the two pixels didn't intersect at one 3D point.
+  * 3-VIEW confirmed: 48% have a cam_2 LoFTR match within 5px of the reprojected point (2.5px err).
+  * triangulated cloud own-spread ~26-31mm, depth-sd 16-24mm, dist-to-centroid 44-71mm =
+    a COHERENT CUP-SIZED SHELL (cup r~37 h~95), i.e. real surface points, not scattered depth.
+  * GOTCHA I nearly mis-called: "0 of 446 survive a 30mm centroid gate" looked catastrophic but is
+    CORRECT -- surface points SHOULD be 30-70mm from the CENTROID. distance-to-centroid is the
+    wrong strictness knob; reprojection residual + 3-view + cloud-shell are the right ones.
+
+--- DISPLAY BUG (user: "these points don't correspond at all") -- THE NUMBER WAS RIGHT, THE RENDER LIED ---
+* First LoFTR render mapped points back through full-image offsets with a display resize factor
+  that DIDN'T match the coordinate scale -> good matches drawn on the forehead. Classic
+  metric-and-viz-disagree (violates the "same function" rule: the render must not re-derive the
+  transform). Re-drew in LoFTR's NATIVE crop coords with connecting lines (loftr_verify_{241,227}.png):
+  lines link marker-square<->marker-square, rim<->rim, finger<->finger with a coherent parallel
+  disparity field. Matches are REAL. The 0.84px reprojection was always the ground truth.
+
+--- WHY THIS DOESN'T KILL SEEDING (but complements it) ---
+* Rig's useful pairs are mostly wide (73-168deg) where even LoFTR needs a lowered gate for ~3 pts.
+* Everything dies at the blurred/tilted drink apex -- exactly where the tracker most needs points.
+* Seeding is baseline- and blur-independent by construction (picks 3D points, asks every cam).
+* BEST HYBRID: seeding for coverage + LoFTR (~10 pts/frame at 74%, cup BODY) as a high-precision
+  ANCHOR on narrow pairs, replacing/augmenting the single detection anchor. Not yet wired.
+
+Scripts (scratchpad): sift_disc.py (handicapped, kept as the wrong-test record), sift_proper.py,
+sift_region.py, sift_tight.py (+_render), loftr_tight.py, loftr_check.py, loftr_rigor.py,
+loftr_verify.py. Renders: out/sift_tight_matches.png, out/loftr_verify_{241,227}.png.
+NEXT: wire LoFTR anchor into cloud_track on narrow pairs; test whether it lifts the apex gap.

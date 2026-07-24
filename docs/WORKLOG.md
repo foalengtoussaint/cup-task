@@ -4228,3 +4228,73 @@ Scripts (scratchpad): sift_disc.py (handicapped, kept as the wrong-test record),
 sift_region.py, sift_tight.py (+_render), loftr_tight.py, loftr_check.py, loftr_rigor.py,
 loftr_verify.py. Renders: out/sift_tight_matches.png, out/loftr_verify_{241,227}.png.
 NEXT: wire LoFTR anchor into cloud_track on narrow pairs; test whether it lifts the apex gap.
+
+
+================================================================================
+2026-07-24 (cont.)  Matcher shootout + LoFTR usability: conf-0.2, v3-echo, SP/ALIKED confirm wall
+================================================================================
+
+--- CONFIDENCE GATE: LoFTR default 0.5 was throwing away 2/3 of valid cup matches ---
+Lowered LoFTR conf gate with the epipolar+triangulate-on-cup guard HELD CONSTANT (so lowering can
+only ADMIT geometrically-correct matches, never manufacture junk). cam_3-cam_4, 40 frames:
+    gate   >0.5  >0.2  >0.1  >0.05  >0.02
+    cohort med    12    47    47     47     47      <- SATURATES at 0.2
+    slow frame f26  3    27    ...                  (was 3 @.5)
+    fast frame f281 0     5                         (rotation+blur, only partial help)
+So the correct gate for this low-texture object is ~0.2, not 0.5. Recovered matches land on the
+CUP BODY (matte grey between the mocap markers), verified by eye -- NOT on the white markers
+(specular, viewpoint-dependent, hard to localize). out/loftr_lowconf_slow.png.
+The cup is a MUG WITH WHITE SPHERICAL MOCAP MARKERS glued on (this is the OMC-instrumented object).
+
+--- BAD FRAMES: fails at BOTH speed extremes, for different reasons (user: "can i see") ---
+Ranked 40 frames by on-cup count. Worst are (a) FAST >370mm/s (blur + the mug ROTATES so the two
+cameras see different faces -> little shared surface) and (b) at-REST (cup low on table, half out of
+crop / against striped shirt). out/loftr_badframes.png. Slow-clear frames were UNDER-served only
+because of the 0.5 gate -- fixed by 0.2. Fast-apex is the genuine floor (rotation+blur), same wall
+as every appearance method on this rig.
+
+--- ACCURACY vs v3 vs OMC (the decisive test), bucketed fast/slow, n=12 (P07+P08 t10-15) ---
+LoFTR cup 3D = triangulate all conf>0.2 epi-consistent on-cup matches across 3 pairs -> robust
+(MAD-trimmed) centroid. Metric = displacement-from-start MAGNITUDE vs OMC (frame-invariant; MMC/OMC
+different worlds), OMC wrist-lag synced. POOLED median |disp err|:
+    all : LoFTR 13mm   v3  2mm
+    fast: LoFTR 33mm   v3 31mm     <- statistically TIED at the apex
+    slow: LoFTR  9mm   v3  1mm
+GRAPH (out/loftr_curves.png) is the real story: LoFTR (blue) and v3 (red) curves sit ON TOP OF
+each other through the whole drink -- BOTH undershoot the OMC apex by ~100mm(P07)/~55mm(P08), both
+trace the same profile. v3 is cleaner at rest (temporal smoothing); LoFTR has a small +20-30mm
+rest-offset (per-frame centroid jitter) => slightly worse overall.
+* USER CORRECTION: I framed this as "LoFTR just echoes v3 because the crop is v3-anchored" and
+  proposed removing the prior. User: "no we still need the crop because we want to track the CUP
+  not the rest." Right -- the crop is the POINT (track the cup region), not a confound. So the open
+  question is whether a BETTER MATCHER in the same crop beats v3 at the apex, not whether to drop
+  the crop.
+* v3-undershoots-apex-by-~100mm is itself a real, visible finding worth having (cup most occluded
+  at the mouth).
+
+--- GOTCHA: a norm(...,1) that meant ord=1 not axis=1 blanked the LoFTR curve ---
+First curves render showed NO blue line (est all-NaN) while the TABLE run had cov=100%. Cause:
+curves script had `np.linalg.norm(P-med, 1)` (matrix 1-norm -> scalar) vs table's `axis=1`. Table
+numbers were from the CORRECT version; only the plot was broken. Fixed, re-plotted. (User caught the
+missing line by asking to SEE the graph -- number-and-viz-must-agree earns its keep again.)
+
+--- MATCHER SHOOTOUT: LoFTR wins yield; SuperPoint/ALIKED confirm the detector wall ---
+Same tight-crop + epipolar + triangulate-on-cup harness, on-cup matches/frame:
+    matcher                cam_3-4(41d)  cam_2-3(36d)  cam_2-4(73d)  on-cup%
+    LoFTR (conf 0.2)          ~47            ~9            ~3         50-59%
+    SuperPoint + LightGlue      7             3             1         72-95%
+    ALIKED + LightGlue          0             0             0          --
+* DETECTOR-FREE LoFTR wins decisively on yield (7x SuperPoint on best pair; only one keeping ~3 on
+  wide pairs). It matches the smooth cup BODY where keypoint detectors find nothing.
+* SuperPoint+LightGlue: fewer points but HIGHER precision (83-95% on-cup vs LoFTR ~50%) -- LightGlue's
+  attention outlier-rejection is cleaner than a conf threshold. Defensible as a SPARSE reliable anchor.
+* ALIKED collapses to 0 -- its detector finds nothing repeatable on the specular mug.
+* This REPLAYS the SIFT lesson across 4 matchers now: detector-based (SIFT/SuperPoint/ALIKED) starve
+  on the textureless cup; detector-free (LoFTR) is the only one that covers it. lightglue pkg from
+  git (cvg/LightGlue), kornia has LightGlue+DISK+DeDoDe too.
+
+VERDICT so far: LoFTR@0.2 is the best cross-view cup matcher, gives usable dense cup-body
+correspondences on narrow pairs + ~3/frame on wide -- but funnelled to a centroid it ties v3 (both
+undershoot the apex). The apex undershoot is a TRIANGULATION/occlusion problem, not a matcher problem.
+Scripts: loftr_lowconf.py, loftr_badframes.py, loftr_vs_v3.py, loftr_curves.py, glue_probe.py.
+NEXT (user): (1) volumetric unpooling from 2D heatmaps, (2) 2D->3D graph-CNN / transformer lifting.

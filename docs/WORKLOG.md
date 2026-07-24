@@ -4706,3 +4706,37 @@ CONSEQUENCES:
 NEXT: body-project OMC cup across all trials; re-run cup speed accuracy; try light temporal smoothing
 on v3 cup speed to close the +9% apex peak (watch it doesn't round the peak off -- score by good-frame
 fraction / peak-preservation, not just median).
+
+
+================================================================================
+2026-07-24 (cont.)  Does the wrist have the same lever? YES but ~4x smaller (midpoint cancels it)
+================================================================================
+
+User: "are we getting similar things from the wrist markers -- sticks are smaller though -- and how
+is speed computed from the markers?"
+
+HOW OMC POSE SPEED IS COMPUTED: _load_omc maps each joint to ANATOMICAL markers, not the stick
+clusters. left_wrist = MIDPOINT(wrist_inner_L, wrist_outer_L); elbow/shoulder = single anatomical
+markers (elbow_L, shoulder_L). Speed = gradient of the (6Hz-lowpassed) joint position. The c3d ALSO
+has cluster_wrist/arm/chest_1..4 (stick clusters) but pose does NOT use them -- only the cup uses its
+stick cluster (cluster_cup mean), which is why the cup alone had the big lever.
+
+MEASURED wrist rotation-lever on PEAK speed (P07 t11):
+  wrist_inner<->outer spread = 68mm (a real lever, bigger than the cup sticks' 25-48mm!)
+  MIDPOINT (used)     611 mm/s
+  inner alone         604  (-1%)
+  outer alone         633  (+4%)
+  wrist stick-cluster 625  (+2%)
+vs the CUP which was +15% (stick mean, no anatomical anchor).
+
+WHY the wrist effect is ~4x smaller despite a similar/larger lever:
+1. The MIDPOINT cancels it to first order -- inner and outer swing OPPOSITE as the wrist
+   pronates/supinates, so their average sits near the rotation axis (-1% vs +4% -> midpoint ~0). The
+   pipeline's midpoint choice is quietly protecting the pose speed. GOOD.
+2. The wrist rotates less in world-space than the cup (~100deg tilt) over the drink.
+
+CONCLUSION: pose/wrist peak velocity is largely CLEAN (midpoint cancels the lever, residual ~<=4%
+worst-case). The CUP is the outlier because it uses the RAW stick-cluster mean with no
+body-projection and no anatomical anchor to cancel against. 
+FLAG: if any Murphy measure uses the SINGLE hand_L marker (not the wrist midpoint), it would carry
+the full single-marker lever (~+4% or more) -- check which marker each pose measure is defined on.

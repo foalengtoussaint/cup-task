@@ -101,3 +101,24 @@ NOT yet: full skeleton (used single root `transl`; need SMPL-X body model or ima
 joints), and real 2D from the YOLO neck (images still downloading). Fusion head + loop are PROVEN.
 NEXT once img.zip done + SMPL-X model: swap single point → full joints, swap projected-3D → YOLO-neck
 2D; keep the normalized weighted-DLT head.
+
+## ⚠ CORRECTION + REAL architecture built (2026-07-24, user: "you're supposed to fine-tune the YOLO")
+The earlier "smoke test passed" note tested KEYPOINT-ONLY fusion (GT-3D→project→2D→learned weighted-DLT):
+NO images, NO YOLO, NO CSPDarknet neck, NO backprop into the backbone. That is NOT the idea — it only
+validated the DLT math (still useful: DLT-normalization fix carries over).
+
+REAL architecture now built + running: scripts/mv3d_yolo_neck_fuse.py
+- Tap YOLO-pose CSPDarknet NECK: Pose26 head (layer 23) fed by layers [16,19,22] = P3/P4/P5 =
+  (128ch s8, 256ch s16, 512ch s32). Use layer 16 (128ch, stride-8, finest) for sampling.
+- Per frame: decode 6 synced Panoptic HD cams → YOLO neck → per-cam feature map. Project coarse 3D
+  joint into each cam → bilinear grid_sample the neck feature there → small head regresses (2D
+  refine offset + confidence) per view → weighted-DLT → 3D → 3D loss → GRADIENT INTO THE NECK.
+- Stage 1 frozen neck, Stage 2 unfreeze (the actual fine-tune).
+RESULT (Panoptic ultimatum1, 6 cams, 60 single-person frames, 2/6 views corrupted):
+- runs end-to-end, gradients flow into the neck. Learned CONSISTENTLY beats plain DLT (~2-15mm every
+  eval), but margin small + loss NOISY (1-frame batches, only 60 frames). Could NOT yet show that
+  UNFREEZING the neck helps beyond the frozen head — needs batching + more data + stable eval = the
+  full training run.
+- We DON'T need SynBody images for this — Panoptic's 6 downloaded HD videos + real 3D GT suffice NOW.
+NEXT (full run): batch multiple frames, more sequences/frames, stable eval, then compare frozen-neck
+vs fine-tuned-neck cleanly. Neck taps + sampling + DLT-into-neck all verified working.

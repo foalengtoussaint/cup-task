@@ -4580,3 +4580,47 @@ check the downstream Murphy measures tolerate a few occluded apex frames.
 Scripts: dump_boxes.py, render_boxes_fast.py, fuse_boxes.py.
 GOTCHA fixed: dmag anchored displacement at valid[0] which had no box est -> NaN'd every curve; use a
 common anchor frame where all signals are valid.
+
+
+================================================================================
+2026-07-24 (cont.)  ★ THE APEX "ERROR" IS MOSTLY ROTATION, NOT TRACKING (user's insight)
+================================================================================
+
+User: "the OMC has more displacement because the markers are on STICKS on the cup; because of
+rotation the stick-markers actually displace more, specifically at the apex, strictly because of
+rotation." CORRECT, and it reframes the entire day's apex investigation.
+
+SETUP: _omc_cup = mean of cluster_cup_1..4, markers on STICKS standing off the cup body (~25mm
+apart, on rods -- visible in the renders as white balls on stalks). v3/UETrack tracks the visual cup
+BODY (~centre). These are DIFFERENT PHYSICAL POINTS on a lever arm.
+
+TEST: compute cup rotation from the 4-marker rigid cluster (Kabsch vs rest pose), correlate with the
+OMC-minus-v3 displacement-from-start GAP. P07 t11:
+    cup rotates 101 deg through the drink.
+    corr(gap, rotation) = +0.985   (near perfect)
+    rotation  0-20deg: gap  -1mm  (dO 7,  dV 7)    <- upright: AGREE to 1mm
+    rotation 20-45deg: gap +31mm  (dO 331,dV 299)
+    rotation 45-90deg: gap +54mm  (dO 594,dV 542)
+    rotation 90+  deg: gap +89mm  (dO 698,dV 610)  <- max tilt: stick-cluster swings more
+The gap grows monotonically, near-linearly, WITH ROTATION. Zero when not rotating.
+
+=> The ~39mm "apex error" chased all day is LARGELY an OMC<->v3 POINT-CORRESPONDENCE artifact: the
+stick-mounted OMC cluster legitimately travels farther than the cup body when the cup rotates. v3 is
+NOT wrong; it tracks a body point that genuinely moves less. EVERY fusion/matching/box/unpool
+experiment "tied v3 at ~39mm apex" because they were all scored against a ground-truth point (the
+stick cluster) that no cup-BODY tracker should match during rotation. We were comparing the cup body
+to a point on a stick.
+
+CONSEQUENCES / corrections:
+* The apex is NOT (mainly) a detection/occlusion/resolution failure -- occlusion is real but SECONDARY
+  to this geometric offset. The dominant apex "error" is expected rotation lever, not trackable error.
+* To score the cup FAIRLY vs OMC we must compare the SAME physical point: either (a) transport v3's
+  centre by the OMC-measured cup rotation to where the stick-cluster should be, or (b) reduce OMC to
+  the cup BODY centre (project the cluster back down its known stick offset), or (c) score in a
+  rotation-invariant way that doesn't privilege the stick point.
+* For the DOWNSTREAM Murphy measures this matters: peak velocity / displacement computed on the
+  stick-cluster vs the body differ by this lever term at the apex -- need to know which point the
+  clinical measure is DEFINED on (likely the cup centre/contents, not a stick).
+NEXT: re-score the cup by matching the physical point (transport by rotation OR body-project OMC),
+and re-check whether v3 is actually good at the apex once the stick lever is removed. This likely
+RETIRES most of the apex-error thread. Script: (inline rotation-gap probe, to be saved).

@@ -4474,3 +4474,36 @@ are about EVIDENCE, not fusion: (1) a seg/detector FINETUNED on apex/occluded/ti
 seg model simply doesn't fire there); (2) temporal priors that COAST through the ~1-3 apex frames
 (the cup reappears after); (3) accept it -- the drink dwell/phase measures may tolerate a few
 occluded apex frames. Scripts: render_mask.py. Cache gap noted: masks are not saved (only box+point).
+
+
+================================================================================
+2026-07-24 (cont.)  WHY the score map fires on a small patch: it's a CenterNet CENTER heatmap
+================================================================================
+
+User: "why does UETrack only output a heatmap firing on a SMALL part of the cup, not the whole cup?"
+(After confirming the TEMPLATE does contain the whole cup -- real 112px template, 2.0x box,
+out/real_template.png. NOTE: the marker face is only visible to SOME cameras at seed; cam_1/cam_5
+get a near-textureless grey-cylinder template -> weak, drift-prone. Separate issue, parked.)
+
+ANSWER (proven from UETrack source, not asserted):
+* decoder.get_score_map returns THREE heads: score_map_ctr, size_map, offset_map (decoder.py:177).
+* The score map is a CENTER heatmap. GT is "same as CenterNet" (heapmap_utils.generate_heatmap):
+  ONE Gaussian at the box CENTRE, zeros elsewhere; focal loss trains exactly that.
+* cal_bbox: box CENTRE = argmax(score_map_ctr)+offset; box SIZE = size_map sampled AT the centre
+  cell. So the score map only ever gives the CENTRE POINT; the cup's EXTENT lives in size_map.
+=> the tight single-cell response is the model working AS DESIGNED. It was never meant to light up
+   the whole cup. Not a resolution failure, not partial detection.
+
+CONSEQUENCE -- corrects the volumetric-unpooling framing:
+* I unpooled the CENTRE heatmap as if it were a spatial cup-probability map. It isn't -- soft-argmax
+  of a centre heatmap just gives the cup CENTRE, which is exactly what consensus triangulation of the
+  trk points already computes. I was fusing the SAME centre info twice -> that is WHY it tied v3.
+* The centre heatmap carries NO silhouette/shape evidence to exploit at the apex; there is genuinely
+  nothing more in it than "centre is here, softly." Its apex softening = centre-localisation
+  uncertainty when the (upright, marker-face) template doesn't match the tilted/occluded apex pose.
+* The size_map (extent) was never used and is the only extra signal in UETrack's output.
+
+So richer per-view apex evidence must come from a SHAPE source, not the centre heatmap: the SEG MASK
+(true silhouette, but the table-trained seg finds nothing at the apex pose) or LoFTR dense matches
+(work on good frames, collapse at apex). Both already characterised. The centre-heatmap route is
+architecturally a dead end for apex shape. Scripts: show_real_template.py.

@@ -4103,3 +4103,53 @@ from SmoothNet-diff (corr .978), peak_elbow_ang_vel from cloud omega_rel — the
 measure the iDrink authors called unmeasurable without mocap IK, now ~4% median bias, markerless.
 2-trial probe replicated on the full 12. Cache: elbow_cohort.pkl (scratchpad). Same-cohort caveat
 (P07+P08 unaffected side); per-frame corr .72 = peaks only, not waveforms.
+
+## 2026-07-24 >>> MURPHY-MEASURE AUDIT of the cloud, and AutoMQ = the REAL ground truth
+
+### Audit: which Murphy measures do the new cloud methods touch (n=12 unless noted)
+| measure | needs | cloud verdict |
+|---|---|---|
+| peak_velocity | wrist speed, peak | ✅ blend(cloud,sn) +3.5% ≈ blend(flow,sn) 3.6% — cloud drop-in; cloud ALONE +10% (rectifies at peak) so blend stays |
+| peak_elbow_angular_velocity | elbow angle rate, peak | ✅ two-segment cloud +3.6% vs keypoint-diff +25-29% overshoot (today's win) |
+| time_to_peak / movement_units | wrist speed timing/waveform | ⚪ untested ON PURPOSE — no clinical signal even in mocap (OMC d≈.45) |
+| total_movement_time + phases | cup+hand POSITION (segmenter) | ✅ stays v3 (cloud position 5x worse, proven) |
+| max_trunk_displacement | trunk position, forward axis | see below — NOT a cloud problem |
+| elbow/shoulder ANGLES | joint angles | cloud gives RATES not angles; integrate=drift |
+
+### THE TRUNK THREAD — 4 corrections, a lesson in wrong comparisons
+Chased phantom failures on max_trunk_displacement, each an artifact of MY setup:
+(1) "disagree 22mm" — was a point-offset: I used mean-of-4-corners; removing a constant offset -> 3mm.
+(2) "occluded 90%" — was my REQUIRE-ALL-4 rule: shoulders are 100% present, hips 29%/13%; the real
+    pipeline trunk = SHOULDER MIDPOINT (score_omc_delta.py) never uses hips. My dropout was self-made.
+(3) "sign-flip -0.99 + range compression" — was comparing raw axes ACROSS FRAMES (MMC rig world vs
+    OMC lab world differ by a rotation; user caught it). WRONG invariance (removed offset, not rotation).
+(4) Correct metric = displacement-from-origin MAGNITUDE (rotation-invariant): P07 corr .966 ratio .87
+    med|err| 4.4mm; P08 corr .87 ratio 1.45. Shape good, PEAK MAGNITUDE scatters (0.87x / 1.45x) — that
+    scatter is the real residual, and it's shoulder-triangulation quality, NOT occlusion, NOT the cloud.
+LESSON (again): never compare MMC vs OMC on raw axes; magnitude/displacement-from-origin only.
+
+### AutoMQ (~/Documents/AutoMQ, timungereth) = the accurate OMC + all 17 Murphy measures
+`all_P/combined_murphy_measures.pkl` = 1516 trials x 17 measures (validated OMC), incl. the 4 ANGLE
+measures cup-task declared unportable. Per participant: combined_data_with_kinematics.pkl (markers +
+6 kinematic signals), murphy_measures_df.pkl, phases_df.pkl. Full DELTA roster P01-P31.
+⚠ HOW IT ACTUALLY COMPUTES (MurphyMeasures_singleP07.ipynb) — CORRECTS the "angles need MuJoCo IK"
+belief that ran all session: it's PLAIN MARKER GEOMETRY, no IK, no body model:
+  elbow_angle = angle(shoulder-elbow, wrist-elbow)                 [3 markers, dot product; INVARIANT]
+  peak_elbow_ang_vel = max|diff(butter(elbow_angle))|*100 in REACHING   [matches our cloud formula EXACTLY]
+  shoulder_flexion/abduction = upper-arm proj on sagittal/coronal plane vs global Z   [NEEDS anatomical frame]
+  trunk_displacement = |initial_trunk_y - trunk_y|, single `trunk` marker, Y=forward   [NEEDS frame]
+  interjoint_coord = corr(shoulder_flexion, elbow_angle) in reaching   [INVARIANT]
+Consequence: the barrier for markerless angles is NOT IK — it's (a) triangulating joint POSITIONS well
+enough for dot-products, and (b) recovering the anatomical global frame (Z up, Y forward) for the
+shoulder/trunk measures (the session-R alignment). Rates/invariant measures need neither.
+NEXT VALIDATION (unblocked): score the cloud's peak_elbow_ang_vel against the REAL AutoMQ column
+(frame-invariant, formula-identical) instead of my differentiated-OMC approximation; check the
+clinical between-hand d, not just per-frame err.
+
+### Kinematic-chain wrist ablation (closing the skeletal thread, 2 trials)
+Oracle ablation of v_wrist = v_elbow + omega x r: with OMC-perfect elbow OR OMC-perfect rotation the
+chain is STILL 35-64 mm/s (each ingredient alone sinks it); both-oracle = 3-5mm (formula is exact).
+Direct wrist ball 15.9. Chain sums two noisy vectors, one lever-amplified; direct = one noise source
+at the point. Also: WHY angular-peak works but linear-transport doesn't = noise FATE — signed
+projection+lowpass CANCELS (elbow rate unbiased), vector MAGNITUDE RECTIFIES to DC bias (transport,
+unfixable), differentiation AMPLIFIES in-band (keypoint peak overshoot). Same 0.19rad/s everywhere.

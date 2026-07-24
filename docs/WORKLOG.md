@@ -4378,3 +4378,40 @@ LESSON (again): don't conclude from scalars (peak/entropy) on unverified frames 
 The mislabelled-apex + centred-crop combo produced a confident wrong conclusion twice.
 Scripts: render_heatmap.py (10x window, true-apex by displacement). NEXT: re-examine whether the
 apex distractor modes DIFFER across cameras (if yes -> fusion/lifter can beat them).
+
+
+================================================================================
+2026-07-24 (cont.)  ⚠⚠ RETRACTION: the "distractor contamination" was MY 10x re-crop, not the tracker
+================================================================================
+
+User: "wait are we not using the actual UETrack detection? these heatmaps don't agree with the
+detection." EXACTLY RIGHT. The previous "apex heatmap is multi-modal / fires on shirt markers + face"
+entry is RETRACTED. It was an artefact of how I made the heatmap, not a property of the tracker.
+
+THE BUG: both prior heatmap dumps re-ran UETrack's forward on a crop *I* placed (centred on the
+cached cup point), with a template I re-initialised -- a DIFFERENT forward pass than the one that
+produced the cached detection. The "distractor" version used a 10x search window, which put the
+shirt markers + face into a region the REAL tracker (4x window, own evolving state) never sees. The
+template then lit up on those out-of-window distractors. I induced the contamination by zooming out.
+
+THE FIX (dump_real_scoremap.py): drive UETrack frame-to-frame with its OWN state evolution (seed from
+first YOLO box, step every frame -- exactly like cache_tracks.py), monkey-patching track() to stash
+the score_map + geometry that produced each returned box. VERIFIED: argmax(saved score_map) is within
+median 12.5px of the returned trk detection (cup ~40px) -> the saved heatmap IS the detection's.
+
+RENDERED REAL (out/uetrack_heatmap_real.png, real 4x window):
+* APEX (cup at mouth): a SINGLE TIGHT blob ON THE CUP, coincident with the detection. NO secondary
+  blob on shirt/face/hand. Peak mildly lower (0.56-0.64 vs 0.88 at rest) = appropriately less
+  confident under occlusion, but a correct single cup-centred mode.
+* REST: tight confident (0.88) cup blob.
+
+CORRECTED CONCLUSION (reverts to + strengthens the pre-retraction view): the apex error is NOT
+distractor contamination and NOT a multi-modal response. The real heatmap peaks CORRECTLY on the cup
+in every camera; it is just slightly softer under occlusion. That is why all fusion methods tie v3 --
+there is no distractor to reject and no cross-camera disagreement to exploit; every camera has a
+slightly-soft-but-correct cup peak. The residual ~39mm apex error is fine-grained localisation
+imprecision on an occluded/blurred cup, shared across views.
+LESSON (THIRD time today): render the REAL thing, not a synthetic re-crop. A re-run with a different
+crop/window/template is a DIFFERENT computation and can invent structure the real pipeline never had.
+Verify the render reproduces the cached output (here: argmax≈detection) BEFORE drawing conclusions.
+Scripts: dump_real_scoremap.py (instrumented real tracker), render_real_heatmap.py.

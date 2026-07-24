@@ -4339,3 +4339,42 @@ IMPLICATION for the 2D->3D graph/transformer lifter: fed these same points/heatm
 v3 -- UNLESS trained against OMC to LEARN AND CORRECT the shared apex bias (pure geometry can't; a
 trained net encoding "true cup sits ~40mm beyond where the heatmaps peak at the apex" can). That is
 the one remaining angle with a real chance. Scripts: voxel_unpool.py, dump_scoremap.py, voxel_heatmap.py.
+
+
+================================================================================
+2026-07-24 (cont.)  ⚠ CORRECTION: apex heatmaps are MULTI-MODAL with distractors, not clean-biased
+================================================================================
+
+User: "how did you make that heatmap? are we sure UETrack only fires on the cup and nothing on
+distractors?" -- and pushed to RENDER it. Both instincts were right and they overturn the prior claim.
+
+HOW THE DUMP WAS MADE (the flaw): dump_scoremap.py cut a search crop CENTRED ON the cached trk point
+(=the cup) at search_factor 4.0 (~4x cup). That structurally (a) hides FAR distractors outside the
+tiny window and (b) includes the hand as a near-distractor -- so "the heatmap is clean/peaked" was
+partly an artefact of centring on the answer. And the earlier peak/entropy SCALARS (0.60/3.73 at
+"apex") were computed on MISLABELLED frames: I picked apex by spd>300, but many high-speed frames are
+at TABLE level, not the mouth. So I never actually measured the true apex.
+
+RENDERED PROPERLY (render_heatmap.py): search_factor 10x (distractors visible), overlaid on frame,
+TRUE apex = max displacement-from-start (cup AT the mouth). out/uetrack_heatmap.png.
+* REST / unoccluded cup: heatmap is a single TIGHT blob on the cup. The hand (inches away), the
+  striped shirt, and a lower-table distractor object get ZERO response. UETrack is genuinely
+  cup-discriminative when the cup is visible -- GOOD, and it refutes my worry that the adjacent hand
+  competes in the ordinary case.
+* TRUE APEX (cup at mouth, occluded by hand/face): heatmap goes MULTI-MODAL. Besides the cup blob
+  there are STRONG secondary hot blobs on the SHIRT MARKERS (the white spherical mocap markers look
+  like the cup's markers to the template), the HAND/WRIST, and the FACE/NECK. cam_4 apex is a broad
+  smear across jaw/neck merged with the cup. The argmax still lands near the cup but on a broad,
+  contaminated response.
+
+CORRECTION TO THE PRIOR ENTRY: the apex error is NOT "clean-but-biased peak, shared across cameras,
+unfixable by fusion." It is DISTRACTOR CONTAMINATION -- the occluded-cup heatmap becomes multi-modal
+and the estimate is pulled toward shirt-marker/hand/face modes. This is FUSION-RELEVANT: if different
+cameras are pulled toward DIFFERENT distractors, a smarter fusion or a LEARNED lifter that recognises
+the multi-modal apex signature could reject them (my plain sum/product unpooling could not). So the
+learned-lifter idea is MORE promising than I concluded -- there is real structure (competing modes,
+possibly per-camera-different) to learn from, not just an irreducible shared bias.
+LESSON (again): don't conclude from scalars (peak/entropy) on unverified frames -- RENDER and look.
+The mislabelled-apex + centred-crop combo produced a confident wrong conclusion twice.
+Scripts: render_heatmap.py (10x window, true-apex by displacement). NEXT: re-examine whether the
+apex distractor modes DIFFER across cameras (if yes -> fusion/lifter can beat them).

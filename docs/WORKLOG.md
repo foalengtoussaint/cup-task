@@ -4539,3 +4539,44 @@ NEW UNUSED SIGNAL: size_map survives the apex (seg doesn't). Fusing per-view siz
 cameras could constrain cup 3D size/pose when the centre is uncertain -- untested. CAVEAT: size gives
 extent, not centre; the 39mm error is a CENTRE error, so size alone won't fix it. Worth a look as an
 auxiliary constraint, not a fix. Script: probe_sizemap.py.
+
+
+================================================================================
+2026-07-24 (cont.)  Fusing the BOXES (not just center): ties/loses v3, edges add nothing
+================================================================================
+
+User: "can you use the yellow boxes / fuse the box rather than the center." Dumped full UETrack boxes
+(center + size_map w,h) for all 5 cams, real tracker (cache/uetrack_boxes/, dump_boxes.py).
+
+FIRST -- rendered the cached boxes on ALL 5 cams, rest vs apex (out/boxes_all.png):
+* The box SURVIVES the apex on ALL 5 cameras (yellow box on the cup) while the SEG MASK is gone from
+  all 5. So the box is a more robust apex signal than the mask across the whole rig -- worth trying.
+* BUT the apex box wraps the near MARKER-FACE of the rotated cup (black marker square inside the box),
+  which is a sub-region OFFSET from the cup's true centre, and the offset direction depends on
+  viewing angle.
+
+FUSION (fuse_boxes.py): back-project box constraints to rays, least-squares closest point.
+  - box CENTER only: triangulate the 5 box centers.
+  - box CENTER+EDGES: add the 4 box-edge midpoints (L/R/T/B) per cam as extra rays.
+Result vs v3 vs OMC (disp-from-start err, mm), P07 t11:
+    box CENTER only   : all 3  fast 46  slow 2
+    box CENTER+EDGES  : all 3  fast 46  slow 2   <- EDGES ADD NOTHING (46=46)
+    v3 consensus      : all 3  fast 39  slow 2   <- still best at apex
+
+WHY (converged, consistent with the whole day):
+* Edges add nothing because every camera boxes the SAME near marker-face -> all edges are consistent
+  with the same BIASED near-face centre. The edges reinforce the offset, they don't bracket the true
+  body. No cross-view disagreement for them to resolve.
+* Box-centre slightly worse than v3 (46 vs 39): v3 uses the tracker's sub-pixel refined trk point
+  (score-cell+offset); my box centre = x+w/2 from size_map, coarser + inherits the near-face bias.
+
+GRAND CONCLUSION of the 2D-evidence-fusion arc (matching, unpooling, size, boxes ALL tested):
+EVERY method that FUSES per-camera 2D cup evidence ties-or-loses to v3 at the apex, because at the
+apex all cameras fail the SAME way (near-face bias + occlusion + blur) -> CORRELATED errors, and
+fusion cannot fix correlated errors. The apex is a data/rig limit. The only levers left are about
+EVIDENCE, not fusion: finetune seg/detector on apex/occluded poses; temporal coasting through the
+1-3 apex frames; per-camera better-template seeding (cam_1/cam_5 weak templates); or accept it and
+check the downstream Murphy measures tolerate a few occluded apex frames.
+Scripts: dump_boxes.py, render_boxes_fast.py, fuse_boxes.py.
+GOTCHA fixed: dmag anchored displacement at valid[0] which had no box est -> NaN'd every curve; use a
+common anchor frame where all signals are valid.

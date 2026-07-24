@@ -4298,3 +4298,44 @@ correspondences on narrow pairs + ~3/frame on wide -- but funnelled to a centroi
 undershoot the apex). The apex undershoot is a TRIANGULATION/occlusion problem, not a matcher problem.
 Scripts: loftr_lowconf.py, loftr_badframes.py, loftr_vs_v3.py, loftr_curves.py, glue_probe.py.
 NEXT (user): (1) volumetric unpooling from 2D heatmaps, (2) 2D->3D graph-CNN / transformer lifting.
+
+
+================================================================================
+2026-07-24 (cont.)  Volumetric unpooling (2D->3D, no matching): ties v3, apex is a 2D BIAS
+================================================================================
+
+New direction after matching: abandon cross-view CORRESPONDENCE, lift to 3D from per-camera
+EVIDENCE instead (volumetric unpooling / learnable-triangulation style). Per user: the per-camera
+detector is UETRACK (not YOLO), and UETrack is a CenterNet-style tracker -> it outputs a SCORE_MAP
+heatmap, collapsed to the 'trk' argmax point in the cache.
+
+--- POINT unpooling (synthetic Gaussian at each cam's trk point) -- n=12 P07+P08 ---
+Voxel grid (40^3, 4mm) centred on v3 prior; each cam a Gaussian heatmap at its trk px; project every
+voxel into every cam, sample, aggregate (sum / logprod / trimsum), soft-argmax. POOLED |disp err| mm:
+    sum     2/30/1   logprod 3/29/1   trimsum 2/30/1   v3 2/31/1     (all/fast/slow)
+TIES v3 to within 1mm everywhere incl. apex. Because it consumes the SAME trk points v3's consensus
+triangulation uses -- fuse identical evidence, get the same answer. Confirms v3 consensus is already
+near-optimal GIVEN those 2D points; the apex error is IN the 2D points, not the fusion.
+
+--- REAL score_map unpooling (dump UETrack's actual 14x14 heatmap) -- one trial P07 t11 ---
+Monkey-drove UETrack forward on a search crop centred at each cached trk point, dumped the real
+score_map + crop geometry (cache/uetrack_scoremap/, dump_scoremap.py). Unpool the REAL heatmap
+(bilinear-sample per voxel) instead of a synthetic Gaussian (voxel_heatmap.py):
+    sum 6/39/3   logprod 7/41/2   trimsum 6/39/3   v3 3/39/2
+STILL ties v3 at the apex (39), slightly worse overall. So even the tracker's genuine uncertainty
+distribution doesn't help.
+
+--- WHY: the apex error is a SHARED 2D BIAS, not fixable by any fusion ---
+Peakiness of the score maps, slow vs apex:
+    SLOW     : peak 0.80  entropy 3.01   (confident)
+    FAST/apex: peak 0.60  entropy 3.73   (somewhat more diffuse, but STILL mostly peaked)
+At the apex the heatmaps are a little less confident but still peaked -- at a BIASED location (cup
+occluded at the mouth, response pulled toward hand/mouth). Every camera is wrong the SAME way, so
+there's no cross-camera disagreement for fusion to exploit. THREE independent methods (consensus,
+point-unpool, heatmap-unpool) all land at ~39mm apex => the bottleneck is UETrack's 2D response at
+the occluded mouth, NOT the 2D->3D lifting.
+
+IMPLICATION for the 2D->3D graph/transformer lifter: fed these same points/heatmaps it will ALSO tie
+v3 -- UNLESS trained against OMC to LEARN AND CORRECT the shared apex bias (pure geometry can't; a
+trained net encoding "true cup sits ~40mm beyond where the heatmaps peak at the apex" can). That is
+the one remaining angle with a real chance. Scripts: voxel_unpool.py, dump_scoremap.py, voxel_heatmap.py.

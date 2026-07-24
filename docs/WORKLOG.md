@@ -4668,3 +4668,41 @@ before it's the right truth. Re-scoring cup accuracy should use the body-project
 cluster. LESSON: always confirm truth and estimate are the SAME PHYSICAL POINT before calling a gap
 'error' (4th world-frame/point-correspondence trap of the day, but this one the user caught the cause).
 NEXT: apply body-projected OMC across all trials; re-run the cup accuracy table (expect v3 ~good).
+
+
+================================================================================
+2026-07-24 (cont.)  How the stick lever affects SPEED (Murphy peak-velocity)
+================================================================================
+
+User: "how does this affect the speed calculation?" Speed = d/dt(position), so the stick lever hits
+speed via omega x r (r=56mm lever, omega=cup angular velocity, large at the fast apex rotation).
+
+MEASURED (P07 t11, 6Hz Butterworth then gradient), PEAK cup speed:
+    stick-cluster 1105 mm/s   (+15% vs body)
+    true cup-body  961 mm/s   (the real truth)
+    v3 track      1050 mm/s   (+9%  vs body)
+  peak TIMING within 83ms across all three (time-to-peak measure is fine).
+Off-peak all three agree; divergence is confined to the two fast-rotation speed peaks (reach+return).
+Graph: out/speed_stick_vs_body.png (+ out/stick_vs_body.png for displacement).
+
+TWO SEPARATE INFLATIONS, different causes:
+1. The OMC 'truth' itself over-reads peak cup speed by +15% -- the omega x r rotational term; the
+   stick-cluster whips faster than the cup body during the ~100deg apex rotation. => the Murphy
+   PEAK-VELOCITY ground truth as currently defined (stick-cluster) is ~15% too high vs the real cup.
+2. v3 over-reads by +9%, but NOT from the lever (it tracks the body). It's differentiation amplifying
+   apex JITTER/blur (v3 speed is visibly spikier than the body off-peak too) -- the known
+   "differentiation amplifies in-band noise" effect (cf pose SmoothNet note).
+
+PUNCHLINE / SIGN-FLIP TRAP: scored against the RAW stick OMC, v3 peak speed looks ~5% LOW (1050 vs
+1105); scored against the TRUE body it's +9% HIGH. The sign of v3's "speed error" flips with which
+point you call truth -- same lesson as displacement.
+
+CONSEQUENCES:
+* DISPLACEMENT measures: v3 ~= truth (~3mm) after body-projection. Solid.
+* PEAK-VELOCITY: fix the OMC truth first (body-project, -15%); then v3's real error is +9% from apex
+  jitter -> a SMOOTHING problem (temporal filter / SmoothNet-style), NOT a tracking problem. This is
+  the same class of fix already used for pose wrist speed in this project.
+* TIME-TO-PEAK: unaffected (peaks within 83ms).
+NEXT: body-project OMC cup across all trials; re-run cup speed accuracy; try light temporal smoothing
+on v3 cup speed to close the +9% apex peak (watch it doesn't round the peak off -- score by good-frame
+fraction / peak-preservation, not just median).

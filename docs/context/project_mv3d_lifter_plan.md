@@ -34,6 +34,17 @@ single-IMAGE 3D pose.) Only useful role would be pretraining a monocular 2D→3D
 innovation — so skip it. Good we checked with one tar not 100s of GB.
 
 MULTI-VIEW datasets that actually work (synchronized cameras, same person same instant):
+- **SynBody / HumanNeRF-subset** — ✅ VERIFIED synchronized multi-view: 100 seqs × 8 cameras in
+  a RING around the subject (world-centres -RᵀT form a ring, verified), full K,R,T per view +
+  SMPL-X 3D GT. Synthetic → PERFECT GT + exact calib (no mocap/stick noise). On HF
+  caizhongang/SynBody, NOT gated. ⚠ ONLY the **HumanNeRF-subset** is multi-view — the
+  SynBody-100K / HMR tarballs are the MONOCULAR trap (avoid). ⚠ License CC-BY-NC-SA (non-commercial
+  — fine for research, a constraint for product). Size: img.zip 44.7GB + mask 2GB + calib/smplx
+  ~15MB = ~47GB. DOWNLOADING NOW (fetch_synbody.sh, HF CDN). = the new PRIMARY synthetic corpus.
+  (User caught that SynBody IS multi-view in its NeRF track — I'd wrongly dismissed it.)
+- **Syn4D** — ✅ multi-view synthetic (README: "multi-view RGB videos", built on BEDLAM2), +depth
+  +3D point tracks, CC-BY-4.0 (commercial-OK, cleaner license than SynBody). On HF Syn4D/Syn4D.
+  Not yet structurally verified. Alternative/supplement to SynBody if the NC license bites.
 - **AIST++** — ✅ multi-view: 9 SYNCHRONIZED cameras, single dancer, off-eye-level + fast
   dynamic motion (matches drink apex). IDEAL fit. 🔒 NOT on HuggingFace (HF token doesn't reach
   it); downloads via google.github.io/aistplusplus_dataset/download.html. UNLOCK Monday: grab

@@ -4624,3 +4624,47 @@ CONSEQUENCES / corrections:
 NEXT: re-score the cup by matching the physical point (transport by rotation OR body-project OMC),
 and re-check whether v3 is actually good at the apex once the stick lever is removed. This likely
 RETIRES most of the apex-error thread. Script: (inline rotation-gap probe, to be saved).
+
+
+================================================================================
+2026-07-24 (cont.)  ★★ RESOLVED: v3 tracks the real cup to ~3mm; the apex "error" was the sticks
+================================================================================
+
+User: "check that this makes v3 track the actual cup displacement accurately." Done properly, and it
+RESOLVES the entire apex thread.
+
+METHOD (fixed the different-world-frames bug that gave |o|=1258mm garbage before): v3 (rig world) and
+the OMC cup (mocap world) are rigidly linked to the same cup. Jointly solve for (a) the rigid
+transform rig<-mocap and (b) the local offset o from the marker cluster to the point v3 tracks, by
+alternating Kabsch + linear-o updates over all 524 frames. Then residual = |v3 - (transform applied
+to cluster+R@o)| per frame = how well v3 tracks the SAME rigid cup point, bucketed by cup rotation.
+
+RESULT (P07 t11):
+  solved cup-body offset |o| = 56mm  (SANE -- cup body ~56mm from the stick markers, physical)
+  v3-vs-true-cup residual by rotation:
+    0-20deg (rest)  2.5mm p90 4.1
+    20-45deg        9.4mm
+    45-90deg        7.9mm
+    90+ deg (apex) 12.7mm p90 18.1
+    OVERALL median  3.0mm
+
+=> v3 TRACKS THE REAL CUP TO ~3mm MEDIAN, ~13mm at the fully-rotated apex. NOT 39-89mm.
+The 39-89mm "apex error" was ~75% STICK-LEVER ARTIFACT (comparing the cup BODY that v3 tracks to
+OMC markers on STICKS that swing on a lever when the cup rotates ~100 deg) + only ~13mm real
+occlusion effect.
+
+THIS RETIRES THE APEX-ERROR THREAD and reinterprets the whole day:
+* v3 is NOT broken at the apex. It tracks the cup body accurately everywhere.
+* Every fusion/matching/box/unpool experiment "failed to beat 39mm" because 39mm was NOT a tracking
+  error to beat -- it was stick geometry. There was nothing there to fix. (Consistent: they all tied
+  v3 exactly, because they and v3 all track the body, and the body genuinely moves ~13mm-accurately.)
+* The residual ~13mm at max tilt is the real (small) occlusion/blur effect -- matches the softer
+  UETrack heatmap peak (0.9->0.6) seen earlier.
+
+IMPLICATION FOR SCORING / MURPHY: the OMC cup 'ground truth' as currently defined (stick-cluster mean)
+OVER-reads cup displacement/velocity at the apex by the lever term. Clinical cup measures should be
+defined on the cup BODY/contents, so OMC itself needs body-projection (offset ~56mm down the stick)
+before it's the right truth. Re-scoring cup accuracy should use the body-projected OMC, not the raw
+cluster. LESSON: always confirm truth and estimate are the SAME PHYSICAL POINT before calling a gap
+'error' (4th world-frame/point-correspondence trap of the day, but this one the user caught the cause).
+NEXT: apply body-projected OMC across all trials; re-run the cup accuracy table (expect v3 ~good).

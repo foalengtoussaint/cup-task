@@ -4507,3 +4507,35 @@ So richer per-view apex evidence must come from a SHAPE source, not the centre h
 (true silhouette, but the table-trained seg finds nothing at the apex pose) or LoFTR dense matches
 (work on good frames, collapse at apex). Both already characterised. The centre-heatmap route is
 architecturally a dead end for apex shape. Scripts: show_real_template.py.
+
+
+================================================================================
+2026-07-24 (cont.)  The other two heads: size_map (extent) + offset_map (sub-cell centre)
+================================================================================
+
+User: "what does size_map do / but there's also an offset_map." UETrack's decoder has THREE heads,
+all 14x14: score_map(1ch, centre location), size_map(2ch, box w,h), offset_map(2ch, sub-cell centre
+dx,dy). cal_bbox: centre = argmax(score)+offset, size = size_map AT the centre cell. (conv5_size and
+conv5_offset are both Conv2d(...,2,...).)
+
+DUMPED all three from the real tracker, rest vs apex (probe_sizemap.py):
+  cam   frame  peak  size_map(wxh)  offset(dx,dy)  seg-mask
+  cam_3 REST   0.90   57x56         (0.01,-0.03)   71x55   <- size ~ mask, offset ~0
+  cam_3 apex   0.57   36x65         (0.00,-0.03)   NO MASK <- size PLAUSIBLE, offset ~0, peak dropped
+  cam_4 REST   0.91   39x43         (~0)           47x55
+  cam_4 apex   0.65   56x47         (~0)           NO MASK
+
+READOUT (answers both questions + nails the apex mechanism across all 3 heads):
+* size_map: at rest ~ seg mask; AT THE APEX it stays PLAUSIBLE (36x65/56x47) and tracks the apparent
+  shape change (cup rotates to tilted/edge-on) -- while the SEG MASK finds NOTHING. So size_map is a
+  more ROBUST per-view extent signal than the seg mask at the apex. NEVER USED in any fusion so far.
+* offset_map: tiny everywhere (<=0.11 of a cell), rest AND apex. So the apex error is NOT sub-cell
+  refinement thrashing -- the centre is confidently AT its cell.
+* peak: 0.90 -> 0.56-0.65 at apex. So the model is unsure WHICH CELL is the centre.
+=> apex error = the SCORE map picking a soft/slightly-wrong CELL (~30mm), NOT the offset, NOT the
+   size. offset calm + peak soft = "confident about where in the cell, unsure which cell."
+
+NEW UNUSED SIGNAL: size_map survives the apex (seg doesn't). Fusing per-view size/scale across
+cameras could constrain cup 3D size/pose when the centre is uncertain -- untested. CAVEAT: size gives
+extent, not centre; the 39mm error is a CENTRE error, so size alone won't fix it. Worth a look as an
+auxiliary constraint, not a fix. Script: probe_sizemap.py.

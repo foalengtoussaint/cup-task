@@ -122,3 +122,35 @@ RESULT (Panoptic ultimatum1, 6 cams, 60 single-person frames, 2/6 views corrupte
 - We DON'T need SynBody images for this — Panoptic's 6 downloaded HD videos + real 3D GT suffice NOW.
 NEXT (full run): batch multiple frames, more sequences/frames, stable eval, then compare frozen-neck
 vs fine-tuned-neck cleanly. Neck taps + sampling + DLT-into-neck all verified working.
+
+## HONEST test on DELTA (2026-07-24) — right test bed, but training-frame bug found
+After Panoptic proved a BAD test bed (3 blockers: multi-person ultimatum1, YOLO detects 0 on small
+dome people, broken calib projection for some cams → every Panoptic "result" was the GT-projection
+LEAK giving fake 0mm), moved to DELTA = the correct bed: our own footage, YOLO detects participant
+100%, real cached 2D + real 8/5-cam calib + OMC 3D, single person. scripts/mv3d_delta_neck.py.
+
+Pipeline (all REAL, no leak): cached YOLO wrist 2D per cam → sample YOLO NECK feat (layer16, 128ch,
+stride8) at that px → head regresses (dx,dy)+conf → weighted-DLT → 3D. vs plain DLT of raw dets.
+
+BUGS FOUND + FIXED along the way:
+- camera index misalignment: cam_7/cam_9 have NO pose.json; must align KP↔Ps to detected cams only.
+- ⚠ THE BIG ONE (same trap as the cup apex all day): scored raw |X_dlt − OMC| across MMC vs OMC
+  worlds → 1400mm nonsense. FIX = frame-invariant DISPLACEMENT-FROM-START magnitude (already the
+  project's standard metric). AutoMQ has NO alignment code to borrow — it works ENTIRELY in the OMC
+  frame (never uses MMC), so it never hit the two-frame problem. The frame-invariant metric IS our
+  alignment-free answer.
+
+RESULT after metric fix: PLAIN DLT of real YOLO dets = ~10mm all / ~13mm fast (CORRECT, matches the
+~5mm wrist story). BUT the LEARNED head got WORSE over training (10→29mm). Diagnosed: EVAL is now
+frame-invariant but the TRAINING LOSS is still |learned − OMC| in the WRONG frame — so the head
+optimizes a meaningless 1400mm quantity and diverges while the correct eval shows it degrading.
+
+=> the fix / NEXT STEP: train the head on a FRAME-INVARIANT / MMC-frame target, NOT against OMC
+directly. Correct signal = LEAVE-ONE-OUT CONSENSUS: triangulate the wrist from the OTHER cams
+(MMC frame), train the held-out cam's refinement to match that consensus (all in MMC frame, no OMC,
+no alignment). Then the head learns to refine bad dets toward multi-view consensus, and eval vs OMC
+(frame-invariant) measures if that helped — especially at the apex where real dets are worst.
+
+STATUS: pipeline + neck-feature sampling + DLT all proven on real DELTA data; plain baseline correct
+at ~10mm; learned-refinement UNPROVEN pending the leave-one-out training-frame fix. Neck-feature
+cache saved (delta_neckfeat_P07_trial_11.pt).

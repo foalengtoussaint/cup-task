@@ -4415,3 +4415,29 @@ LESSON (THIRD time today): render the REAL thing, not a synthetic re-crop. A re-
 crop/window/template is a DIFFERENT computation and can invent structure the real pipeline never had.
 Verify the render reproduces the cached output (here: argmax≈detection) BEFORE drawing conclusions.
 Scripts: dump_real_scoremap.py (instrumented real tracker), render_real_heatmap.py.
+
+
+================================================================================
+2026-07-24 (cont.)  Heatmap resolution: 14x14, cup~2.5 cells; apex smears across ~3-4 cells
+================================================================================
+
+User: "why is the heatmap so small / I'm not seeing 14x14 on the render." Both right.
+* The score_map IS 14x14 (search_size 224 / encoder stride 16). Verified the raw array: a single
+  0.67 peak cell, ~0.21 neighbours, zeros elsewhere.
+* ONE CELL = ~20px = ~29-31mm at the cup (crop = search_factor 4.0 x cup box). The cup is only
+  ~2.4-2.6 CELLS wide. So the grid is genuinely COARSE relative to the object.
+* RENDER BUG (again): the prior real-heatmap render CUBIC-upsampled the 14x14 into a smooth blob,
+  hiding the coarseness -- the viewer couldn't see it was 14x14. Re-rendered with NEAREST + grid
+  lines (out/uetrack_grid.png): white box = winning cell (~1 cell), green = cup (~2.5 cells).
+
+MECHANISM OF THE APEX ERROR, now VISIBLE not inferred:
+* REST: peak in ~1 cell, razor sharp (0.88) -> sub-cell size/offset refinement has a crisp target
+  -> ~1mm accuracy.
+* APEX: peak SMEARS across ~3-4 cells (occlusion softens it, 0.56-0.64) -> refinement picks within a
+  fuzzy multi-cell blob -> error drifts toward cell scale (~30mm/cell -> ~39mm triangulated).
+=> the apex error is RESOLUTION-LIMITED-UNDER-OCCLUSION, not fusion, not distractors, not shared bias.
+CONCRETE FIX TO TEST: finer grid (smaller search_factor -> each cell covers less WORLD, or larger
+search_size -> more cells). The same 3-cell apex smear would then span less physical distance.
+NEXT: re-run UETrack at search_factor 2.0 (halves world-per-cell) on this trial; does apex error
+drop toward the slow-frame level? Cheap, training-free, tests the resolution hypothesis head-on.
+Scripts: render_grid_heatmap.py (honest NEAREST+grid render).

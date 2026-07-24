@@ -4441,3 +4441,36 @@ search_size -> more cells). The same 3-cell apex smear would then span less phys
 NEXT: re-run UETrack at search_factor 2.0 (halves world-per-cell) on this trial; does apex error
 drop toward the slow-frame level? Cheap, training-free, tests the resolution hypothesis head-on.
 Scripts: render_grid_heatmap.py (honest NEAREST+grid render).
+
+
+================================================================================
+2026-07-24 (cont.)  The MASK settles it: apex error is genuine OCCLUSION, not any algorithm
+================================================================================
+
+User: "what about the mask?" The cup model is YOLO-SEG (task=segment) but the cache saved only
+yolo box + trk point -- the MASK was thrown away. Ran the seg model and rendered mask vs box vs
+tracker (out/cup_mask.png).
+
+* REST: mask (71x55 / 47x55 px) ~= YOLO box, tracker cross centred in it. My previous claim that
+  "the box undersizes the cup / cup is 4 cells" was WRONG -- I misjudged the cup edge by eye. The
+  mask confirms the cup really is ~3 cells (~55-70px); it's a normal mug at 1.6-2.2m, genuinely small.
+* APEX: the seg model finds NO MASK AT ALL. At the mouth the cup is tilted, hand-wrapped, and
+  partly behind the face -- an unusual pose the (table-trained) seg model doesn't recognise.
+
+CONVERGED CONCLUSION (ties every thread today): the ~39mm apex error is GENUINE OCCLUSION + unusual
+pose, degrading EVERY per-camera 2D method at the same moment -- seg finds nothing, YOLO box drifts,
+UETrack peak softens, LoFTR matches collapse. They all lose the cup the same way simultaneously,
+which is EXACTLY why no fusion or 2D->3D lifting of their outputs recovers it (no view has good
+evidence, and the errors are correlated). Consistent with the memory note "25-35% unrecoverable by
+ANY detector = rig/camera-placement problem" and the LoFTR apex collapse.
+
+RETRACTED along the way (all MY artefacts, not the pipeline): distractor-contamination (10x re-crop),
+box-undersizes-cup (eyeball error; mask agrees with box), marker-offset hypothesis (unnecessary --
+the tracker IS centred on the cup at rest). The resolution story is real but SECONDARY: the apex
+softening is driven by occlusion, not grid coarseness.
+
+IMPLICATION: the apex is a DATA/RIG limit, not an untried algorithm. Options that could actually help
+are about EVIDENCE, not fusion: (1) a seg/detector FINETUNED on apex/occluded/tilted cup poses (the
+seg model simply doesn't fire there); (2) temporal priors that COAST through the ~1-3 apex frames
+(the cup reappears after); (3) accept it -- the drink dwell/phase measures may tolerate a few
+occluded apex frames. Scripts: render_mask.py. Cache gap noted: masks are not saved (only box+point).

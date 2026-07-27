@@ -92,21 +92,26 @@ class CanonicalFusionCDR(nn.Module):
             canon = torch.stack([self.ftl_inv(enc32[v:v+1], Pinv_grid[v:v+1]) for v in range(V)], 0)
             canon = canon[:, 0]                                 # (V,canon,80,80) fp32
         fused = self.fuse(canon.mean(0, keepdim=True))          # (1,fuse_ch,80,80)
-        hms, kpts = [], []
+        hms, kpts_grid = [], []
         for v in range(V):
             with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
                 back = self.ftl(fused.float(), P_grid[v:v+1])   # (1,dec_in,80,80) fp32
             hm = torch.sigmoid(self.decoder(back))              # (1,K,80,80)
             hms.append(hm[0])
             with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
-                kp_grid = soft_argmax_2d(hm.float())[0]         # (K,2) grid px, fp32
-            kpts.append(kp_grid / s)                            # -> native px
-        kpts2d = torch.stack(kpts, 0)                           # (V,K,2) native px
+                kp_grid = soft_argmax_2d(hm.float())[0]         # (K,2) GRID px (0..hm_size)
+            kpts_grid.append(kp_grid)
+        kpts2d_grid = torch.stack(kpts_grid, 0)                 # (V,K,2) GRID px
+        # 2D keypoints reported in NATIVE px (grid / s), for the distill loss vs YOLO native-px 2D
+        kpts2d = kpts2d_grid / s                                # (V,K,2) native px
         heatmaps = torch.stack(hms, 0)                          # (V,K,80,80)
-        # triangulate each kpt across views (native-res P), fp32
+        # triangulate in a CONSISTENT space: GRID-space 2D with GRID-space P (P_grid). The earlier
+        # bug triangulated 640-space 2D against P_NATIVE -> geometrically inconsistent (fine only if
+        # native==640; SynBody 1024 partly absorbed it, DELTA 1920x1080 collapsed it). DLT is
+        # scale-covariant, so grid+P_grid gives the correct 3D.
         with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
             tri = sii_triangulate if self.use_sii else (
                 lambda uv, P: weighted_dlt(uv, torch.ones(uv.shape[0], device=uv.device), P))
-            X = torch.stack([tri(kpts2d[:, k, :].float(), P_native.float())
+            X = torch.stack([tri(kpts2d_grid[:, k, :].float(), P_grid.float())
                              for k in range(self.n_kpts)], 0)  # (K,3)
         return {'kpts2d': kpts2d, 'X3d': X, 'heatmaps': heatmaps}

@@ -77,28 +77,36 @@ class CanonicalFusionCDR(nn.Module):
         Returns dict: kpts2d (V,K,2) native px, X3d (K,3), heatmaps (V,K,80,80)."""
         V = imgs.shape[0]
         dev = imgs.device
-        # P rescaled to the heatmap/feature grid (stride hm_stride), + its pinv
+        # Geometry (pinv, FTL transforms, DLT) is numerically fragile in fp16 -> force fp32 even
+        # under autocast. The conv backbone/decoder stay in fp16 (AMP); only linear algebra is fp32.
         s = 1.0 / self.hm_stride
-        P_grid = rescale_P(P_native, s, s)                      # (V,3,4)
-        if Pinv_grid is None:
-            Pinv_grid = torch.linalg.pinv(P_grid)               # (V,4,3)
+        with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
+            P_grid = rescale_P(P_native.float(), s, s)          # (V,3,4) fp32
+            if Pinv_grid is None:
+                Pinv_grid = torch.linalg.pinv(P_grid)           # (V,4,3) fp32
 
-        enc = self._per_view_maps(imgs)                         # (V,enc_ch,80,80)
+        enc = self._per_view_maps(imgs)                         # (V,enc_ch,80,80) may be fp16
         # FTL_inv per view -> canonical latents, then FUSE (mean over views: view-count agnostic)
-        canon = torch.stack([self.ftl_inv(enc[v:v+1], Pinv_grid[v:v+1]) for v in range(V)], 0)  # (V,1,canon,80,80)
-        canon = canon[:, 0]                                     # (V,canon,80,80)
+        with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
+            enc32 = enc.float()
+            canon = torch.stack([self.ftl_inv(enc32[v:v+1], Pinv_grid[v:v+1]) for v in range(V)], 0)
+            canon = canon[:, 0]                                 # (V,canon,80,80) fp32
         fused = self.fuse(canon.mean(0, keepdim=True))          # (1,fuse_ch,80,80)
-        # project canonical fusion back to each view -> decode -> heatmaps
         hms, kpts = [], []
         for v in range(V):
-            back = self.ftl(fused, P_grid[v:v+1])               # (1,dec_in,80,80)
+            with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
+                back = self.ftl(fused.float(), P_grid[v:v+1])   # (1,dec_in,80,80) fp32
             hm = torch.sigmoid(self.decoder(back))              # (1,K,80,80)
             hms.append(hm[0])
-            kp_grid = soft_argmax_2d(hm)[0]                     # (K,2) grid px
-            kpts.append(kp_grid / s)                            # -> native px (divide by scale)
+            with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
+                kp_grid = soft_argmax_2d(hm.float())[0]         # (K,2) grid px, fp32
+            kpts.append(kp_grid / s)                            # -> native px
         kpts2d = torch.stack(kpts, 0)                           # (V,K,2) native px
         heatmaps = torch.stack(hms, 0)                          # (V,K,80,80)
-        # triangulate each kpt across views (native-res P)
-        tri = sii_triangulate if self.use_sii else (lambda uv, P: weighted_dlt(uv, torch.ones(uv.shape[0], device=uv.device), P))
-        X = torch.stack([tri(kpts2d[:, k, :], P_native) for k in range(self.n_kpts)], 0)  # (K,3)
+        # triangulate each kpt across views (native-res P), fp32
+        with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
+            tri = sii_triangulate if self.use_sii else (
+                lambda uv, P: weighted_dlt(uv, torch.ones(uv.shape[0], device=uv.device), P))
+            X = torch.stack([tri(kpts2d[:, k, :].float(), P_native.float())
+                             for k in range(self.n_kpts)], 0)  # (K,3)
         return {'kpts2d': kpts2d, 'X3d': X, 'heatmaps': heatmaps}

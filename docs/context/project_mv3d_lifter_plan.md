@@ -3,7 +3,32 @@
 Status as of 2026-07-24 (end of a long session). NOT yet built. Downloads started; key
 datasets + weights gated behind logins to unlock Monday.
 
-## ⚠ 2026-07-27 (later): PORT BUILT + FIRST DELTA RESULT — stage-2 finetune OVERFITS (as predicted)
+## ✅ 2026-07-27 (evening): SYNBODY PRETRAIN WORKS — the idea is validated
+Built the full SynBody pretraining pipeline + YOLO-recipe training core; ran it autonomously.
+DATA: SynBody HumanNeRF img.zip (44.7GB) downloaded+extracted; SMPL-X params->joints cached ONCE
+(scripts/cache_synbody_gt.py, SMPL-X model from iMOVE tree) -> cache/synbody_gt/*.npz = 100 seqs x
+300 frames x 8 synced cams, joints+P in ONE world frame (synthetic) -> plain MPJPE valid (verified
+pelvis projects dead-centre all 8 cams; 2D-teacher in-frame frac 1.00).
+TRAINING (cup_task/mv3d/train_core.py = ultralytics BaseTrainer recipe COPIED: AMP GradScaler,
+accumulate-to-nbs, warmup np.interp, cosine one_cycle, YOLO's ModelEMA, wd scaling) + random 3-6
+view sampling (dataset_synbody.py) + CanonicalFusionCDR (CSPDarknet encoder). scripts/pretrain_synbody.py.
+RESULT: **held-out MPJPE 649 -> 350 -> 274 -> 187 -> 167 -> 153 -> 154 mm over 10 epochs, MONOTONIC,
+NO OVERFIT** (~43min, 90 train / 10 held-out seqs). EMA ckpt models/cdrnet_synbody_pretrained.pt (52MB).
+=> the CSPDarknet-encoder canonical-fusion model genuinely learns view-invariant 3D lifting. THE IDEA WORKS.
+
+TRANSFER TO DELTA: pretrained backbone **ZERO-SHOT on the DELTA rig (never seen it) = 179.9mm** held-out
+wrist-displacement — already BETTER than the from-scratch DELTA model's overfit 221mm. View-invariance
+transfers (random-view pretraining -> our 5-cam rig is "just another subset", as planned).
+DELTA FINETUNE: full-backbone finetune REGRESSED (179.9->219.6 epoch0) = overfits 4 trials, destroys
+pretrained features (the "freeze most for finetune" warning — confirmed). Also fp32-slow (AMP nan's the
+geometry path). => switched to FROZEN-backbone finetune (train fusion+decoder only, stride-4 loader,
+scripts/finetune_cdrnet_delta.py --freeze_backbone) — running. Whichever wins, the model to KEEP may
+well be the zero-shot pretrained one (179.9) or the frozen-finetune; NOT the full-backbone finetune.
+GOTCHAS fixed: EMA deepcopy vs forward-hooks (backbone.__deepcopy__ re-registers on the copy);
+AMP fp16 nan's pinv/DLT/soft-argmax (geometry forced fp32; finetune AMP-off); YOLO nan for undetected
+kpts (mask + nan_to_num, nan*0=nan); loss = per-kpt px-distance not squared-sum.
+
+## ⚠ 2026-07-27 (afternoon): PORT BUILT + FIRST DELTA RESULT — stage-2 finetune OVERFITS (as predicted)
 Full CDRNet-on-CSPDarknet port built & runs end-to-end (branch feat/cdrnet-cspdarknet-lifter,
 package cup_task/mv3d/: dlt, ftl, backbone, cdrnet, data_delta, dataset; scripts/train_cdrnet_delta.py
 + extract_delta_frames.py). Smoke run (P07 trials 10-13 train, 14-15 HELD-OUT, 2D-distill from YOLO):

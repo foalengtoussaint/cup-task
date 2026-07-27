@@ -21,11 +21,21 @@ torch.manual_seed(0); np.random.seed(0)
 CKPT = '/home/imove/Documents/cup-task/models/cdrnet_synbody_pretrained.pt'
 
 
-def mpjpe_eval(model, seqs, n_seq=10, per_seq=20, min_v=3, max_v=6):
-    """Mean Per-Joint Position Error (mm) on held-out seqs. In-frame GT -> direct ||X_pred - X_gt||.
-    Also reports a fixed-view (all-8) variant to separate view-sampling noise from lifter error."""
+# 17-joint slot names (matches SynBody kpt_idx order in cache_synbody_gt.py)
+JOINT_NAMES = ['head0', 'head1', 'head2', 'head3', 'head4', 'l_sho', 'r_sho', 'l_elb', 'r_elb',
+               'l_wri', 'r_wri', 'l_hip', 'r_hip', 'l_knee', 'r_knee', 'l_ank', 'r_ank']
+WRIST_J = 9   # l_wri = the joint we care about
+GROUPS = {'head': [0, 1, 2, 3, 4], 'shoulders': [5, 6], 'elbows': [7, 8], 'wrists': [9, 10],
+          'hips': [11, 12], 'knees': [13, 14], 'ankles': [15, 16]}
+
+
+def mpjpe_eval(model, seqs, n_seq=10, per_seq=20, min_v=3, max_v=6, verbose=False):
+    """Full per-joint MPJPE (mm) on held-out seqs. In-frame GT -> direct ||X_pred - X_gt||.
+    Returns the 17-joint MEAN (scalar) for the training-curve print; if verbose, also LOGS the
+    full breakdown: per-joint, per-group, and the wrist specifically. IN-PROCESS (no separate
+    GPU-contending eval script — that caused OOM garbage)."""
     ds = SynBodyViews(seqs[:n_seq], min_v=min_v, max_v=max_v, frame_stride=15)
-    model.eval(); errs = []
+    model.eval(); E = []                                    # per-sample (17,) mm errors
     with torch.no_grad():
         idxs = np.random.choice(len(ds), min(per_seq * n_seq, len(ds)), replace=False)
         for i in idxs:
@@ -33,10 +43,21 @@ def mpjpe_eval(model, seqs, n_seq=10, per_seq=20, min_v=3, max_v=6):
             if s is None:
                 continue
             out = model(s['imgs'].to(dev), s['P_native'].to(dev))
-            e = (out["X3d"] - s["X_gt"].to(dev)).norm(dim=-1) * 1000.0   # meters -> mm
-            errs.append(e.mean().item())
+            e = (out["X3d"] - s["X_gt"].to(dev)).norm(dim=-1) * 1000.0   # (17,) mm
+            E.append(e.cpu().numpy())
     model.train()
-    return float(np.mean(errs)) if errs else float('nan')
+    if not E:
+        return float('nan')
+    E = np.stack(E)                                        # (N,17)
+    per_joint = np.median(E, axis=0)                       # median per joint (robust)
+    if verbose:
+        print('    per-joint MPJPE (mm, median): ' +
+              '  '.join(f'{JOINT_NAMES[j]} {per_joint[j]:.0f}' for j in range(17)), flush=True)
+        print('    per-group: ' +
+              '  '.join(f'{g} {np.median(E[:, js]):.0f}' for g, js in GROUPS.items()), flush=True)
+        print(f'    >> WRIST(l_wri) {per_joint[WRIST_J]:.0f}mm | mean17 {E.mean():.0f} | '
+              f'median17 {np.median(per_joint):.0f}mm', flush=True)
+    return float(E.mean())
 
 
 def main(epochs, batch, workers, frame_stride, lr0):
@@ -51,15 +72,18 @@ def main(epochs, batch, workers, frame_stride, lr0):
     print(f'MPJPE @ init (untrained): {mpjpe_eval(model, val_seqs):.0f} mm', flush=True)
 
     def on_epoch(ep, ema_model):
+        os.makedirs(os.path.dirname(CKPT), exist_ok=True)
+        torch.save({'model': ema_model.state_dict()}, CKPT.replace('.pt', f'_ep{ep}.pt'))
         if ep % 2 == 0 or ep == epochs - 1:
-            m = mpjpe_eval(ema_model.to(dev), val_seqs)
-            print(f'    >> epoch {ep}: HELD-OUT MPJPE {m:.0f} mm (EMA)', flush=True)
+            print(f'    >> epoch {ep} EVAL (EMA):', flush=True)
+            mpjpe_eval(ema_model.to(dev), val_seqs, verbose=True)   # full per-joint + group + wrist
 
     t0 = time.time()
     ema = train_loop(model, loader, distill_loss_fn(dev, amp=True), epochs=epochs, dev=dev,
                      lr0=lr0, lrf=0.01, nbs=64, batch=batch, warmup_epochs=1.0, amp=True,
                      use_ema=True, optimizer='AdamW', on_epoch=on_epoch)
-    print(f'\npretrain done in {time.time()-t0:.0f}s. Final HELD-OUT MPJPE {mpjpe_eval(ema.to(dev), val_seqs):.0f} mm', flush=True)
+    print(f'\npretrain done in {time.time()-t0:.0f}s. FINAL EVAL (EMA):', flush=True)
+    mpjpe_eval(ema.to(dev), val_seqs, verbose=True)             # full per-joint breakdown
     os.makedirs(os.path.dirname(CKPT), exist_ok=True)
     torch.save({'model': ema.state_dict()}, CKPT)
     print(f'saved EMA weights -> {CKPT}', flush=True)

@@ -63,7 +63,10 @@ def eval_trials(model, trials, D, apex_speed=150.0):
                 r = wrist3d(model, t, f)
                 if r is None or r[1]['omc_wrist'] is None:
                     continue
-                fs.append(f); Xs.append(r[2].cpu().numpy()); Os.append(r[1]['omc_wrist'].numpy())
+                X = r[2].cpu().numpy()
+                if not np.isfinite(X).all():           # untrained decoder -> degenerate DLT; skip
+                    continue
+                fs.append(f); Xs.append(X); Os.append(r[1]['omc_wrist'].numpy())
             if len(fs) < 8:
                 continue
             Xs, Os = np.array(Xs), np.array(Os)

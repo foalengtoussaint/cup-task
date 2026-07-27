@@ -10,7 +10,7 @@ Only cameras with a cached pose.json are used (cam_7/cam_9 have none). V varies 
 Reuses the proven loaders: compare_pose_omc_delta (H) for dets+DELTA paths, results_v3_delta (R)
 for calib, AutoMQ pkl for filtered OMC truth. COCO-17 keypoint order (YOLO).
 """
-import sys, json
+import sys, json, os
 sys.path.insert(0, '/home/imove/Documents/cup-task/scripts')
 sys.path.insert(0, '/home/imove/Documents/cup-task')
 import numpy as np, cv2, torch
@@ -57,6 +57,13 @@ class DeltaTrial:
         self.size = {c: self.calib[c].size for c in self.cams}      # (W,H) native
         self.n = min(len(v) for v in self.KP.values())
         self._caps = {}
+        # pre-extracted flat frame cache (fast path); memmap per cam if present
+        self._frames = {}
+        fdir = f'{H.DELTA}/_frames640'
+        for c in self.cams:
+            fp = f'{fdir}/{part}_{trial}_{c}.npy'
+            if os.path.exists(fp):
+                self._frames[c] = np.load(fp, mmap_mode='r')     # (n,640,640,3) uint8, lazy
         # OMC wrist truth (eval only), frame-aligned via speed lag
         self.omc = None
         if amq is not None:
@@ -93,12 +100,15 @@ class DeltaTrial:
             w = self.KP[c][f, WRIST_IDX]
             if not (np.isfinite(w[0]) and w[2] > conf):
                 continue
-            cap = self._cap(c); cap.set(cv2.CAP_PROP_POS_FRAMES, f); ok, im = cap.read()
-            if not ok:
-                continue
-            W, Hh = self.size[c]
-            r = cv2.resize(im, (IMSZ, IMSZ))
-            t = torch.from_numpy(cv2.cvtColor(r, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.
+            if c in self._frames and f < len(self._frames[c]):      # FAST: pre-extracted frame
+                rgb = np.asarray(self._frames[c][f])                 # (640,640,3) uint8 RGB
+                t = torch.from_numpy(rgb.copy()).permute(2, 0, 1).float() / 255.
+            else:                                                    # fallback: live decode
+                cap = self._cap(c); cap.set(cv2.CAP_PROP_POS_FRAMES, f); ok, im = cap.read()
+                if not ok:
+                    continue
+                r = cv2.resize(im, (IMSZ, IMSZ))
+                t = torch.from_numpy(cv2.cvtColor(r, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.
             cams_used.append(c); imgs.append(t)
             Ps.append(torch.tensor(self.P[c], dtype=torch.float32))
             kp2d.append(torch.tensor(self.KP[c][f, :, :2], dtype=torch.float32))   # (17,2) native px

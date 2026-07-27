@@ -47,9 +47,11 @@ def main(pretrained, epochs, batch, workers, lr0):
             vm, vg, vn = DELTA.eval_trials(ema_model.to(dev), VAL, D)
             print(f'    >> epoch {ep}: HELDOUT disp {vm:.1f}mm apex GF {vg:.2f} (n{vn})', flush=True)
 
+    # AMP OFF for the DELTA finetune: fp16 corrupts the fragile geometry/heatmap path -> nan loss
+    # (verified: AMP nan vs AMP-off finite 495). Only 6 trials (~15min) so fp32 speed cost is moot.
     t0 = time.time()
-    ema = train_loop(model, loader, distill_loss_fn(dev, amp=True), epochs=epochs, dev=dev,
-                     lr0=lr0, lrf=0.01, nbs=64, batch=batch, warmup_epochs=1.0, amp=True,
+    ema = train_loop(model, loader, distill_loss_fn(dev, amp=False), epochs=epochs, dev=dev,
+                     lr0=lr0, lrf=0.01, nbs=64, batch=batch, warmup_epochs=1.0, amp=False,
                      use_ema=True, optimizer='AdamW', on_epoch=on_epoch)
     vm, vg, vn = DELTA.eval_trials(ema.to(dev), VAL, D)
     print(f'\nFINETUNE done in {time.time()-t0:.0f}s. FINAL HELDOUT disp {vm:.1f}mm | apex GF {vg:.2f}', flush=True)

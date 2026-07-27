@@ -45,9 +45,11 @@ def distill_loss_fn(dev, amp=True, conf_th=0.3):
                 vis = torch.isfinite(tgt).all(-1) & torch.isfinite(conf) & (conf > conf_th)
                 if not vis.any():
                     continue
-                w = (torch.nan_to_num(conf).clamp(0, 1) * vis.float())[..., None]
-                se = (out['kpts2d'] - torch.nan_to_num(tgt)) ** 2
-                loss = (w * se).sum() / w.sum().clamp(min=1e-6)
+                w = (torch.nan_to_num(conf).clamp(0, 1) * vis.float())                # (V,17)
+                # per-kpt Euclidean px distance (NOT squared-sum): keeps loss O(10-100) so AMP's
+                # fp16 doesn't overflow (squared native-px MSE was ~3e5 -> GradScaler inf -> nan).
+                dist = (out['kpts2d'] - torch.nan_to_num(tgt)).norm(dim=-1)            # (V,17) px
+                loss = (w * dist).sum() / w.sum().clamp(min=1e-6)
             if not torch.isfinite(loss):
                 continue
             scaler.scale(loss / max(len(group), 1)).backward()      # per-view graph freed here

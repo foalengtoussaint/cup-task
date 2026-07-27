@@ -41,7 +41,7 @@ def main(pretrained, epochs, batch, workers, lr0, freeze_backbone=False,
     model.set_trainable_backbone(not freeze_backbone)
     print(f'backbone {"FROZEN (fusion+decoder only)" if freeze_backbone else "trainable"}', flush=True)
 
-    _, loader = make_loader(TRAIN, amq=amq, batch=batch, workers=workers, shuffle=True)
+    _, loader = make_loader(TRAIN, amq=amq, batch=batch, workers=workers, shuffle=True, frame_stride=4)
     print(f'{len(loader.dataset)} DELTA train frames', flush=True)
 
     m0, g0, _ = DELTA.eval_trials(model, VAL, D)

@@ -20,7 +20,7 @@ class DeltaFrames(Dataset):
     Frames come from the memmapped pre-extracted cache (fast, worker-safe: each worker opens its own
     memmap on first access). Returns cpu tensors; the train loop moves to GPU.
     """
-    def __init__(self, trials, part='P07', amq=None, min_cams=3):
+    def __init__(self, trials, part='P07', amq=None, min_cams=3, frame_stride=1):
         self.part = part
         self.amq = amq if amq is not None else load_amq()
         self._trials = {}          # name -> DeltaTrial (lazy per worker)
@@ -28,7 +28,7 @@ class DeltaFrames(Dataset):
         self.index = []            # [(name, tn, frame), ...]
         for name, tn in trials:
             t = DeltaTrial(part, name, tn, self.amq)
-            for f in t.valid_frames(min_cams=min_cams):
+            for f in t.valid_frames(min_cams=min_cams)[::frame_stride]:   # subsample for fast finetune
                 self.index.append((name, tn, f))
             self._trials[name] = t
 
@@ -55,8 +55,9 @@ def collate_group(batch):
     return [b for b in batch if b is not None]
 
 
-def make_loader(trials, part='P07', amq=None, batch=8, workers=4, shuffle=True, min_cams=3):
-    ds = DeltaFrames(trials, part, amq, min_cams)
+def make_loader(trials, part='P07', amq=None, batch=8, workers=4, shuffle=True, min_cams=3,
+                frame_stride=1):
+    ds = DeltaFrames(trials, part, amq, min_cams, frame_stride)
     dl = DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=workers,
                     pin_memory=True, collate_fn=collate_group, persistent_workers=workers > 0,
                     drop_last=False)

@@ -3,6 +3,34 @@
 Status as of 2026-07-24 (end of a long session). NOT yet built. Downloads started; key
 datasets + weights gated behind logins to unlock Monday.
 
+## ⚠ 2026-07-27: THE ACTUAL CDRNet ALGORITHM (read the reference before building)
+Earlier notes/scripts here did a per-view feature-sample + refine-offset head — that is NOT CDRNet.
+Read the reference clone (scratchpad/CDRnet/model_define.py + train_and_test.py). Real CDRNet =
+**Canonical Fusion, single forward pass** (NO iterative reproject→sample→correct loop):
+  per view: encoder → 1x1 conv to 300ch
+  → **FTL_inv**: reshape feats to (...,3,1), multiply by P⁺ (pseudo-inverse of the 3x4 P) → lift
+    each view into a shared CANONICAL 3D-consistent latent (this is the "camera disentanglement")
+  → **concat all views + 1x1 convs** (this is where multi-view fusion happens, in canonical space)
+  → **FTL**: multiply fused canonical feats by each view's P → project back to each view
+  → decoder (transpose-convs) → per-view HEATMAPS → **center-of-mass soft-argmax** → 2D kpts/view
+  → **SII** (Shifted Inverse Iterations = their differentiable DLT: B=AᵀA−αI, iterate solve(B,X);
+    X/=|X|, ~2 iters) → 3D.
+GEOMETRY IS IN THE FTL/FTL_inv FEATURE TRANSFORM, not a refine head. P is rescaled to the
+heatmap/feature-map resolution first (resize_mat, train_and_test.py L106-118); P⁺ = linalg.pinv.
+
+**HOW IT TRAINS (critical):** loss = **MSE on per-view 2D only** (`["mse"×4, _dummy_loss]`);
+the 3D/DLT output is trained with **_dummy_loss = 0*y_pred → DLT NOT backpropagated**. Author:
+turning on _DLT_loss = "massive instability, network fails training", adds "only a little bit",
+their released model did NOT use it (matches our own 1e8-blowup finding). => 2D is the primary
+objective; 3D is the geometric consequence at inference. Optional tiny _DLT_loss only at the very end.
+
+CONSEQUENCES for our port (CSPDarknet swaps in for ResNet152 as the per-view encoder):
+  * 2D supervision = DISTILL YOLO Pose26 2D (chosen) — exactly matches CDRNet's 2D-MSE training.
+  * do NOT make the reproj/3D term primary — off or tiny at first (CDRNet doesn't backprop DLT).
+  * port FTL_inv/FTL canonical fusion faithfully (with P rescaled to feature-map res), + SII DLT.
+  * keep our Hartley-normalized SVD DLT (dlt.py) as the STABLE inference/fallback triangulator.
+Branch: feat/cdrnet-cspdarknet-lifter. Package: cup_task/mv3d/ (dlt.py done: SVD + SII + reproj).
+
 ## The idea (user's, refined)
 Make YOLO's **CSPDarknet neck** output features that are *useful for 3D multi-view
 triangulation*, not just 2D detection. Pipeline:

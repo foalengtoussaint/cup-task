@@ -8,6 +8,20 @@
 > so the 154mm MPJPE was ~legit; the bug bit only at DELTA transfer.** FIXED (triangulate in grid
 > space); ALL weights below were trained against the bug → being re-pretrained.
 >
+> ⚠⚠ **2026-07-27 FINAL root cause (after the fixed rerun): it's a synthetic→real DOMAIN GAP, not
+> the geometry bug.** Re-pretrained with fixed geometry (SynBody MPJPE 649→141, unchanged — confirming
+> the bug barely touched square-1024 SynBody). But fixed-geometry DELTA transfer is WORSE/near-frozen:
+> pred wrist motion range **14mm** (OMC 276mm), velocity-corr 0.08, slope 0.02. DIRECT CHECK: the
+> model's 2D wrist decoder on DELTA barely moves (cam_1 X-std **6px**, Y-std 2px) while YOLO's real 2D
+> wrist moves 77–103px std. => **the SynBody-trained heatmap decoder does not fire on real DELTA
+> photographs** (it emits a near-constant prior location). The earlier "moves with the wrist" was the
+> triangulation BUG scrambling that constant 2D into apparent 3D motion — NOT transfer. Fixing the bug
+> removed the illusion and exposed the real wall. So: SynBody pretraining works (decoder fires on
+> SYNTHETIC images, 33–104px); the SYNTHETIC→REAL gap is what breaks DELTA — not data size, not geometry.
+> NEXT: either (a) bypass the learned decoder — feed YOLO's own Pose26 2D into the canonical-fusion/DLT
+> (tests if the FUSION adds anything over plain DLT), or (b) train the decoder on real images (needs
+> real 2D labels / more DELTA). Corrected twice — trust this block over the older ones below.
+
 > On the "0.89 correlation" of the broken DELTA track: the prediction MOVED IN SPACE WITH THE WRIST
 > (Y-corr +0.74, rises/falls with the reach) **through a triangulation that was geometrically broken
 > by 2734mm**. A model that learned nothing would give noise/a fixed point under a broken transform;

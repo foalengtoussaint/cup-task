@@ -55,17 +55,26 @@ class FTL(nn.Module):
         return out.reshape(N, H, W, g * 3).permute(0, 3, 1, 2).contiguous()
 
 
-def soft_argmax_2d(heatmaps: torch.Tensor) -> torch.Tensor:
-    """Center-of-mass keypoint from heatmaps, CDRNet-style (_calculate_heatmap_keypoints).
+def soft_argmax_2d(heatmaps: torch.Tensor, mode: str = 'com', beta: float = 1.0) -> torch.Tensor:
+    """Differentiable 2D keypoint from heatmaps -> (N,K,2) (x,y) in feature-grid pixel coords (0-based).
 
-    heatmaps (N,K,H,W) with non-negative weights -> (N,K,2) (x,y) in feature-grid pixel coords.
-    Uses a 1..H linspace and subtracts 1 to match the reference's 0-based convention.
+    mode='softmax' (default, ROBUST): spatial softmax expectation. Bounded by construction, never
+      divides by a near-zero sum, so a degenerate/near-flat heatmap (untrained decoder) gives a sane
+      centre coord instead of nan/inf. This is the standard integral/soft-argmax.
+    mode='com'   : CDRNet's raw center-of-mass (kept for faithfulness; needs non-neg heatmaps and a
+      non-trivial mass, else unstable).
     """
     N, K, H, W = heatmaps.shape
-    eps = 1e-9
-    tot = heatmaps.sum(dim=(-2, -1)) + eps                # (N,K)
-    ys = torch.arange(1, H + 1, dtype=heatmaps.dtype, device=heatmaps.device)
-    xs = torch.arange(1, W + 1, dtype=heatmaps.dtype, device=heatmaps.device)
-    h_y = (ys[None, None, :] * heatmaps.sum(-1)).sum(-1) / tot   # (N,K)
-    h_x = (xs[None, None, :] * heatmaps.sum(-2)).sum(-1) / tot
-    return torch.stack([h_x - 1, h_y - 1], dim=-1)
+    xs = torch.arange(W, dtype=heatmaps.dtype, device=heatmaps.device)
+    ys = torch.arange(H, dtype=heatmaps.dtype, device=heatmaps.device)
+    if mode == 'com':
+        eps = 1e-6
+        tot = heatmaps.sum(dim=(-2, -1)).clamp(min=eps)
+        h_y = ((ys + 1)[None, None, :] * heatmaps.sum(-1)).sum(-1) / tot - 1
+        h_x = ((xs + 1)[None, None, :] * heatmaps.sum(-2)).sum(-1) / tot - 1
+        return torch.stack([h_x, h_y], dim=-1)
+    # softmax expectation over the (H,W) grid
+    p = torch.softmax((beta * heatmaps).reshape(N, K, H * W), dim=-1).reshape(N, K, H, W)
+    h_x = (xs[None, None, :] * p.sum(-2)).sum(-1)
+    h_y = (ys[None, None, :] * p.sum(-1)).sum(-1)
+    return torch.stack([h_x, h_y], dim=-1)

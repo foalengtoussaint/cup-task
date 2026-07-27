@@ -21,6 +21,7 @@ import numpy as np, torch, torch.nn.functional as F
 from cup_task.mv3d.cdrnet import CanonicalFusionCDR
 from cup_task.mv3d.data_delta import DeltaTrial, load_amq, WRIST_IDX, COCO17
 from cup_task.mv3d.dlt import reproj_residual
+from cup_task.mv3d.dataset import make_loader
 
 dev = 'cuda' if torch.cuda.is_available() else 'cpu'
 torch.manual_seed(0); np.random.seed(0)
@@ -52,14 +53,20 @@ def wrist3d(model, t, f):
     return out, s, Xw, rp
 
 
-def eval_trials(model, trials, D, apex_speed=150.0):
-    """Frame-invariant: |disp-from-start| vs OMC. Returns (median_mm, apex_good_frac, n)."""
+def eval_trials(model, trials, D, apex_speed=150.0, stride=5):
+    """Frame-invariant: |disp-from-start| vs OMC. Returns (median_mm, apex_good_frac, n).
+
+    stride: subsample every Nth valid frame. One model forward is ~160ms, so a full 1055-frame
+    eval is ~3min — far too heavy to run every few steps. stride=5 -> ~35s and still representative.
+    """
     model.eval()
+    if dev == 'cuda':
+        torch.cuda.empty_cache()          # release stage-2 training fragmentation before eval
     rows = []
     with torch.no_grad():
         for name, tn in trials:
             t = D[name]; fs, Xs, Os = [], [], []
-            for f in t.vf:
+            for f in t.vf[::stride]:
                 r = wrist3d(model, t, f)
                 if r is None or r[1]['omc_wrist'] is None:
                     continue
@@ -86,44 +93,88 @@ def eval_trials(model, trials, D, apex_speed=150.0):
     return np.nanmean(a[:, 0]), np.nanmean(a[:, 1]), int(a[:, 2].sum())
 
 
-def train(full=False):
-    D = build()
+def train(full=False, workers=4, batch=8):
+    amq = load_amq()
+    D = build()                                            # for eval (holds trials + OMC)
     model = CanonicalFusionCDR(n_kpts=17).to(dev)
-    tr_frames = [(n, f) for n, _ in TRAIN for f in D[n].vf]
-    print(f'{len(tr_frames)} train frames', flush=True)
+    # YOLO-style workered dataloader: CPU workers load frames in parallel while GPU trains
+    _, loader = make_loader(TRAIN, amq=amq, batch=batch, workers=workers, shuffle=True)
+    print(f'{len(loader.dataset)} train frames, batch {batch}, {workers} workers', flush=True)
 
-    def run_stage(name, unfreeze, steps, lr):
+    def step_on_group(group, opt, params):
+        """One optimizer step over a batch of grouped multi-view samples (variable cams each).
+
+        GRAD ACCUMULATION: backward per group (frees that group's graph immediately) then step once.
+        Holding all groups' graphs before one backward OOMs when the backbone is unfrozen (8 x 5-view
+        graphs on an 8GB card). Accumulating keeps peak memory at ~one group's forward.
+        """
+        opt.zero_grad()
+        n_used, tot = 0, 0.0
+        for s in group:
+            imgs = s['imgs'].to(dev, non_blocking=True); P = s['P_native'].to(dev, non_blocking=True)
+            out = model(imgs, P)
+            tgt = s['kp2d_tgt'].to(dev); conf = s['kp_conf'].to(dev)
+            # MASK invisible keypoints (YOLO emits nan for undetected joints). nan_to_num BEFORE the
+            # weight multiply — nan*0 = nan would poison the loss even after masking.
+            vis = torch.isfinite(tgt).all(-1) & torch.isfinite(conf) & (conf > 0.3)
+            if not vis.any():
+                continue
+            w = (torch.nan_to_num(conf).clamp(0, 1) * vis.float())[..., None]
+            se = (out['kpts2d'] - torch.nan_to_num(tgt)) ** 2
+            loss = (w * se).sum() / w.sum().clamp(min=1e-6)
+            (loss / max(len(group), 1)).backward()                    # accumulate; graph freed here
+            n_used += 1; tot += loss.item()
+        if n_used == 0:
+            return float('nan')
+        torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step()
+        return tot / n_used
+
+    def run_stage(name, unfreeze, steps, lr, eval_every=0):
+        """2D-loss printed each step (cheap); heavy OMC eval only at start/end (+eval_every)."""
         model.set_trainable_backbone(unfreeze)
         params = [p for p in model.parameters() if p.requires_grad]
         opt = torch.optim.Adam(params, lr)
         print(f'\n=== {name} ({sum(p.numel() for p in params)/1e6:.1f}M trainable) ===', flush=True)
         m0, g0, _ = eval_trials(model, VAL, D)
-        print(f'  eval@start: HELDOUT disp-err {m0:.1f}mm | apex good-frac {g0:.2f}', flush=True)
-        for step in range(steps):
-            n, f = tr_frames[np.random.randint(len(tr_frames))]
-            r = wrist3d(model, D[n], f)
-            if r is None:
-                continue
-            out, s = r[0], r[1]
-            # PRIMARY: per-view 2D MSE vs YOLO (distill), confidence-weighted
-            w = s['kp_conf'][..., None].clamp(0, 1)
-            loss = (w * (out['kpts2d'] - s['kp2d_tgt']) ** 2).mean()
-            opt.zero_grad(); loss.backward()
-            torch.nn.utils.clip_grad_norm_(params, 1.0); opt.step()
-            if step % max(1, steps // 6) == 0 or step == steps - 1:
-                vm, vg, vn = eval_trials(model, VAL, D)
-                tm, tg, _ = eval_trials(model, TRAIN, D)
-                print(f'  step{step:4d} 2Dloss {loss.item():7.1f} | HELDOUT disp {vm:6.1f}mm '
-                      f'apexGF {vg:.2f} (n{vn}) || TRAIN disp {tm:6.1f}mm', flush=True)
+        print(f'  eval@start: HELDOUT disp {m0:.1f}mm | apex GF {g0:.2f}', flush=True)
+        run_loss = None; step = 0
+        while step < steps:
+            for group in loader:
+                if not group:
+                    continue
+                l = step_on_group(group, opt, params)
+                run_loss = l if run_loss is None else 0.9 * run_loss + 0.1 * l
+                print(f'  step{step:4d} 2Dloss {l:8.1f} (ema {run_loss:8.1f})', flush=True)
+                if eval_every and step and step % eval_every == 0:
+                    vm, vg, vn = eval_trials(model, VAL, D)
+                    print(f'    -> eval HELDOUT disp {vm:.1f}mm apex GF {vg:.2f} (n{vn})', flush=True)
+                step += 1
+                if step >= steps:
+                    break
+        try:
+            vm, vg, vn = eval_trials(model, VAL, D)
+            print(f'  eval@END: HELDOUT disp {vm:.1f}mm | apex GF {vg:.2f} (n{vn})', flush=True)
+        except Exception as e:
+            import traceback
+            print(f'  eval@END FAILED: {type(e).__name__}: {e}', flush=True); traceback.print_exc()
 
     t0 = time.time()
-    run_stage('STAGE 1 frozen backbone', False, 60 if full else 12, 5e-4)
-    run_stage('STAGE 2 UNFROZEN CSPDarknet', True, 40 if full else 8, 1e-4)
+    run_stage('STAGE 1 frozen backbone', False, 200 if full else 40, 5e-4,
+              eval_every=100 if full else 0)
+    run_stage('STAGE 2 UNFROZEN CSPDarknet', True, 120 if full else 24, 1e-4,
+              eval_every=60 if full else 0)
     print(f'\ndone in {time.time()-t0:.0f}s. Success = HELDOUT apex good-frac UP (esp. stage 2)', flush=True)
     for n, _ in TRIALS:
         D[n].release()
 
 
 if __name__ == '__main__':
-    ap = argparse.ArgumentParser(); ap.add_argument('--full', action='store_true')
-    train(ap.parse_args().full)
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--full', action='store_true')
+    ap.add_argument('--workers', type=int, default=4)
+    a = ap.parse_args()
+    import traceback
+    try:
+        train(a.full, workers=a.workers)
+    except Exception as e:
+        print(f'\nTRAIN CRASHED: {type(e).__name__}: {e}', flush=True); traceback.print_exc()

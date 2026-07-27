@@ -32,7 +32,7 @@ def mpjpe_eval(model, seqs, n_seq=10, per_seq=20, min_v=3, max_v=6):
             s = ds[i]
             if s is None:
                 continue
-            out = model(s['imgs'].to(dev), s['P_native'].to(dev))
+            out = model(s['imgs'].to(dev), s['P_native'].to(dev), native_size=s['native_size'].to(dev))
             e = (out["X3d"] - s["X_gt"].to(dev)).norm(dim=-1) * 1000.0   # meters -> mm
             errs.append(e.mean().item())
     model.train()

@@ -115,9 +115,11 @@ class DeltaTrial:
             kpc.append(torch.tensor(self.KP[c][f, :, 2], dtype=torch.float32))     # (17,)
         if len(cams_used) < 3:
             return None
+        nsz = torch.tensor([list(self.size[c]) for c in cams_used], dtype=torch.float32)  # (V,2) W,H native
         return {
             'imgs': torch.stack(imgs).to(device),
             'P_native': torch.stack(Ps).to(device),
+            'native_size': nsz.to(device),
             'kp2d_tgt': torch.stack(kp2d).to(device),
             'kp_conf': torch.stack(kpc).to(device),
             'cams': cams_used,

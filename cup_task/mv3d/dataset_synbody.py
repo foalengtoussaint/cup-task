@@ -63,9 +63,11 @@ class SynBodyViews(Dataset):
             kp2d.append(torch.from_numpy(uv.astype(np.float32)))
         if len(imgs) < self.min_v:
             return None
+        W, H = int(g['img_size'][0]), int(g['img_size'][1])
         return {
             'imgs': torch.stack(imgs),
             'P_native': torch.stack(Ps),
+            'native_size': torch.tensor([[W, H]] * len(imgs), dtype=torch.float32),  # (V,2)
             'kp2d_tgt': torch.stack(kp2d),                # (V,17,2) exact projected GT
             'kp_conf': torch.ones(len(imgs), 17),         # synthetic -> all visible, conf 1
             'X_gt': torch.from_numpy(J),                  # (17,3) in-frame 3D truth for MPJPE

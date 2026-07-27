@@ -17,7 +17,7 @@ import numpy as np, cv2, torch
 import pandas as pd
 import compare_pose_omc_delta as H
 import results_v3_delta as R
-from cup_task.mv3d.imgproc import prep_view
+from cup_task.mv3d.imgproc import prep_view, prep_view_cached
 H.use_good_cams()
 
 COCO17 = ['nose','left_eye','right_eye','left_ear','right_ear','left_shoulder','right_shoulder',
@@ -62,7 +62,7 @@ class DeltaTrial:
         # so the shared letterbox in prep_view is applied consistently at load time. (The old squashed
         # _frames640 cache is incompatible with letterboxing and no longer used.)
         self._frames = {}
-        fdir = f'{H.DELTA}/_frames_native'
+        fdir = f'{H.DELTA}/_frames_lb640'
         for c in self.cams:
             fp = f'{fdir}/{part}_{trial}_{c}.npy'
             if os.path.exists(fp):
@@ -111,11 +111,17 @@ class DeltaTrial:
             w = self.KP[c][f, WRIST_IDX]
             if not (np.isfinite(w[0]) and w[2] > conf):
                 continue
-            im = self._native_frame(c, f)                            # native BGR (H,W,3)
-            if im is None:
-                continue
             kp_nat = self.KP[c][f, :, :2]                            # (17,2) native px (nan where undet)
-            t, P_in, kp_in = prep_view(im, self.P[c], IMSZ, kp_native=np.nan_to_num(kp_nat), augment=augment)
+            if c in self._frames and f < len(self._frames[c]):       # FAST: cached letterboxed 640 BGR
+                canvas = np.asarray(self._frames[c][f])
+                t, P_in, kp_in = prep_view_cached(canvas, self.size[c], self.P[c], IMSZ,
+                                                  kp_native=np.nan_to_num(kp_nat), augment=augment)
+            else:                                                    # fallback: live-decode native
+                im = self._native_frame(c, f)
+                if im is None:
+                    continue
+                t, P_in, kp_in = prep_view(im, self.P[c], IMSZ,
+                                           kp_native=np.nan_to_num(kp_nat), augment=augment)
             # restore nan on originally-undetected kpts (prep_view nan_to_num'd them for the affine)
             bad = ~np.isfinite(kp_nat).all(-1)
             kp_in[bad] = float('nan')

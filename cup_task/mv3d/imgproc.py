@@ -97,6 +97,23 @@ def random_erase(img, p=ERASE_P, sl=0.02, sh=0.1):
     return img
 
 
+def prep_view_cached(canvas_bgr, native_wh, P_native, imgsz, kp_native=None, augment=False):
+    """Fast path: `canvas_bgr` is an ALREADY-letterboxed 640 BGR frame (from the cache) and native_wh
+    is (W,H) of the ORIGINAL frame. Letterbox params are deterministic from native_wh, so we recompute
+    (r,dw,dh) and transform P/2D identically — no native pixels needed. augment applies photometric ops
+    on the canvas (erase) + (HSV also fine on the canvas since it's photometric)."""
+    W, H = native_wh
+    r, dw, dh, _, _ = letterbox_params(W, H, imgsz)
+    canvas = canvas_bgr
+    if augment:
+        canvas = random_hsv(canvas.copy())
+        canvas = random_erase(canvas)
+    t = torch.from_numpy(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.
+    P_in = torch.from_numpy(letterbox_P(np.asarray(P_native), r, dw, dh))
+    kp_in = None if kp_native is None else torch.from_numpy(letterbox_pts(kp_native, r, dw, dh))
+    return t, P_in, kp_in
+
+
 def prep_view(im, P_native, imgsz, kp_native=None, augment=False):
     """One call per view: returns (img_tensor CHW[0,1] RGB, P_input (3,4), kp_input or None).
 

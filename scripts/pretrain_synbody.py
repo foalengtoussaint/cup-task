@@ -43,7 +43,7 @@ def main(epochs, batch, workers, frame_stride, lr0):
     train_seqs, val_seqs = split_seqs(0.1)
     print(f'{len(train_seqs)} train seqs, {len(val_seqs)} held-out', flush=True)
     _, loader = make_synbody_loader(train_seqs, batch=batch, workers=workers,
-                                    shuffle=True, frame_stride=frame_stride)
+                                    shuffle=True, frame_stride=frame_stride, augment=True)
     print(f'{len(loader.dataset)} train samples (random 3-6 views each)', flush=True)
     model = CanonicalFusionCDR(n_kpts=17).to(dev)
     model.set_trainable_backbone(True)                            # pretrain = FULL end-to-end

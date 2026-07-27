@@ -54,13 +54,61 @@ def letterbox_pts(uv_native, r, dw, dh):
     return (uv * r + np.array([dw, dh])).astype(np.float32)
 
 
-def prep_view(im, P_native, imgsz, kp_native=None):
+# ── PHOTOMETRIC augmentations (multi-view SAFE: don't move pixels -> P & 2D unchanged) ──
+# Copied from ultralytics with its default pose gains. Geometric augs (mosaic/flip/translate/scale)
+# are DELIBERATELY EXCLUDED: they'd break multi-view correspondence / need P-composition. The
+# domain-gap generalization (synthetic->real) comes mainly from these photometric ops anyway.
+HSV_H, HSV_S, HSV_V = 0.015, 0.7, 0.4        # ultralytics defaults
+ERASE_P = 0.4                                 # ultralytics 'erasing' default
+
+
+def random_hsv(img, hgain=HSV_H, sgain=HSV_S, vgain=HSV_V):
+    """ultralytics RandomHSV (exact math), in-place on a BGR uint8 image. Photometric only."""
+    if img.shape[-1] != 3 or not (hgain or sgain or vgain):
+        return img
+    dtype = img.dtype
+    r = np.random.uniform(-1, 1, 3) * [hgain, sgain, vgain]
+    x = np.arange(0, 256, dtype=r.dtype)
+    lut_hue = ((x + r[0] * 180) % 180).astype(dtype)
+    lut_sat = np.clip(x * (r[1] + 1), 0, 255).astype(dtype)
+    lut_val = np.clip(x * (r[2] + 1), 0, 255).astype(dtype)
+    lut_sat[0] = 0
+    hue, sat, val = cv2.split(cv2.cvtColor(img, cv2.COLOR_BGR2HSV))
+    im_hsv = cv2.merge((cv2.LUT(hue, lut_hue), cv2.LUT(sat, lut_sat), cv2.LUT(val, lut_val)))
+    cv2.cvtColor(im_hsv, cv2.COLOR_HSV2BGR, dst=img)
+    return img
+
+
+def random_erase(img, p=ERASE_P, sl=0.02, sh=0.1):
+    """Random-erasing (occlusion robustness): blank a random rectangle. Photometric (labels unchanged).
+    Applied on the LETTERBOXED canvas so erased area is real image, not pad."""
+    if np.random.rand() > p:
+        return img
+    Hh, Ww = img.shape[:2]
+    area = Hh * Ww
+    for _ in range(10):
+        s = np.random.uniform(sl, sh) * area
+        ar = np.random.uniform(0.3, 3.3)
+        w, h = int(round((s / ar) ** 0.5)), int(round((s * ar) ** 0.5))
+        if w < Ww and h < Hh:
+            x, y = np.random.randint(0, Ww - w), np.random.randint(0, Hh - h)
+            img[y:y + h, x:x + w] = np.random.randint(0, 256, (h, w, img.shape[2]), img.dtype)
+            break
+    return img
+
+
+def prep_view(im, P_native, imgsz, kp_native=None, augment=False):
     """One call per view: returns (img_tensor CHW[0,1] RGB, P_input (3,4), kp_input or None).
 
     im: native BGR (cv2). P_native: (3,4) native. kp_native: optional (...,2) native px 2D.
-    All outputs share the SAME input-image coordinate space -> the model needs nothing else.
+    augment=True applies multi-view-SAFE photometric aug (HSV before letterbox, erase after) — used
+    ONLY in training, per view independently. All geometry outputs share the input-image space.
     """
+    if augment:
+        im = random_hsv(im.copy())               # HSV on native BGR (photometric, geometry unchanged)
     canvas, r, dw, dh = letterbox_image(im, imgsz)
+    if augment:
+        canvas = random_erase(canvas)            # erase on the letterboxed canvas
     t = torch.from_numpy(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.
     P_in = torch.from_numpy(letterbox_P(np.asarray(P_native), r, dw, dh))
     kp_in = None if kp_native is None else torch.from_numpy(letterbox_pts(kp_native, r, dw, dh))

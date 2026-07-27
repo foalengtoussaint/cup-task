@@ -103,7 +103,7 @@ class DeltaTrial:
                 out.append(f)
         return out
 
-    def sample(self, f, device='cpu', conf=0.3):
+    def sample(self, f, device="cpu", conf=0.3, augment=False):
         """Return dict for frame f. imgs/P_in/kp2d_tgt ALL in LETTERBOXED input-image space (shared
         imgproc.prep_view) -> rig-agnostic, matches how YOLO's backbone sees input."""
         cams_used, imgs, Ps, kp2d, kpc = [], [], [], [], []
@@ -115,7 +115,7 @@ class DeltaTrial:
             if im is None:
                 continue
             kp_nat = self.KP[c][f, :, :2]                            # (17,2) native px (nan where undet)
-            t, P_in, kp_in = prep_view(im, self.P[c], IMSZ, kp_native=np.nan_to_num(kp_nat))
+            t, P_in, kp_in = prep_view(im, self.P[c], IMSZ, kp_native=np.nan_to_num(kp_nat), augment=augment)
             # restore nan on originally-undetected kpts (prep_view nan_to_num'd them for the affine)
             bad = ~np.isfinite(kp_nat).all(-1)
             kp_in[bad] = float('nan')

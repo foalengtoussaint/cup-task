@@ -24,9 +24,10 @@ def _list_seqs():
 
 
 class SynBodyViews(Dataset):
-    def __init__(self, seqs=None, min_v=3, max_v=6, frame_stride=3):
+    def __init__(self, seqs=None, min_v=3, max_v=6, frame_stride=3, augment=False):
         self.seqs = seqs if seqs is not None else _list_seqs()
         self.min_v, self.max_v = min_v, max_v
+        self.augment = augment
         self.gt = {s: dict(np.load(f'{GT_ROOT}/{s}.npz', allow_pickle=True)) for s in self.seqs}
         self.index = []                                   # (seq, frame)
         for s in self.seqs:
@@ -59,7 +60,7 @@ class SynBodyViews(Dataset):
             uvw = (P @ Xh.T).T
             uv_nat = (uvw[:, :2] / uvw[:, 2:3].clip(1e-6)).astype(np.float32)   # (17,2) native
             # SHARED letterbox: img + P + 2D all -> input-image space (rig-agnostic, like YOLO)
-            t, P_in, kp_in = prep_view(im, P, IMSZ, kp_native=uv_nat)
+            t, P_in, kp_in = prep_view(im, P, IMSZ, kp_native=uv_nat, augment=self.augment)
             imgs.append(t); Ps.append(P_in); kp2d.append(kp_in)
         if len(imgs) < self.min_v:
             return None
@@ -77,8 +78,8 @@ def collate_group(batch):
     return [b for b in batch if b is not None]
 
 
-def make_synbody_loader(seqs=None, batch=8, workers=6, shuffle=True, min_v=3, max_v=6, frame_stride=3):
-    ds = SynBodyViews(seqs, min_v, max_v, frame_stride)
+def make_synbody_loader(seqs=None, batch=8, workers=6, shuffle=True, min_v=3, max_v=6, frame_stride=3, augment=False):
+    ds = SynBodyViews(seqs, min_v, max_v, frame_stride, augment=augment)
     dl = DataLoader(ds, batch_size=batch, shuffle=shuffle, num_workers=workers, pin_memory=True,
                     collate_fn=collate_group, persistent_workers=workers > 0, drop_last=False)
     return ds, dl

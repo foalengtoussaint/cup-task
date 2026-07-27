@@ -3,6 +3,26 @@
 Status as of 2026-07-24 (end of a long session). NOT yet built. Downloads started; key
 datasets + weights gated behind logins to unlock Monday.
 
+## ⚠ 2026-07-27 (later): PORT BUILT + FIRST DELTA RESULT — stage-2 finetune OVERFITS (as predicted)
+Full CDRNet-on-CSPDarknet port built & runs end-to-end (branch feat/cdrnet-cspdarknet-lifter,
+package cup_task/mv3d/: dlt, ftl, backbone, cdrnet, data_delta, dataset; scripts/train_cdrnet_delta.py
++ extract_delta_frames.py). Smoke run (P07 trials 10-13 train, 14-15 HELD-OUT, 2D-distill from YOLO):
+  stage1 start (untrained): 221mm disp / apex GF 0.08
+  stage1 END (FROZEN backbone, fusion+decoder only): 195mm / 0.12   ← helps a little
+  stage2 END (UNFROZEN CSPDarknet finetune):          221mm / 0.08   ← BACK TO BASELINE = WORSE
+=> Fine-tuning the 12.9M CSPDarknet on 6 DELTA trials OVERFITS the 4 train views; held-out degrades
+   right back to untrained. SAME failure shape as the frozen-neck wrist-speed test. This is EXACTLY
+   the "12-trial finetune is the binding constraint" the plan warned about — NOT a bug. The port,
+   canonical fusion, SII-DLT, workered loader, grad-accum, nan-mask all VERIFIED working; the wall
+   is DATA. => the pretraining route (Panoptic/SynBody/AIST++, freeze neck for the DELTA finetune)
+   is the necessary next step, not more DELTA-only training.
+⚠ CAVEATS before over-reading: absolute disp ~200mm is HIGH (smoke run, 40+24 steps, stride-5 eval;
+   metric/alignment may be crude). The RELATIVE stage1-down / stage2-up pattern is the trustworthy
+   signal, not the absolute mm. n=6 trials, 1 participant. Bugs fixed en route: YOLO emits nan for
+   undetected kpts (nan*0=nan poisoned loss -> mask + nan_to_num); stage-2 OOM (8x5-view graphs ->
+   grad-accum); final-eval silent OOM (empty_cache before eval). Speed: decode-bound loop -> pre-
+   extract frames (cache/delta/_frames640, 34x faster) + workered DataLoader (YOLO's pattern).
+
 ## ⚠ 2026-07-27: THE ACTUAL CDRNet ALGORITHM (read the reference before building)
 Earlier notes/scripts here did a per-view feature-sample + refine-offset head — that is NOT CDRNet.
 Read the reference clone (scratchpad/CDRnet/model_define.py + train_and_test.py). Real CDRNet =

@@ -32,11 +32,31 @@ class CSPDarknetEncoder(nn.Module):
         self.net = yolo.model                       # DetectionModel (nn.Module)
         self._feats = {}
         self._handles = []
-        for i in TAPS:
-            h = self.net.model[i].register_forward_hook(
-                lambda m, inp, out, i=i: self._feats.__setitem__(i, out))
-            self._handles.append(h)
+        self._hooks_ok = False
+        self._ensure_hooks()
         self.set_trainable(False)
+
+    def __deepcopy__(self, memo):
+        """YOLO's ModelEMA deepcopies the model. Forward hooks (RemovableHandle) don't survive a
+        deepcopy meaningfully — the copy's hooks would point at the ORIGINAL layers. So copy WITHOUT
+        the hook state, then re-register on the copy's own layers."""
+        import copy as _copy
+        cls = self.__class__
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        for k, v in self.__dict__.items():
+            if k in ('_handles',):                  # don't copy stale handles
+                continue
+            if k == '_feats':
+                new._feats = {}
+                continue
+            if k == '_hooks_ok':
+                new._hooks_ok = False
+                continue
+            setattr(new, k, _copy.deepcopy(v, memo))
+        new._handles = []
+        new._ensure_hooks()                         # register on the COPY's own layers
+        return new
 
     def set_trainable(self, flag: bool):
         """Freeze/unfreeze the whole backbone+neck. BN eval when frozen (stable stats)."""
@@ -45,13 +65,29 @@ class CSPDarknetEncoder(nn.Module):
         self.net.train(flag)                        # BN train iff trainable
         self._trainable = flag
 
+    def _ensure_hooks(self):
+        """(Re)register tap hooks. deepcopy (YOLO ModelEMA) duplicates the module but the original
+        hooks point at the ORIGINAL layers and never fire on the copy -> _feats stays empty. Detect
+        that (no live handles for THIS module's layers) and re-register on self.net."""
+        if getattr(self, '_hooks_ok', False) and self._handles:
+            return
+        self._feats = getattr(self, '_feats', {})
+        self._handles = []
+        for i in TAPS:
+            h = self.net.model[i].register_forward_hook(
+                lambda m, inp, out, i=i: self._feats.__setitem__(i, out))
+            self._handles.append(h)
+        self._hooks_ok = True
+
     def forward(self, imgs: torch.Tensor) -> dict:
         """imgs (N,3,H,W) in [0,1] RGB. Returns {stride: feature_map} for strides 8/16/32."""
+        self._ensure_hooks()
         self._feats.clear()
         ctx = torch.enable_grad() if self._trainable else torch.no_grad()
         with ctx:
             _ = self.net(imgs)                      # populates hooks (head output ignored)
-        return {TAP_STRIDE[k]: self._feats[TAPS[k]] for k in range(3)}
+        out = {TAP_STRIDE[k]: self._feats[TAPS[k]] for k in range(3)}
+        return out
 
     def __del__(self):
         for h in getattr(self, '_handles', []):

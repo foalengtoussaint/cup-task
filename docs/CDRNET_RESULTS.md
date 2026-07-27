@@ -8,10 +8,14 @@
 > so the 154mm MPJPE was ~legit; the bug bit only at DELTA transfer.** FIXED (triangulate in grid
 > space); ALL weights below were trained against the bug → being re-pretrained.
 >
-> On the "0.89 correlation" of the broken DELTA track: it is REAL but ~80% the reach-envelope, not
-> tracking — slope 0.21 (captures only 21% of motion), velocity-corr 0.20, and the Z axis is
-> SIGN-FLIPPED (−0.78). So the displacement metric overstated a partially-working, partly-inverted
-> track. Numbers to be replaced after the fixed rerun.
+> On the "0.89 correlation" of the broken DELTA track: the prediction MOVED IN SPACE WITH THE WRIST
+> (Y-corr +0.74, rises/falls with the reach) **through a triangulation that was geometrically broken
+> by 2734mm**. A model that learned nothing would give noise/a fixed point under a broken transform;
+> a signal that survives being scrambled through the bug (compressed to 21% scale, Z sign-flipped)
+> is EVIDENCE THE MODEL GENUINELY LEARNED to locate the wrist from images — seen through a broken
+> lens. So the bug SUPPRESSED true performance, it didn't inflate it. => the fixed rerun is expected
+> to let that learned signal through cleanly (correct axis signs, full scale, real velocity tracking),
+> not "hope it learns". (Correcting an earlier over-dismissive 'flattered a broken model' framing.)
 
 
 Your idea: strip YOLO's detection head, use the **CSPDarknet neck feature maps** as CDRNet's

@@ -1,5 +1,19 @@
 # CDRNet-on-CSPDarknet multi-view 3D lifter — results
 
+> ⚠ **2026-07-27 UPDATE — a coordinate-space BUG invalidated the DELTA numbers below; re-running.**
+> The forward triangulated GRID-space 2D (heatmap soft-argmax × 8 = 640-space) against **P_native**
+> (1920×1080 for DELTA). Grid-2D + native-P is geometrically inconsistent — proven: known 3D →
+> project → triangulate = **2734mm error** (vs **0.000mm** with grid-2D + P_grid). This is why the
+> DELTA 3D wrist was ~2250mm off and near-static. **SynBody's square 1024 barely triggered it (1mm),
+> so the 154mm MPJPE was ~legit; the bug bit only at DELTA transfer.** FIXED (triangulate in grid
+> space); ALL weights below were trained against the bug → being re-pretrained.
+>
+> On the "0.89 correlation" of the broken DELTA track: it is REAL but ~80% the reach-envelope, not
+> tracking — slope 0.21 (captures only 21% of motion), velocity-corr 0.20, and the Z axis is
+> SIGN-FLIPPED (−0.78). So the displacement metric overstated a partially-working, partly-inverted
+> track. Numbers to be replaced after the fixed rerun.
+
+
 Your idea: strip YOLO's detection head, use the **CSPDarknet neck feature maps** as CDRNet's
 encoder (replacing ResNet152), and train the canonical-fusion + differentiable-DLT lifter
 end-to-end so the backbone becomes a **view-invariant 3D-triangulation** feature extractor.

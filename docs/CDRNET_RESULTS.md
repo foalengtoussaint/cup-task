@@ -1,5 +1,15 @@
 # CDRNet-on-CSPDarknet multi-view 3D lifter — results
 
+> ⚠⚠⚠ **2026-07-27 LATEST — the "domain gap" conclusion below was CONTAMINATED; must retrain.**
+> The non-square P-rescale fix (native_size, per-axis sx/sy) changed the SynBody grid scale from the
+> trained 1/8 (0.125) to (640/1024)/8 = 0.078. So every test AFTER that fix ran the OLD 141mm weights
+> under a NEW geometry they never trained on → garbage 2D (SynBody err 271px) and the "DELTA decoder
+> still frozen" result. Weight↔forward MISMATCH, not a domain gap. Also: the "(79,78) corner-peak"
+> was a red herring — the model uses center-of-mass (soft-argmax), which one hot corner pixel barely
+> moves. **Do NOT trust the domain-gap / transfer conclusions until a RETRAIN with the fixed forward.**
+> Open honestly: we don't yet know if it transfers. Retraining next.
+
+
 > ⚠ **2026-07-27 UPDATE — a coordinate-space BUG invalidated the DELTA numbers below; re-running.**
 > The forward triangulated GRID-space 2D (heatmap soft-argmax × 8 = 640-space) against **P_native**
 > (1920×1080 for DELTA). Grid-2D + native-P is geometrically inconsistent — proven: known 3D →

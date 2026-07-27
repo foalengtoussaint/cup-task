@@ -48,9 +48,14 @@ class CanonicalFusionCDR(nn.Module):
         self.ftl_inv = FTLInv()
         self.ftl = FTL()
         canon_ch = enc_ch // 3 * 4                              # 400
-        # fusion over views happens by concatenating canonical latents; a shared 1x1 stack fuses.
-        # We fuse with a conv that maps (V*canon_ch)->fuse_ch, but V varies (3..5 cams). To stay
-        # view-count-agnostic we fuse by MEAN-pool over views in canonical space, then convs.
+        # VIEW FUSION = per-view learned CONFIDENCE-weighted sum (MVGFormer's mechanism:
+        # `(vol * confidences).sum(0)` — op.py:151). Each view's canonical map -> a per-cell score
+        # via a shared conv; softmax over views -> a clear view of a joint DOMINATES instead of being
+        # averaged away (the mean-pool smeared peripheral joints: wrist 243mm vs head 30mm). Shared
+        # conv -> view-count-agnostic (any 3-6 views), permutation-invariant.
+        self.view_conf = nn.Sequential(
+            nn.Conv2d(canon_ch, canon_ch // 4, 1), nn.ReLU(inplace=True),
+            nn.Conv2d(canon_ch // 4, 1, 1))                     # (per view) -> (1,80,80) score
         self.fuse = nn.Sequential(
             nn.Conv2d(canon_ch, fuse_ch, 1), nn.BatchNorm2d(fuse_ch), nn.ReLU(inplace=True),
             nn.Conv2d(fuse_ch, fuse_ch, 1), nn.BatchNorm2d(fuse_ch), nn.ReLU(inplace=True))
@@ -94,7 +99,12 @@ class CanonicalFusionCDR(nn.Module):
             enc32 = enc.float()
             canon = torch.stack([self.ftl_inv(enc32[v:v+1], Pinv_grid[v:v+1]) for v in range(V)], 0)
             canon = canon[:, 0]                                 # (V,canon,80,80) fp32
-        fused = self.fuse(canon.mean(0, keepdim=True))          # (1,fuse_ch,80,80)
+        # CONFIDENCE-weighted view fusion (MVGFormer-style): per-view per-cell score -> softmax over
+        # views -> weighted sum. Replaces mean-pool (which smeared peripheral joints).
+        scores = self.view_conf(canon)                          # (V,1,80,80)
+        alpha = torch.softmax(scores, dim=0)                    # (V,1,80,80), sums to 1 over views
+        fused_canon = (alpha * canon).sum(0, keepdim=True)      # (1,canon,80,80) weighted sum
+        fused = self.fuse(fused_canon)                          # (1,fuse_ch,80,80)
         hms, kpts_grid = [], []
         for v in range(V):
             with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):

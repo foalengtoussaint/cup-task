@@ -1,0 +1,75 @@
+"""Finetune the SynBody-pretrained CDRNet lifter on DELTA (real rig), YOLO-recipe training core.
+
+Loads the pretrained EMA weights (view-invariant CSPDarknet from SynBody), finetunes on DELTA's 6
+trials. Per the plan, the binding constraint is DELTA's tiny size -> the pretraining is what makes
+this viable; here we finetune with a SMALL LR and the fusion/decoder + a gentle backbone touch.
+
+2D-distill loss vs YOLO Pose26 (real detections). EVAL = frame-invariant wrist displacement + apex
+good-frame-fraction vs OMC (DELTA is real -> MMC/OMC different frames, so NO raw MPJPE here; that's
+what SynBody's synthetic in-frame GT was for). Compares against the FROM-SCRATCH DELTA baseline.
+"""
+import sys, os, time, argparse
+sys.path.insert(0, '/home/imove/Documents/cup-task/scripts')
+sys.path.insert(0, '/home/imove/Documents/cup-task')
+import numpy as np, torch
+from cup_task.mv3d.cdrnet import CanonicalFusionCDR
+from cup_task.mv3d.dataset import make_loader
+from cup_task.mv3d.data_delta import load_amq
+from cup_task.mv3d.train_core import train_loop, distill_loss_fn
+# reuse the DELTA eval (frame-invariant displacement + apex GF) from the scratch trainer
+import train_cdrnet_delta as DELTA
+
+dev = 'cuda' if torch.cuda.is_available() else 'cpu'
+torch.manual_seed(0); np.random.seed(0)
+TRIALS = DELTA.TRIALS; TRAIN, VAL = DELTA.TRAIN, DELTA.VAL
+
+
+def main(pretrained, epochs, batch, workers, lr0):
+    amq = load_amq()
+    D = DELTA.build()
+    model = CanonicalFusionCDR(n_kpts=17).to(dev)
+    if pretrained and os.path.exists(pretrained):
+        sd = torch.load(pretrained, map_location=dev)['model']
+        missing, unexpected = model.load_state_dict(sd, strict=False)
+        print(f'loaded pretrained {pretrained} (missing {len(missing)}, unexpected {len(unexpected)})', flush=True)
+    else:
+        print('WARNING: no pretrained weights -> from scratch (control)', flush=True)
+    model.set_trainable_backbone(True)                 # finetune backbone (small LR)
+
+    _, loader = make_loader(TRAIN, amq=amq, batch=batch, workers=workers, shuffle=True)
+    print(f'{len(loader.dataset)} DELTA train frames', flush=True)
+
+    m0, g0, _ = DELTA.eval_trials(model, VAL, D)
+    print(f'FINETUNE start: HELDOUT disp {m0:.1f}mm | apex GF {g0:.2f}', flush=True)
+
+    def on_epoch(ep, ema_model):
+        if ep % 5 == 0 or ep == epochs - 1:
+            vm, vg, vn = DELTA.eval_trials(ema_model.to(dev), VAL, D)
+            print(f'    >> epoch {ep}: HELDOUT disp {vm:.1f}mm apex GF {vg:.2f} (n{vn})', flush=True)
+
+    t0 = time.time()
+    ema = train_loop(model, loader, distill_loss_fn(dev, amp=True), epochs=epochs, dev=dev,
+                     lr0=lr0, lrf=0.01, nbs=64, batch=batch, warmup_epochs=1.0, amp=True,
+                     use_ema=True, optimizer='AdamW', on_epoch=on_epoch)
+    vm, vg, vn = DELTA.eval_trials(ema.to(dev), VAL, D)
+    print(f'\nFINETUNE done in {time.time()-t0:.0f}s. FINAL HELDOUT disp {vm:.1f}mm | apex GF {vg:.2f}', flush=True)
+    out = '/home/imove/Documents/cup-task/models/cdrnet_delta_finetuned.pt'
+    torch.save({'model': ema.state_dict()}, out)
+    print(f'saved -> {out}', flush=True)
+    for n, _ in TRIALS:
+        D[n].release()
+
+
+if __name__ == '__main__':
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--pretrained', default='')
+    ap.add_argument('--epochs', type=int, default=30)
+    ap.add_argument('--batch', type=int, default=6)
+    ap.add_argument('--workers', type=int, default=4)
+    ap.add_argument('--lr0', type=float, default=1e-4)
+    a = ap.parse_args()
+    import traceback
+    try:
+        main(a.pretrained, a.epochs, a.batch, a.workers, a.lr0)
+    except Exception as e:
+        print(f'\nFINETUNE CRASHED: {type(e).__name__}: {e}', flush=True); traceback.print_exc()

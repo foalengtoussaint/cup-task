@@ -17,6 +17,7 @@ import numpy as np, cv2, torch
 import pandas as pd
 import compare_pose_omc_delta as H
 import results_v3_delta as R
+from cup_task.mv3d.imgproc import prep_view
 H.use_good_cams()
 
 COCO17 = ['nose','left_eye','right_eye','left_ear','right_ear','left_shoulder','right_shoulder',
@@ -57,13 +58,15 @@ class DeltaTrial:
         self.size = {c: self.calib[c].size for c in self.cams}      # (W,H) native
         self.n = min(len(v) for v in self.KP.values())
         self._caps = {}
-        # pre-extracted flat frame cache (fast path); memmap per cam if present
+        # NATIVE-resolution flat frame cache (fast path); memmap per cam if present. Native (not 640)
+        # so the shared letterbox in prep_view is applied consistently at load time. (The old squashed
+        # _frames640 cache is incompatible with letterboxing and no longer used.)
         self._frames = {}
-        fdir = f'{H.DELTA}/_frames640'
+        fdir = f'{H.DELTA}/_frames_native'
         for c in self.cams:
             fp = f'{fdir}/{part}_{trial}_{c}.npy'
             if os.path.exists(fp):
-                self._frames[c] = np.load(fp, mmap_mode='r')     # (n,640,640,3) uint8, lazy
+                self._frames[c] = np.load(fp, mmap_mode='r')     # (n,H,W,3) uint8 BGR native, lazy
         # OMC wrist truth (eval only), frame-aligned via speed lag
         self.omc = None
         if amq is not None:
@@ -84,6 +87,13 @@ class DeltaTrial:
             self._caps[cam] = cv2.VideoCapture(str(p))
         return self._caps[cam]
 
+    def _native_frame(self, cam, f):
+        """Native-resolution BGR frame (H,W,3): from the native memmap cache, else live decode."""
+        if cam in self._frames and f < len(self._frames[cam]):
+            return np.asarray(self._frames[cam][f])
+        cap = self._cap(cam); cap.set(cv2.CAP_PROP_POS_FRAMES, f); ok, im = cap.read()
+        return im if ok else None
+
     def valid_frames(self, min_cams=3, conf=0.3):
         out = []
         for f in range(self.n):
@@ -94,32 +104,29 @@ class DeltaTrial:
         return out
 
     def sample(self, f, device='cpu', conf=0.3):
-        """Return dict for frame f: imgs, P_native, kp2d_tgt, kp_conf, cams_used, omc_wrist."""
+        """Return dict for frame f. imgs/P_in/kp2d_tgt ALL in LETTERBOXED input-image space (shared
+        imgproc.prep_view) -> rig-agnostic, matches how YOLO's backbone sees input."""
         cams_used, imgs, Ps, kp2d, kpc = [], [], [], [], []
         for c in self.cams:
             w = self.KP[c][f, WRIST_IDX]
             if not (np.isfinite(w[0]) and w[2] > conf):
                 continue
-            if c in self._frames and f < len(self._frames[c]):      # FAST: pre-extracted frame
-                rgb = np.asarray(self._frames[c][f])                 # (640,640,3) uint8 RGB
-                t = torch.from_numpy(rgb.copy()).permute(2, 0, 1).float() / 255.
-            else:                                                    # fallback: live decode
-                cap = self._cap(c); cap.set(cv2.CAP_PROP_POS_FRAMES, f); ok, im = cap.read()
-                if not ok:
-                    continue
-                r = cv2.resize(im, (IMSZ, IMSZ))
-                t = torch.from_numpy(cv2.cvtColor(r, cv2.COLOR_BGR2RGB)).permute(2, 0, 1).float() / 255.
-            cams_used.append(c); imgs.append(t)
-            Ps.append(torch.tensor(self.P[c], dtype=torch.float32))
-            kp2d.append(torch.tensor(self.KP[c][f, :, :2], dtype=torch.float32))   # (17,2) native px
+            im = self._native_frame(c, f)                            # native BGR (H,W,3)
+            if im is None:
+                continue
+            kp_nat = self.KP[c][f, :, :2]                            # (17,2) native px (nan where undet)
+            t, P_in, kp_in = prep_view(im, self.P[c], IMSZ, kp_native=np.nan_to_num(kp_nat))
+            # restore nan on originally-undetected kpts (prep_view nan_to_num'd them for the affine)
+            bad = ~np.isfinite(kp_nat).all(-1)
+            kp_in[bad] = float('nan')
+            cams_used.append(c); imgs.append(t); Ps.append(P_in)
+            kp2d.append(kp_in)
             kpc.append(torch.tensor(self.KP[c][f, :, 2], dtype=torch.float32))     # (17,)
         if len(cams_used) < 3:
             return None
-        nsz = torch.tensor([list(self.size[c]) for c in cams_used], dtype=torch.float32)  # (V,2) W,H native
         return {
             'imgs': torch.stack(imgs).to(device),
-            'P_native': torch.stack(Ps).to(device),
-            'native_size': nsz.to(device),
+            'P_native': torch.stack(Ps).to(device),                  # NOW input-image-space P (name kept)
             'kp2d_tgt': torch.stack(kp2d).to(device),
             'kp_conf': torch.stack(kpc).to(device),
             'cams': cams_used,

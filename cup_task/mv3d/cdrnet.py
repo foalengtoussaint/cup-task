@@ -72,27 +72,19 @@ class CanonicalFusionCDR(nn.Module):
         p5 = F.interpolate(f[32], size=p3.shape[-2:], mode='bilinear', align_corners=False)
         return self.reduce(torch.cat([p3, p4, p5], 1))          # (V,enc_ch,80,80)
 
-    def forward(self, imgs, P_native, Pinv_grid=None, native_size=None):
-        """imgs (V,3,H,W) RGB[0,1] (resized to imgsz, may be non-uniform for non-square native);
-        P_native (V,3,4) at NATIVE res; native_size (V,2)=(W,H) native per view (defaults to square
-        imgsz if None — only valid when native is already square==imgsz).
-        Returns dict: kpts2d (V,K,2) 640-img px, X3d (K,3), heatmaps (V,K,hm,hm)."""
+    def forward(self, imgs, P_in, Pinv_grid=None):
+        """imgs (V,3,imgsz,imgsz) RGB[0,1]; P_in (V,3,4) already in the SAME INPUT-IMAGE pixel space
+        as `imgs` (the loader letterboxed native->input and transformed P identically — see imgproc).
+        => fully rig-agnostic: NO native size / aspect / resize info needed here.
+        Returns dict: kpts2d (V,K,2) INPUT-img px, X3d (K,3), heatmaps (V,K,hm,hm)."""
         V = imgs.shape[0]
         dev = imgs.device
-        # P is at NATIVE res, but the image was resized to imgsz (NON-UNIFORMLY for non-square native,
-        # e.g. DELTA 1920x1080->640). So map native -> imgsz-image -> grid with SEPARATE x/y scales:
-        #   sx = (imgsz/native_W)/hm_stride,  sy = (imgsz/native_H)/hm_stride.
-        # (Earlier bug: rescale_P(1/hm_stride) assumed native==imgsz -> off by native/imgsz, and
-        # NON-UNIFORMLY for non-square native -> froze the decoder on DELTA. Square SynBody hid it.)
-        if native_size is None:
-            nw = nh = torch.full((V,), float(self.imgsz), device=dev)
-        else:
-            ns = native_size.float().to(dev); nw, nh = ns[:, 0], ns[:, 1]
-        sx = (self.imgsz / nw) / self.hm_stride                 # (V,)
-        sy = (self.imgsz / nh) / self.hm_stride
+        # heatmaps live on the stride-`hm_stride` grid of the input image, so P_grid maps 3D -> grid
+        # by scaling the projection's pixel rows (0,1) by 1/hm_stride. Uniform, both axes, any aspect.
+        S = torch.tensor([[1.0 / self.hm_stride, 0, 0], [0, 1.0 / self.hm_stride, 0], [0, 0, 1.0]],
+                         dtype=torch.float32, device=dev)
         with torch.autocast(device_type=('cuda' if dev.type == 'cuda' else 'cpu'), enabled=False):
-            P_grid = torch.stack([rescale_P(P_native[v].float(), float(sx[v]), float(sy[v]))
-                                  for v in range(V)])            # (V,3,4) fp32, correct per-axis
+            P_grid = (S @ P_in.float())                          # (V,3,4) fp32
             if Pinv_grid is None:
                 Pinv_grid = torch.linalg.pinv(P_grid)           # (V,4,3) fp32
 
@@ -113,10 +105,9 @@ class CanonicalFusionCDR(nn.Module):
                 kp_grid = soft_argmax_2d(hm.float())[0]         # (K,2) GRID px (0..hm_size)
             kpts_grid.append(kp_grid)
         kpts2d_grid = torch.stack(kpts_grid, 0)                 # (V,K,2) GRID px
-        # report 2D in NATIVE px (match YOLO/GT targets): native = grid / (sx,sy) per axis per view
-        scale_xy = torch.stack([sx, sy], -1)[:, None, :]        # (V,1,2)
-        kpts2d = kpts2d_grid / scale_xy                         # (V,K,2) native px
-        heatmaps = torch.stack(hms, 0)                          # (V,K,80,80)
+        # report 2D in INPUT-IMAGE px (grid * hm_stride) — matches the loader's input-space targets
+        kpts2d = kpts2d_grid * self.hm_stride                   # (V,K,2) input-img px
+        heatmaps = torch.stack(hms, 0)                          # (V,K,hm,hm)
         # triangulate in a CONSISTENT space: GRID-space 2D with GRID-space P (P_grid). The earlier
         # bug triangulated 640-space 2D against P_NATIVE -> geometrically inconsistent (fine only if
         # native==640; SynBody 1024 partly absorbed it, DELTA 1920x1080 collapsed it). DLT is

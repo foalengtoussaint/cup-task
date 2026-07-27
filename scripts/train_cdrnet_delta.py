@@ -47,7 +47,7 @@ def wrist3d(model, t, f):
     s = t.sample(f, device=dev)
     if s is None:
         return None
-    out = model(s['imgs'], s['P_native'], native_size=s['native_size'])
+    out = model(s['imgs'], s['P_native'])
     Xw = out['X3d'][WRIST_IDX]                       # (3,)
     rp = reproj_residual(Xw, out['kpts2d'][:, WRIST_IDX, :], s['P_native'])
     return out, s, Xw, rp
@@ -112,7 +112,7 @@ def train(full=False, workers=4, batch=8):
         n_used, tot = 0, 0.0
         for s in group:
             imgs = s['imgs'].to(dev, non_blocking=True); P = s['P_native'].to(dev, non_blocking=True)
-            out = model(imgs, P, native_size=s['native_size'].to(dev))
+            out = model(imgs, P)
             tgt = s['kp2d_tgt'].to(dev); conf = s['kp_conf'].to(dev)
             # MASK invisible keypoints (YOLO emits nan for undetected joints). nan_to_num BEFORE the
             # weight multiply — nan*0 = nan would poison the loss even after masking.

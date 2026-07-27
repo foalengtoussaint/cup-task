@@ -12,6 +12,7 @@ resized to 640. GT from cache/synbody_gt/<seq>.npz (joints, P native-res, kpt_id
 import os, glob
 import numpy as np, cv2, torch
 from torch.utils.data import Dataset, DataLoader
+from cup_task.mv3d.imgproc import prep_view
 
 IMG_ROOT = '/home/imove/Documents/mv3d_data/synbody/HumanNeRF-subset/img_extracted'
 GT_ROOT = '/home/imove/Documents/cup-task/cache/synbody_gt'
@@ -49,26 +50,23 @@ class SynBodyViews(Dataset):
         for v in vsel:
             camdir = str(cam_names[v]).replace('camera', '')   # 'camera02' -> '02'
             fp = f'{IMG_ROOT}/{s}/img/{camdir}/{f:04d}.jpg'
-            im = cv2.imread(fp)
+            im = cv2.imread(fp)                            # native BGR
             if im is None:
                 continue
-            imgs.append(torch.from_numpy(cv2.cvtColor(cv2.resize(im, (IMSZ, IMSZ)), cv2.COLOR_BGR2RGB))
-                        .permute(2, 0, 1).float() / 255.)
             P = g['P'][v].astype(np.float32)              # (3,4) native res
-            Ps.append(torch.from_numpy(P))
             # projected GT joints = exact 2D teacher (native px)
-            Xh = np.concatenate([J, np.ones((17, 1), np.float32)], 1)   # (17,4)
-            uvw = (P @ Xh.T).T                            # (17,3)
-            uv = uvw[:, :2] / uvw[:, 2:3].clip(1e-6)
-            kp2d.append(torch.from_numpy(uv.astype(np.float32)))
+            Xh = np.concatenate([J, np.ones((17, 1), np.float32)], 1)
+            uvw = (P @ Xh.T).T
+            uv_nat = (uvw[:, :2] / uvw[:, 2:3].clip(1e-6)).astype(np.float32)   # (17,2) native
+            # SHARED letterbox: img + P + 2D all -> input-image space (rig-agnostic, like YOLO)
+            t, P_in, kp_in = prep_view(im, P, IMSZ, kp_native=uv_nat)
+            imgs.append(t); Ps.append(P_in); kp2d.append(kp_in)
         if len(imgs) < self.min_v:
             return None
-        W, H = int(g['img_size'][0]), int(g['img_size'][1])
         return {
             'imgs': torch.stack(imgs),
-            'P_native': torch.stack(Ps),
-            'native_size': torch.tensor([[W, H]] * len(imgs), dtype=torch.float32),  # (V,2)
-            'kp2d_tgt': torch.stack(kp2d),                # (V,17,2) exact projected GT
+            'P_native': torch.stack(Ps),                  # input-image-space P (name kept for callers)
+            'kp2d_tgt': torch.stack(kp2d),                # (V,17,2) exact projected GT, input-img px
             'kp_conf': torch.ones(len(imgs), 17),         # synthetic -> all visible, conf 1
             'X_gt': torch.from_numpy(J),                  # (17,3) in-frame 3D truth for MPJPE
             '_key': (s, f, tuple(vsel)),

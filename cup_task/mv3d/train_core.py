@@ -40,7 +40,7 @@ def distill_loss_fn(dev, amp=True, conf_th=0.3):
         tot, nk, used = 0.0, 0, 0
         for s in group:
             with torch.amp.autocast('cuda', enabled=amp and str(dev).startswith('cuda')):
-                out = model(s['imgs'].to(dev, non_blocking=True), s['P_native'].to(dev, non_blocking=True), native_size=s['native_size'].to(dev))
+                out = model(s['imgs'].to(dev, non_blocking=True), s['P_native'].to(dev, non_blocking=True))
                 tgt = s['kp2d_tgt'].to(dev); conf = s['kp_conf'].to(dev)
                 vis = torch.isfinite(tgt).all(-1) & torch.isfinite(conf) & (conf > conf_th)
                 if not vis.any():

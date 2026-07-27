@@ -29,7 +29,7 @@ The random-view pretraining made our 5-cam rig "just another subset", as planned
 | from-scratch DELTA (no pretrain) | 221 (overfit) |
 | **SynBody-pretrained, ZERO-SHOT on DELTA** | **179.9  ← best** |
 | pretrained → full-backbone finetune | 219.6 (regressed epoch 0) |
-| pretrained → frozen-backbone finetune | ~200+ (regressed) |
+| pretrained → frozen-backbone finetune | 214.9 (regressed: 179.9→201.6→208.8→214.6→214.9) |
 
 With only **4 training trials**, any DELTA finetuning pulls the model away from the pretrained
 optimum. **Keep the zero-shot pretrained model.** To improve on DELTA, the lever is MORE DELTA

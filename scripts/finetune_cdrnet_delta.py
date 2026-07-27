@@ -24,7 +24,8 @@ torch.manual_seed(0); np.random.seed(0)
 TRIALS = DELTA.TRIALS; TRAIN, VAL = DELTA.TRAIN, DELTA.VAL
 
 
-def main(pretrained, epochs, batch, workers, lr0):
+def main(pretrained, epochs, batch, workers, lr0, freeze_backbone=False,
+         out_path='/home/imove/Documents/cup-task/models/cdrnet_delta_finetuned.pt'):
     amq = load_amq()
     D = DELTA.build()
     model = CanonicalFusionCDR(n_kpts=17).to(dev)
@@ -34,7 +35,11 @@ def main(pretrained, epochs, batch, workers, lr0):
         print(f'loaded pretrained {pretrained} (missing {len(missing)}, unexpected {len(unexpected)})', flush=True)
     else:
         print('WARNING: no pretrained weights -> from scratch (control)', flush=True)
-    model.set_trainable_backbone(True)                 # finetune backbone (small LR)
+    # Plan warning: DELTA is tiny (4 train trials) -> full-backbone finetune OVERFITS and destroys
+    # the pretrained view-invariant features. freeze_backbone=True trains only fusion+decoder
+    # (light-touch adaptation that cannot wreck the backbone). Recommended variant.
+    model.set_trainable_backbone(not freeze_backbone)
+    print(f'backbone {"FROZEN (fusion+decoder only)" if freeze_backbone else "trainable"}', flush=True)
 
     _, loader = make_loader(TRAIN, amq=amq, batch=batch, workers=workers, shuffle=True)
     print(f'{len(loader.dataset)} DELTA train frames', flush=True)
@@ -55,9 +60,8 @@ def main(pretrained, epochs, batch, workers, lr0):
                      use_ema=True, optimizer='AdamW', on_epoch=on_epoch)
     vm, vg, vn = DELTA.eval_trials(ema.to(dev), VAL, D)
     print(f'\nFINETUNE done in {time.time()-t0:.0f}s. FINAL HELDOUT disp {vm:.1f}mm | apex GF {vg:.2f}', flush=True)
-    out = '/home/imove/Documents/cup-task/models/cdrnet_delta_finetuned.pt'
-    torch.save({'model': ema.state_dict()}, out)
-    print(f'saved -> {out}', flush=True)
+    torch.save({'model': ema.state_dict()}, out_path)
+    print(f'saved -> {out_path}', flush=True)
     for n, _ in TRIALS:
         D[n].release()
 
@@ -69,9 +73,11 @@ if __name__ == '__main__':
     ap.add_argument('--batch', type=int, default=6)
     ap.add_argument('--workers', type=int, default=4)
     ap.add_argument('--lr0', type=float, default=1e-4)
+    ap.add_argument('--freeze_backbone', action='store_true')
+    ap.add_argument('--out', default='/home/imove/Documents/cup-task/models/cdrnet_delta_finetuned.pt')
     a = ap.parse_args()
     import traceback
     try:
-        main(a.pretrained, a.epochs, a.batch, a.workers, a.lr0)
+        main(a.pretrained, a.epochs, a.batch, a.workers, a.lr0, a.freeze_backbone, a.out)
     except Exception as e:
         print(f'\nFINETUNE CRASHED: {type(e).__name__}: {e}', flush=True); traceback.print_exc()

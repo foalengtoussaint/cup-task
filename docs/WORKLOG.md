@@ -4812,3 +4812,60 @@ to predict per-axis reliability). That's the open next step. Fallback if σ work
 Also this session: confidence-weighted fusion (MVGFormer mechanism) BEAT mean-pool on SynBody per-joint
 (wrist 210→152mm, mean17 103→87) — committed. Generalized the whole pipeline (letterbox pixel-identical
 to ultralytics, rig-agnostic P, ultralytics photometric aug) — committed. All on feat/cdrnet-cspdarknet-lifter.
+
+---
+
+## 2026-07-28 — YOLO per-axis σ for wrist speed: works, but LOSES to SmoothNet (honest head-to-head)
+
+Goal (user): the wrist-SPEED problem — fast-frame jitter inflates peak wrist velocity (a Murphy
+measure), forcing the separate PyrLK+SmoothNet pipeline. Idea: use YOLO's OWN per-axis keypoint σ,
+weighted per-axis in the DLT + a σ-aware temporal smoother, to fix speed in one pass.
+
+**UNBLOCKED the σ (overturns last worklog's "BLOCKED").** YOLO26-pose DOES train a calibrated RLE
+per-axis σ (cv4_sigma / one2one_cv4_sigma, `σ=sigmoid(raw)`, scale of pred−gt in grid-cell units) —
+it's only gated behind `if self.training`. `cup_task/mv3d/yolo_sigma.py::enable_sigma` un-gates it by
+method-override on the live Pose26 head so the 34 σ channels ride the same decode+topk as kpts → σ
+aligned per-detection. Verified calibrated: nose σ(0.22,0.18) sharp vs wrist σ(0.41,0.52) uncertain;
+responds to motion blur. The first "σ degenerate ~1.0" failure was 2 bugs: hooked cv4_sigma not the
+end2end one2one head, + `net.train()` corrupted BatchNorm on batch=1. Both fixed (eval throughout).
+
+**σ-aware RTS smoother** (`cup_task/mv3d/sigma_smooth.py`): propagate per-view per-axis pixel σ through
+the DLT projection Jacobian → per-frame 3D covariance `Cov = A⁻¹`, `A = Σ_i J_iᵀ diag(1/σx²,1/σy²) J_i`
+→ constant-velocity Kalman+RTS with measurement noise R_t = that cov. Trusts sharp frames, coasts the
+CV prior through blurry ones — the principled "smooth where uncertain", which a fixed-cutoff low-pass
+can't do.
+
+**THE HONEST RESULT — σ-RTS does NOT beat SmoothNet on DELTA.** Head-to-head on the SPEED_METRICS
+cohort (P07+P08, 12 trials) + the SAME metric (harness reproduces the doc's pos 42.7 / smoothnet 10.6):
+
+| method | |Δspeed| mm/s | peak err % |
+|---|---|---|
+| pos-diff (original) | 42.7 | 31 |
+| **SmoothNet** | **10.6** | **4** |
+| σ-aware RTS | 15.7 | 11 |
+
+σ-RTS beats raw pos-diff (−63%) but loses SmoothNet on BOTH axes. ⚠ An earlier intra-session claim of
+"σ-RTS −79% / −3% peak" was vs a **Butterworth strawman** on a **fast-frame-subset** metric — NOT
+comparable to the doc; retracted and corrected in docs/SPEED_METRICS.md.
+
+**WHY it loses = GEOMETRY (this is the real lesson).** Built the covariance from first principles
+(pixel σ → ray wedge → intersection ellipsoid; figures out/sigma/geometry_*.png, derivation in
+scratchpad/geom_explain.py). On DELTA the 5 well-spread cameras keep the ellipsoid nearly ROUND —
+≤2× anisotropy even on the worst frame — so σ's per-axis AND per-frame information has little headroom,
+and SmoothNet's learned human-motion prior beats σ-RTS's plain constant-velocity model on the rest.
+σ's value is that it's FREE (no 2nd net, no per-cohort gate like the blend's hand-set 350/120) and
+principled — a defensible SmoothNet replacement if dropping the external dep matters, NOT a pure-accuracy
+win. NOT wired into the pipeline.
+
+Bug fixed en route: `DeltaTrial` hardcoded left_wrist; DELTA trial names carry the tracked side
+(_L_/_R_). On P08's _R_ trials that tracked the RESTING left hand → 0 fast frames, all-nan. Now
+wrist_name/idx derive from the trial name (committed).
+
+Artifacts (committed): yolo_sigma.py, sigma_smooth.py, scripts/cache_wrist_sigma.py (per-cam native-px
+wrist+σ cache in cache/wrist_sigma/), SPEED_METRICS.md §σ, memory project_yolo_sigma_inference.
+Scratchpad (not committed): ablation.py (the head-to-head), geom_*.py (geometry demos), multitrial_sigma.py.
+
+**NEXT (user): test MVGFormer.** Have mvgformer_q1024 weights (~/Downloads); still need
+pose_resnet50_panoptic backbone weights + CUDA-op compile (conda install cuda-nvcc=11.8, patch ~6
+deprecated-API lines in lib/models/ops/src/*.cu, build). Targets OCCLUSION (volumetric heatmap fusion),
+a DIFFERENT problem than fast-frame speed. Clone at scratchpad/MVGFormer.

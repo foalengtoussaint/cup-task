@@ -109,12 +109,22 @@ def main():
     ref = inc if np.isfinite(inc).all(1).any() else mvg   # sync ref (incumbent may be empty)
     lag, _ = H._find_lag(ref, omc)
     o = H._lp(H._speed(_shift(omc, lag)))
+
+    def pos_lp(a):        # low-pass POSITION per axis, THEN differentiate (vs speed-domain low-pass)
+        out = a.copy()
+        for k in range(3):
+            out[:, k] = H._lp(a[:, k])
+        return out
+
+    # (A) speed-domain low-pass (what the doc/incumbent uses); (B) POSITION low-pass then differentiate
     for name, a in (("MVGFormer", mvg), ("incumbent", inc)):
-        sp = H._lp(H._speed(a)); mm = np.isfinite(sp) & np.isfinite(o)
-        if mm.sum() > 20:
-            dmm = np.median(np.abs(sp[mm] - o[mm]))
-            pk = abs((np.nanmax(sp) - np.nanmax(o)) / np.nanmax(o) * 100)
-            print(f"speed vs OMC     {name:10}: |dspeed| {dmm:5.1f} mm/s   peak err {pk:4.0f}%")
+        for variant, sig in ((" [speed-lp]", H._lp(H._speed(a))),
+                             (" [pos-lp]  ", H._speed(pos_lp(a)))):
+            mm = np.isfinite(sig) & np.isfinite(o)
+            if mm.sum() > 20:
+                dmm = np.median(np.abs(sig[mm] - o[mm]))
+                pk = abs((np.nanmax(sig) - np.nanmax(o)) / np.nanmax(o) * 100)
+                print(f"speed vs OMC {name:10}{variant}: |dspeed| {dmm:6.1f} mm/s   peak err {pk:4.0f}%")
     print(f"(MVGFormer score: median {np.nanmedian(score):.2f}, min {np.nanmin(score):.2f})")
 
 

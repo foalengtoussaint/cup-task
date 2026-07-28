@@ -67,12 +67,17 @@ def main():
         ax.set_ylabel(f"{labels[ax_i]} (mm)"); ax.grid(alpha=0.25)
     axes[0].legend(ncol=4, loc="upper right", fontsize=8)
 
-    # speed (frame-invariant, no alignment needed) — MVGFormer despiked
+    # speed (frame-invariant) — POSITION low-passed per axis THEN differentiated (the fair treatment:
+    # same low-pass the pipeline applies; kills the per-frame fuzz without touching the peak).
+    def pos_lp(a):
+        out = a.copy()
+        for k in range(3): out[:, k] = H._lp(a[:, k])
+        return out
     for name, a in (("OMC", omc), ("incumbent", inc), ("MVGFormer", mvg)):
-        sp = H._lp(H._speed(a))
+        sp = H._speed(pos_lp(a))
         axes[3].plot(t, sp, color=colors[name], lw=1.3, alpha=0.85,
-                     label=(name + " (despiked)" if name == "MVGFormer" else name))
-    axes[3].legend(ncol=3, loc="upper right", fontsize=8)
+                     label=(name + " (despiked, pos-lp)" if name == "MVGFormer" else name))
+    axes[3].set_ylabel("speed (mm/s)\n[pos-lp]"); axes[3].legend(ncol=3, loc="upper right", fontsize=8)
     axes[3].set_ylabel("speed (mm/s)"); axes[3].set_xlabel("time (s)"); axes[3].grid(alpha=0.25)
 
     def jit(a):

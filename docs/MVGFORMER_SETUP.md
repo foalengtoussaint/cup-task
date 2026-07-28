@@ -97,10 +97,15 @@ All estimators despiked (same H._despike the incumbent triangulation uses); jitt
 | **2 (dropout, cams 1,3)** | **12.6 / 26.2 mm, 79%** | 79% | **0% — COLLAPSED, produced nothing** |
 
 **Verdict: MVGFormer earns its keep for OCCLUSION, not clean data.**
-- Clean 5-cam: robust triangulation BEATS it (5.4 vs 7.0 mm) AND is ~3× less jittery (2.0 vs 6.2 mm
-  |d²X|). MVGFormer is a per-frame regression (softmax blend over 1024 queries) → broadband mm-scale
-  fuzz + occasional single-frame query-swap spikes (despike + argmax→nearest-query would clean those).
-  Its differentiated speed is unusable raw (needs SmoothNet on top, same as raw YOLO).
+- Clean 5-cam: robust triangulation BEATS it on position (5.4 vs 7.0 mm) AND is ~3× less jittery
+  (2.0 vs 6.2 mm |d²X|). MVGFormer is a per-frame regression (softmax blend over 1024 queries) →
+  broadband mm-scale fuzz + occasional single-frame query-swap spikes.
+- **SPEED is NOT broken (corrected):** the earlier "715% peak / unusable" was an ARTEFACT of
+  differentiating unfiltered spiky position. With despike + POSITION low-pass then differentiate (the
+  treatment any raw estimator gets), MVGFormer wrist-speed = **31.6 mm/s |Δspeed| / 7% peak err** —
+  its PEAK-velocity (the Murphy measure) BEATS the incumbent's 20% and is near SmoothNet's ~4%. Per-
+  frame |Δspeed| is ~2× the incumbent (14.6) from residual fuzz, but peaks are excellent. So MVGFormer
+  is a fine speed source once filtered; it's just position-jitterier and 40× slower than triangulation.
 - **2-cam dropout: MVGFormer 13 mm @ 79% vs triangulation 0%.** Triangulation needs ≥3 agreeing cams
   (KF-budget floor) and dies at 2; MVGFormer's volumetric fusion degrades gracefully (7→13 mm). THIS
   is the win — the current pipeline literally cannot produce a wrist here.

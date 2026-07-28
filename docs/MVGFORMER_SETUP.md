@@ -106,13 +106,19 @@ All estimators despiked (same H._despike the incumbent triangulation uses); jitt
   1. Filter POSITION, never SPEED — speed-domain filtering can't remove spike-induced velocity
      impulses, only smears them into fake bumps: 40-90% peak overshoot at every cutoff vs ~1% for
      pos-lp. Despike first (isolated query-swap teleports), then position low-pass.
-  2. **Don't chase valley-noise with a lower cutoff, and NEVER filter OMC to measure peak error**
-     (softening ground truth fakes a good score). vs UNFILTERED OMC (true peak 866 mm/s), MVGFormer's
-     peak err GROWS as you filter harder: **6Hz 1% → 3Hz 7% → 2.5Hz 9% → 1.5Hz 17%**. So 6Hz is the
-     right cutoff — MVGFormer's despiked position already reproduces the true peak; aggression only
-     loses it. (A discarded intermediate claimed "2.5Hz = 0% peak cost" — that was measured against a
-     co-filtered OMC and is WRONG.) Residual per-frame valley fuzz is ~2× the incumbent but cosmetic;
-     the peak (the Murphy measure) is excellent at 6Hz. Fine speed source; position-jitterier + 40× slower.
+  2. **NEVER filter OMC to score peak error** — softening ground truth fakes it. Score against
+     UNFILTERED OMC. (A discarded intermediate claimed "2.5Hz = 0% peak cost", measured against a
+     co-filtered OMC — WRONG.)
+  3. **Cutoff is a TRADE-OFF, not monotonic** (graph: out/mvgformer/lp_cutoff_tradeoff_*.png). vs
+     UNFILTERED OMC, per reach (4 reaches, peaks 488/610/866/720 mm/s):
+     - the TALLEST peaks erode as you filter harder → want a HIGH cutoff (global peak err 6Hz 1%, 4Hz 5%);
+     - the SMALLER peaks are fuzz-INFLATED at high cutoff → want a LOW cutoff (reach1 err 8Hz 31%, 3.5Hz 1%);
+     - MEAN over reaches is a U with minimum at **~3.5–4Hz (3.9–4.6%) vs 6Hz's 7.6%**.
+     ⇒ **~4Hz is the better all-round default**, NOT 6Hz — 6Hz only wins if you weight solely the single
+     largest peak. (Corrects my earlier over-simplified "6Hz is right, never go lower".) ⚠ n=1 trial,
+     auto-placed reach windows — the trade-off SHAPE is solid but 3.5 vs 4 vs 6 needs multi-trial validation.
+     Residual per-frame valley fuzz is ~2× the incumbent but cosmetic. Fine speed source; position-
+     jitterier + 40× slower than triangulation.
 - **2-cam dropout: MVGFormer 13 mm @ 79% vs triangulation 0%.** Triangulation needs ≥3 agreeing cams
   (KF-budget floor) and dies at 2; MVGFormer's volumetric fusion degrades gracefully (7→13 mm). THIS
   is the win — the current pipeline literally cannot produce a wrist here.

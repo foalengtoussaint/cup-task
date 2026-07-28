@@ -4869,3 +4869,52 @@ Scratchpad (not committed): ablation.py (the head-to-head), geom_*.py (geometry 
 pose_resnet50_panoptic backbone weights + CUDA-op compile (conda install cuda-nvcc=11.8, patch ~6
 deprecated-API lines in lib/models/ops/src/*.cu, build). Targets OCCLUSION (volumetric heatmap fusion),
 a DIFFERENT problem than fast-frame speed. Clone at scratchpad/MVGFormer.
+
+## 2026-07-28 (cont.) — MVGFormer eval + the whole SPEED/FILTER/TRUTH investigation
+
+**MVGFormer (CVPR'24) evaluated → PARKED.** Built the CUDA op (nvcc11.8/gcc-11/sm_86, patched
+deprecated ATen + `nis` import + int→bool mask), wired DELTA adapter (docs/MVGFORMER_SETUP.md,
+branch mvgformer-eval). Result P07 t13: 5-cam robust triangulation WINS (5.4 vs 7.0mm, 3× less
+jitter, ~40× faster @1fps); MVGFormer only wins under camera DROPOUT (2-cam: 12.6mm@79% vs
+triangulation 0%) — rig is always 5 cams → parked. Negative result: a learned MV transformer ≤
+plain robust triangulation with enough well-spread cams.
+
+**Refiner hunt (beat SmoothNet on wrist-speed) → nothing pretrained is a 3D→3D refiner.** DeciWatch
+TESTED & LOSES (resamples 1/N frames → interpolates through the drink apex). MotionAGFormer, PR-GCN,
+GCN-Pose-Refinement all = 2D→3D LIFTERS or action classifiers (verified at weight level: st_gcn
+in_channels=2 everywhere; post_refine is a (3D+2D)→xy gate). SmoothNet remains the sole drop-in.
+
+**⚠⚠ THE BIG CORRECTION (user drove it over many turns) — most of this session's speed peak-%s were
+against a WRONG reference; see memory project_speed_error_mechanism.**
+- OMC "truth" via H._load_omc was resample-100→60Hz + raw-diff → noisy + low-peaked (866 vs real).
+  Use AutoMQ `hand_*_velocity` + its own `apply_butterworth_filter(cutoff=6,fs=100,order=2)` instead
+  (that IS the Murphy peak_velocity measure). AutoMQ tree: /home/imove/Documents/AutoMQ/<P>/
+  combined_data_with_kinematics.pkl (cols markers, kinematics).
+- **BIGGEST: I compared MMC WRIST vs OMC HAND all session.** hand_L moves ~32% faster than the wrist.
+  vs the correct OMC WRIST marker (wrist_inner_L+outer_L), MMC does NOT undershoot — it slightly
+  OVERSHOOTS (+13% butter4, jitter). Displacement matches (391 vs 400mm). ⇒ **OUR FILTERS WERE FINE.**
+  RETRACT "4Hz too strict / lighter-or-adaptive filter recovers the peak / SG-deriv beats pipeline" —
+  all artifacts of the wrong reference. The pipeline's medfilt3+butter@4Hz is correct; leave it.
+- Filter equivalence proven: butter/SG are rotation-equivariant (filtering any orthogonal axes = same
+  3D result to 1e-12); median/OneEuro are not. Motion-aligned (tangential/normal) filtering: no gain.
+  KF/RTS q-knob = butter cutoff = SG window (all one-knob linear smoothers on the same bias-variance
+  curve); at MATCHED smoothness butter/KF-identity-R/KF-real-σ-R all give ~+13% peak (within 1%). The
+  KF's only theoretical edge (per-frame adaptive R_t) gives nothing here — per-frame confidence isn't
+  discriminative on the 5-cam rig. So no smoother beats another; only ADDING INFO (flow, higher fps) can.
+- REAL remaining gap for peak-velocity: MMC is COCO-17 (most distal = wrist, NO hand keypoint), but
+  the clinical Murphy measure is on the HAND. We track a ~30%-slower point. Needs a hand keypoint
+  (YOLO-pose lacks one) or a learned wrist→hand offset — NOT a filtering fix.
+Graphs: out/mvgformer/RECOMP_*.png (vs correct wrist), HOW_filter_works.png, LAGCORR_sigmaRTS_*.png.
+
+## NEXT (2026-07-29): train a GNN 3D→3D refiner — but FIRST get more paired data
+No pretrained graph model ingests 3D, so TRAIN one (in_channels=3 st_gcn / a GNN) on our cached 3D
+tracks with AutoMQ OMC as target. **Data bottleneck = the MMC side, need a YOLO detection pass on more
+DELTA footage:**
+- TRUTH side abundant: AutoMQ = 1694 trials / 21 participants (~80 each), filtered kinematics ready.
+- MMC side (dets+c3d we have): only 10 participants, mostly 6 trials each
+  (P07/P08/P10/P11/P12/P13=6). Exceptions ALREADY BIG: **P15=90, P17=83, P19=94** trials (dets+c3d).
+- ⇒ Immediate pairable set ≈ P15/P17/P19 (~250 trials) with both MMC 3D + AutoMQ truth — enough to
+  start a train/val split TODAY without new inference. To scale further, run YOLO on more DELTA staged
+  clips (per-camera dets → triangulate → 3D MMC track) for the other AutoMQ participants.
+- ⚠ Score against OMC WRIST marker (not hand); or if targeting the HAND measure, that's a point-model
+  problem the GNN can't fix from wrist input. Decide the target point before training.

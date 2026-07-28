@@ -31,6 +31,10 @@ def main():
     ap.add_argument("--trial", default="trial_13_L_unaffected")
     ap.add_argument("--tag", default="")
     ap.add_argument("--incumbent-cams", default="")
+    ap.add_argument("--lp-hz", type=float, default=2.5, help="position low-pass cutoff (Hz). Study "
+                    "default 6Hz is too gentle for MVGFormer's fuzz; 2.5Hz halves noise at 0%% peak "
+                    "cost. Applied to POSITION (never speed — speed-domain filtering can't remove "
+                    "spike-induced peaks, only smear them: 40-90%% peak overshoot vs 0%% for pos-lp).")
     args = ap.parse_args()
     H.use_good_cams()
     if args.incumbent_cams:
@@ -58,9 +62,15 @@ def main():
 
     # POSITION low-pass per axis (the same filter the speed row differentiates) — so rows 1-3 show
     # EXACTLY what feeds row 4. Faint line underneath = despiked-but-unfiltered, to show the fuzz.
+    def _lp_hz(x, hz):        # H._lp but with an explicit cutoff
+        from scipy.signal import butter, filtfilt
+        v = np.isfinite(x)
+        if v.sum() < 8: return x
+        idx = np.flatnonzero(v); xi = np.interp(np.arange(len(x)), idx, x[idx])
+        b, a = butter(2, hz / (H.VIDEO_FPS / 2)); return filtfilt(b, a, xi)
     def pos_lp(a):
         out = a.copy()
-        for k in range(3): out[:, k] = H._lp(a[:, k])
+        for k in range(3): out[:, k] = _lp_hz(a[:, k], args.lp_hz)
         return out
     omc_lp, inc_lp_a, mvg_lp_a = pos_lp(omc), pos_lp(inc_a), pos_lp(mvg_a)
 
@@ -92,7 +102,7 @@ def main():
                  + (f"  [{args.tag}]" if args.tag else "")
                  + f"\nMVGFormer {ncam} cams; raw jitter |d2X| med: MVGFormer {jit(mvg):.1f}mm  "
                  f"incumbent {jit(inc):.1f}mm  (rows 1-3 = per-axis position aligned to OMC; "
-                 f"row 4 = speed, position low-passed then differentiated)",
+                 f"row 4 = speed = d/dt of position low-passed @ {args.lp_hz:g}Hz)",
                  fontsize=10)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     out = OUT / f"{args.part}_{args.trial}{('_' + args.tag) if args.tag else ''}.png"

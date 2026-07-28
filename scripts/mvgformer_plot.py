@@ -31,12 +31,14 @@ def main():
     ap.add_argument("--trial", default="trial_13_L_unaffected")
     ap.add_argument("--tag", default="")
     ap.add_argument("--incumbent-cams", default="")
-    ap.add_argument("--lp-hz", type=float, default=6.0, help="position low-pass cutoff (Hz), study "
-                    "default 6Hz. Applied to POSITION not speed (speed-domain filtering can't remove "
-                    "spike-induced peaks, only smear them: 40-90%% peak overshoot vs ~1%% for pos-lp). "
-                    "Do NOT go lower to chase valley noise: vs UNFILTERED OMC, MVGFormer's peak err "
-                    "grows 6Hz 1%% -> 2.5Hz 9%% -> 1.5Hz 17%% (the '0%% at 2.5Hz' was an artefact of "
-                    "filtering OMC too — never soften ground truth). 6Hz already nails the true peak.")
+    ap.add_argument("--smooth", choices=["savgol", "butter"], default="savgol",
+                    help="POSITION smoother before differentiating. savgol (Savitzky-Golay, local "
+                    "polynomial ~anipose n_deriv_smooth spirit) BEATS butter: it preserves the tall "
+                    "peak (1%% global) AND the smaller peaks (3.4%% mean) at once, escaping butter's "
+                    "cutoff trade-off (6Hz=1%%global/7.6%%mean vs 4Hz=5%%/4.6%%). Never filter SPEED.")
+    ap.add_argument("--sg-win", type=int, default=21, help="savgol window (odd); ~21@60fps")
+    ap.add_argument("--sg-ord", type=int, default=3, help="savgol polyorder")
+    ap.add_argument("--lp-hz", type=float, default=6.0, help="butter cutoff (Hz) when --smooth butter")
     args = ap.parse_args()
     H.use_good_cams()
     if args.incumbent_cams:
@@ -70,9 +72,17 @@ def main():
         if v.sum() < 8: return x
         idx = np.flatnonzero(v); xi = np.interp(np.arange(len(x)), idx, x[idx])
         b, a = butter(2, hz / (H.VIDEO_FPS / 2)); return filtfilt(b, a, xi)
+    from scipy.signal import savgol_filter
+    def _interp(x):
+        v = np.isfinite(x)
+        return np.interp(np.arange(len(x)), np.flatnonzero(v), x[v]) if v.sum() >= 2 else x
     def pos_lp(a):
         out = a.copy()
-        for k in range(3): out[:, k] = _lp_hz(a[:, k], args.lp_hz)
+        for k in range(3):
+            if args.smooth == "savgol":
+                out[:, k] = savgol_filter(_interp(a[:, k]), args.sg_win, args.sg_ord)
+            else:
+                out[:, k] = _lp_hz(a[:, k], args.lp_hz)
         return out
     omc_lp, inc_lp_a, mvg_lp_a = pos_lp(omc), pos_lp(inc_a), pos_lp(mvg_a)
 
@@ -83,7 +93,7 @@ def main():
         ax.plot(t, mvg_a[:, ax_i], color="tab:red", lw=0.8, alpha=0.35, label="MVGFormer despiked")
         for name, a in (("OMC", omc_lp), ("incumbent", inc_lp_a), ("MVGFormer", mvg_lp_a)):
             ax.plot(t, a[:, ax_i], color=colors[name], lw=1.3 if name != "OMC" else 1.7,
-                    alpha=0.95, label=(name + " (pos-lp)" if name == "MVGFormer" else name))
+                    alpha=0.95, label=(name + " (smoothed)" if name == "MVGFormer" else name))
         ax.set_ylabel(f"{labels[ax_i]} (mm)"); ax.grid(alpha=0.25)
     axes[0].legend(ncol=5, loc="upper right", fontsize=7.5)
 
@@ -91,7 +101,7 @@ def main():
     for name, a in (("OMC", omc), ("incumbent", inc), ("MVGFormer", mvg)):
         sp = H._speed(pos_lp(a))
         axes[3].plot(t, sp, color=colors[name], lw=1.3, alpha=0.85,
-                     label=(name + " (pos-lp)" if name == "MVGFormer" else name))
+                     label=(name + " (smoothed)" if name == "MVGFormer" else name))
     axes[3].legend(ncol=3, loc="upper right", fontsize=8)
     axes[3].set_ylabel("speed (mm/s)"); axes[3].set_xlabel("time (s)"); axes[3].grid(alpha=0.25)
 
@@ -104,7 +114,9 @@ def main():
                  + (f"  [{args.tag}]" if args.tag else "")
                  + f"\nMVGFormer {ncam} cams; raw jitter |d2X| med: MVGFormer {jit(mvg):.1f}mm  "
                  f"incumbent {jit(inc):.1f}mm  (rows 1-3 = per-axis position aligned to OMC; "
-                 f"row 4 = speed = d/dt of position low-passed @ {args.lp_hz:g}Hz)",
+                 f"row 4 = speed = d/dt of position smoothed by "
+                 + (f"savgol(w{args.sg_win},o{args.sg_ord})" if args.smooth == "savgol"
+                    else f"butter {args.lp_hz:g}Hz") + ")",
                  fontsize=10)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     out = OUT / f"{args.part}_{args.trial}{('_' + args.tag) if args.tag else ''}.png"

@@ -114,11 +114,21 @@ All estimators despiked (same H._despike the incumbent triangulation uses); jitt
      - the TALLEST peaks erode as you filter harder → want a HIGH cutoff (global peak err 6Hz 1%, 4Hz 5%);
      - the SMALLER peaks are fuzz-INFLATED at high cutoff → want a LOW cutoff (reach1 err 8Hz 31%, 3.5Hz 1%);
      - MEAN over reaches is a U with minimum at **~3.5–4Hz (3.9–4.6%) vs 6Hz's 7.6%**.
-     ⇒ **~4Hz is the better all-round default**, NOT 6Hz — 6Hz only wins if you weight solely the single
-     largest peak. (Corrects my earlier over-simplified "6Hz is right, never go lower".) ⚠ n=1 trial,
-     auto-placed reach windows — the trade-off SHAPE is solid but 3.5 vs 4 vs 6 needs multi-trial validation.
-     Residual per-frame valley fuzz is ~2× the incumbent but cosmetic. Fine speed source; position-
-     jitterier + 40× slower than triangulation.
+     ⇒ within the butterworth family ~4Hz is the better all-round default, NOT 6Hz — but see #4.
+  4. **BEST smoother = Savitzky-Golay (window 21, order 3), NOT butterworth** (this is how ANIPOSE
+     does it in spirit — local-polynomial / `n_deriv_smooth`, not a frequency cut). savgol ESCAPES the
+     butter cutoff trade-off: it hits the tall peak (1% global) AND the smaller peaks (3.4% mean) at
+     ONCE, beating every butterworth setting (butter 6Hz=1%/7.6%, 4Hz=5%/4.6%; savgol w21o3=1%/3.4%).
+     Recipe: **despike → savgol(w≈21,o3) on POSITION → d/dt**. scripts default to this (`--smooth savgol`).
+  ANIPOSE INVESTIGATION (what its filtering actually is): 2D filter defaults `type=medfilt, medfilt=13,
+  offset_threshold=25px, score_threshold=0.05, spline=True`; 3D filter `medfilt=17, offset_threshold=15mm`;
+  smoothing lives in the TRIANGULATION optim (`scale_smooth=2, n_deriv_smooth=3`), NOT a low-pass. KEY
+  finding: anipose's **median filter alone does NOT fix MVGFormer** (leaves it at 1640 mm/s peak) —
+  because MVGFormer's noise is BROADBAND multi-frame wobble during motion, not isolated single-frame
+  spikes; medfilt only kills spikes (which our despike already does). The broadband part needs the
+  derivative-smoothing stage — savgol is the standalone equivalent (MVGFormer bypasses anipose's
+  triangulation optimiser since it IS the triangulator). ⚠ n=1 trial. Residual valley fuzz ~2× incumbent
+  but cosmetic. Fine speed source; position-jitterier + 40× slower than triangulation.
 - **2-cam dropout: MVGFormer 13 mm @ 79% vs triangulation 0%.** Triangulation needs ≥3 agreeing cams
   (KF-budget floor) and dies at 2; MVGFormer's volumetric fusion degrades gracefully (7→13 mm). THIS
   is the win — the current pipeline literally cannot produce a wrist here.

@@ -84,6 +84,35 @@ shift can only be an OMC-vs-video global lag, not inter-camera desync.)
 
 ---
 
+## YOLO per-axis σ + σ-aware RTS smoothing — TESTED, does NOT beat SmoothNet (2026-07-28)
+
+Idea: YOLO26-pose trains a per-axis RLE σ (σx,σy per keypoint) but gates it behind `if self.training`.
+Un-gated it at inference (`cup_task/mv3d/yolo_sigma.py`), cached per-cam native-px wrist+σ
+(`scripts/cache_wrist_sigma.py` → `cache/wrist_sigma/`), and used σ two ways: (1) per-axis weighted
+DLT (`weighted_dlt_axis`), (2) a σ-aware constant-velocity Kalman+RTS smoother (`cup_task/mv3d/
+sigma_smooth.py`): per-frame 3D covariance from propagating σ through the DLT Jacobian → measurement
+noise R_t → trusts sharp frames, coasts the CV prior through blurry ones.
+
+**Head-to-head, SAME cohort + SAME metric as this doc (scratchpad/ablation.py, harness validated:
+reproduces pos 42.7 & smoothnet 10.6):**
+| method | \|Δspeed\| mm/s | peak err % |
+|---|---|---|
+| pos-diff (original) | 42.7 | 31 |
+| **SmoothNet** | **10.6** | **4** |
+| σ-aware RTS (on the standard robust track) | 15.7 | 11 |
+
+**Verdict: σ-RTS beats raw pos-diff (−63%) but LOSES to SmoothNet on both |Δspeed| and peak.** The
+earlier "σ-RTS wins −79%/−3%" was against a Butterworth STRAWMAN on a fast-frame-subset metric — not
+comparable; corrected here. WHY it loses: the geometry — DELTA's 5 well-spread cameras keep the
+triangulation covariance ellipsoid nearly round (≤2× anisotropy even on the worst frame,
+`out/sigma/geometry_3d_ellipsoid.png`), so σ's per-axis/per-frame info has little headroom, and
+SmoothNet's learned human-motion prior beats σ-RTS's plain constant-velocity model on the remainder.
+σ's remaining appeal = FREE (no 2nd net, no per-cohort gate like the blend's 350/120) + principled;
+a defensible SmoothNet replacement if dropping the external dep matters, but NOT a pure-accuracy win.
+NOT wired into the pipeline. Full thread: memory project_yolo_sigma_inference.
+
+---
+
 ## Point-tracking as a speed method — TESTED, doesn't help (2026-07-21)
 
 Tried CoTracker3 + TAPNext++ to see if temporal point-tracking beats YOLO+flow. Cohort P07+P08.

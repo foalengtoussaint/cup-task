@@ -279,7 +279,11 @@ def train_fold(held, all_trials, args):
             mmc, omc, val = mmc.to(DEV), omc.to(DEV), val.to(DEV)
             pred = model(mmc)
             B, Tw, J, _ = pred.shape
-            if args.loss == "window":
+            if args.loss == "relational":
+                # impairment-agnostic 'arm as coupled linkage': supervise RELATIVE bone vectors +
+                # bone-length only, NO absolute pose -> can't learn a healthy prior (user's idea).
+                loss = G.relational_loss(pred, omc, val, bone_w=args.bone_w)
+            elif args.loss == "window":
                 # ONE alignment per window -> offset-invariant BUT temporally coherent (user's point:
                 # per-frame PA has no temporal notion; a shared-window rotation penalises jitter).
                 loss = G.window_aligned_loss(pred, omc, val, joint_weights=jw)
@@ -354,7 +358,8 @@ def main(argv=None):
     ap.add_argument("--jw-scheme", choices=["wrist", "angle"], default="wrist",
                     help="wrist = up-weight wrists (legacy); angle = focus elbow+shoulder (the joints "
                          "feeding the in-scope Murphy angle measures), keep wrist, downweight nose/hips")
-    ap.add_argument("--loss", choices=["pampjpe", "velocity", "window"], default="pampjpe",
+    ap.add_argument("--bone-w", type=float, default=0.3, help="bone-length term weight (relational loss)")
+    ap.add_argument("--loss", choices=["pampjpe", "velocity", "window", "relational"], default="pampjpe",
                     help="pampjpe = position shape (overfits rig geometry); "
                          "velocity = offset-invariant speed-domain loss (should transfer)")
     ap.add_argument("--peak-w", type=float, default=0.5,

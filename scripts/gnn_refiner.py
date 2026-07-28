@@ -216,6 +216,60 @@ def window_aligned_loss(pred, targ, mask, joint_weights=None):
     return (err * w).sum() / w.sum().clamp(min=1.0)
 
 
+# arm chains (shoulder->elbow->wrist) for the relational loss, both sides
+_ARM_CHAINS = [("left_shoulder", "left_elbow", "left_wrist"),
+               ("right_shoulder", "right_elbow", "right_wrist")]
+
+
+def relational_loss(pred, targ, mask, bone_w=0.3):
+    """IMPAIRMENT-AGNOSTIC 'arm as a coupled linkage' loss. pred,targ (B,T,J,3); mask (B,T,J).
+
+    WHY (user): a model that reproduces ABSOLUTE pose bakes in a HEALTHY-pose prior -> regresses the
+    affected arm toward normal (measured: harms affected within-5deg 52->30%). Instead, supervise only
+    RELATIVE structure -- the bone VECTORS (elbow-shoulder, wrist-elbow) -- which is body-UNIVERSAL
+    (any arm is a rigid linkage, affected or not). No absolute-position term, no global frame: the loss
+    literally cannot encode 'where a healthy pose goes', only 'is this arm a coherent linkage matching
+    the true configuration'. Two terms per arm segment:
+      (1) VECTOR error: |(child-parent)_pred - (child-parent)_targ|  -- the segment's direction+length
+          in the world frame BUT since it's a difference of two joints, a global translation cancels
+          (offset-invariant). This is 'the segment points the right way and is the right length'.
+      (2) BONE-LENGTH constancy: penalise |len_pred - len_targ| (rigidity toward the true bone length).
+    Measured signal: raw upper-arm bone-len within-trial STD 13.1mm vs OMC 6.0mm -> the shoulder<->elbow
+    linkage IS violated by triangulation, so this has something to fix.
+    NOTE: rotation-alignment is NOT applied -- vector differences are already translation-invariant, and
+    we WANT the loss to see orientation error (that's the elbow-angle signal). A per-window rotation
+    would remove exactly the orientation info we care about."""
+    B, T, J, _ = pred.shape
+    dev = pred.device
+    # FRAME-INVARIANT ONLY. ⚠ Bone VECTORS are NOT frame-invariant (MMC=camera-frame, OMC=lab-frame
+    # differ by a rotation, so even a perfect pred scores ~a full bone length -- measured 389mm, the
+    # "Way 0" trap). The impairment-agnostic 'coupled linkage' idea must use quantities that don't
+    # depend on the coordinate frame: BONE LENGTHS (scalar) and JOINT ANGLES (angle between bones).
+    # Both are exactly 'the arm is a rigid linkage in a particular configuration', body-universal, and
+    # they're the Murphy clinical quantities. No absolute pose, no frame -> can't learn a healthy prior.
+    tot = torch.zeros((), device=dev); wsum = torch.zeros((), device=dev)
+    for sh, el, wr in _ARM_CHAINS:
+        si, ei, wi = _JI[sh], _JI[el], _JI[wr]
+        vp_u = pred[:, :, ei] - pred[:, :, si]; vt_u = targ[:, :, ei] - targ[:, :, si]   # upper-arm
+        vp_f = pred[:, :, wi] - pred[:, :, ei]; vt_f = targ[:, :, wi] - targ[:, :, ei]   # forearm
+        mu = (mask[:, :, ei] & mask[:, :, si]).float()
+        mf = (mask[:, :, wi] & mask[:, :, ei]).float()
+        ma = mu * mf                                   # elbow angle needs all three
+        # (1) BONE LENGTH error (mm) -- rigidity toward true length
+        for vp, vt, m in [(vp_u, vt_u, mu), (vp_f, vt_f, mf)]:
+            len_err = (torch.linalg.norm(vp, dim=-1) - torch.linalg.norm(vt, dim=-1)).abs()
+            tot = tot + bone_w * (len_err * m).sum(); wsum = wsum + bone_w * m.sum()
+        # (2) ELBOW ANGLE error (deg->mm-ish via *4 so it's comparable scale) -- the linkage config
+        def ang(a, b):
+            c = (a * b).sum(-1) / (torch.linalg.norm(a, dim=-1) * torch.linalg.norm(b, dim=-1) + 1e-6)
+            return torch.rad2deg(torch.arccos(c.clamp(-1 + 1e-6, 1 - 1e-6)))
+        # angle at elbow = between (shoulder->elbow) reversed and (elbow->wrist) => between -vp_u and vp_f
+        ae_p = ang(-vp_u, vp_f); ae_t = ang(-vt_u, vt_f)
+        ang_err = (ae_p - ae_t).abs()
+        tot = tot + (ang_err * ma).sum(); wsum = wsum + ma.sum()
+    return tot / wsum.clamp(min=1.0)
+
+
 def velocity_loss(pred, targ, mask, joint_weights=None, peak_w=0.0, wrist_i=None, smooth_w=0.0):
     """Velocity-domain loss on a WINDOW: pred,targ (B,T,J,3); mask (B,T,J) bool.
 

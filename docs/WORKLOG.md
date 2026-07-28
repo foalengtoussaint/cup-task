@@ -4770,3 +4770,45 @@ PARALLEL COMPLETE:
 => volumetric unpooling is a lever for NEITHER object. Gains must come from better per-camera
 EVIDENCE or removing CORRELATED errors, not a smarter fuser. For pose there isn't even a problem:
 wrist is 5-7mm, lever-free. Script: pose_unpool.py.
+
+## 2026-07-28 — CDRNet lifter: real problem = FAST-FRAME SPEED; per-axis-σ blocked on YOLO not exporting σ
+
+Long session untangling why the CDRNet-on-CSPDarknet lifter "wasn't tracking the wrist". Key turns:
+
+**★ ROOT CAUSE of the wrist failure (finally clear):** we built a from-scratch HEATMAP decoder
+(heatmap → soft-argmax) and trained it on SYNTHETIC (SynBody). On real DELTA images it produces a
+DEAD heatmap (max 0.0) → soft-argmax → garbage. Meanwhile YOLO's Pose26 head decodes the wrist
+TRIVIALLY via ANCHOR-OFFSET REGRESSION ("wrist = my cell + small Δ", one 1×1 conv) — robust +
+graceful, transfers to real. VERIFIED the CSPDarknet neck ALREADY encodes the wrist (YOLO reads it
+perfectly on DELTA). So our decoder re-invented — badly — a reader that already existed. Lesson:
+don't re-decode keypoints; use YOLO's 2D. Heatmap idea PARKED (memory: project_heatmap_fusion_parked)
+— only worth it for TRUE occlusion, via a PRETRAINED HRNet/ViTPose (not our decoder), or MVGFormer.
+
+**★ THE ACTUAL PROBLEM (user):** not position (YOLO-2D→DLT = 6mm, corr 1.00, vel-corr 0.94) and not
+occlusion — it's FAST-FRAME wrist SPEED. Measured: YOLO-2D→DLT speed err slow=13, FAST=42 mm/s (3×),
+peak overshoot +16%. That's why a separate PyrLK pipeline is needed for speed. Goal = one pipeline
+whose multi-view track is clean enough at fast frames to differentiate directly.
+
+**★ Per-axis (horizontal/vertical) confidence idea (user):** motion blur is DIRECTIONAL — a side-on
+cam blurs u (x) but keeps v (y) sharp. DLT already builds 2 rows/cam (u-eqn, v-eqn), so an
+independent x/y confidence weights them separately. Built + verified `weighted_dlt_axis` (cup_task/
+mv3d/dlt.py): equal-weight = plain (0.0001mm), single-bad-axis recovers to 0.4mm, grads flow.
+STRICTLY more expressive than scalar conf (scalar = w_x=w_y special case).
+
+**★ BLOCKER — YOLO doesn't output σ at inference.** Pose26.forward_head computes kpts_sigma ONLY
+`if self.training` (RLE σ is training-only LOSS SCAFFOLDING — it improves the coord regression, then
+is discarded; inference ships coords + scalar .conf, not per-axis σ). Force-running the training head
+gives raw cv4_sigma logits that sigmoid to ~1.0 for all cams/axes (not the calibrated kpts_sigma,
+which is assembled later in _inference). Result: per-axis-σ weighted DLT == plain (129 vs 129 mm/s
+fast, +163% vs +163% — sigma weights degenerate). YOLO scalar .conf also = no help (high conf even on
+blurred wrist).
+
+**★ CONCLUSION / where it stands:** consensus-based per-axis confidence = already-tried dead end
+(user). For the per-axis idea to work we NEED YOLO to output a real calibrated per-axis σ at inference
+— i.e. modify/finetune the Pose head to expose kpts_sigma at inference (or add a small σ head trained
+to predict per-axis reliability). That's the open next step. Fallback if σ works: feed [1/σx²,1/σy²]
+→ weighted_dlt_axis → test fast-frame speed vs plain DLT (129) and vs the PyrLK pipeline.
+
+Also this session: confidence-weighted fusion (MVGFormer mechanism) BEAT mean-pool on SynBody per-joint
+(wrist 210→152mm, mean17 103→87) — committed. Generalized the whole pipeline (letterbox pixel-identical
+to ultralytics, rig-agnostic P, ultralytics photometric aug) — committed. All on feat/cdrnet-cspdarknet-lifter.

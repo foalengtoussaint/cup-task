@@ -39,6 +39,36 @@ def weighted_dlt(uv: torch.Tensor, w: torch.Tensor, P: torch.Tensor) -> torch.Te
     return (Xh[:3] / denom).float()
 
 
+def weighted_dlt_axis(uv: torch.Tensor, w_xy: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
+    """Triangulate one 3D point with PER-AXIS per-view confidence.
+
+    Motion blur is DIRECTIONAL: a fast horizontal wrist blurs a side-on camera's u (x) while its v
+    (y) stays sharp. DLT already builds two rows per camera — u*P2-P0 (x-eqn) and v*P2-P1 (y-eqn) —
+    so an independent x/y confidence weights those rows separately (not the single shared scalar of
+    `weighted_dlt`). This lets fusion keep a camera's good axis and discount its blurred one.
+
+    Args:
+        uv:   (C, 2) pixel coords per view.
+        w_xy: (C, 2) per-view [x_conf, y_conf] in [0, inf) (e.g. sigmoid outputs).
+        P:    (C, 3, 4) projection matrices matching uv.
+    Returns: (3,) triangulated point, differentiable wrt uv and w_xy.
+    """
+    P64, uv64, w64 = P.double(), uv.double(), w_xy.double()
+    p0, p1, p2 = P64[:, 0, :], P64[:, 1, :], P64[:, 2, :]
+    A0 = uv64[:, 0:1] * p2 - p0                                     # (C,4)  x-eqn
+    A1 = uv64[:, 1:2] * p2 - p1                                     # (C,4)  y-eqn
+    A = torch.cat([A0, A1], 0)                                      # (2C,4)  [all x-rows; all y-rows]
+    A = A / (A.norm(dim=-1, keepdim=True) + 1e-9)                   # Hartley row-normalize
+    wr = torch.cat([w64[:, 0], w64[:, 1]], 0).clamp(min=1e-4).sqrt()[:, None]   # x-conf on x-rows, y-conf on y-rows
+    A = A * wr
+    _, _, V = torch.linalg.svd(A, full_matrices=False)
+    Xh = V[-1]
+    denom = Xh[3]
+    if denom.abs() < 1e-6:
+        denom = torch.tensor(1e-6, dtype=Xh.dtype, device=Xh.device)
+    return (Xh[:3] / denom).float()
+
+
 def weighted_dlt_batch(uv: torch.Tensor, w: torch.Tensor, P: torch.Tensor) -> torch.Tensor:
     """Batched over J joints. uv (C,J,2), w (C,J), P (C,3,4) -> (J,3)."""
     C, J = uv.shape[:2]

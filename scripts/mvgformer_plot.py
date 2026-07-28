@@ -56,38 +56,44 @@ def main():
     labels = "XYZ"
     colors = {"OMC": "k", "incumbent": "tab:blue", "MVGFormer": "tab:red"}
 
-    R_al, t_al, _ = H._kabsch(mvg, omc); mvg_raw_a = mvg_raw @ R_al.T + t_al  # raw in OMC frame
-    fig, axes = plt.subplots(4, 1, figsize=(13, 11), sharex=True)
-    for ax, ax_i in zip(axes[:3], range(3)):
-        ax.plot(t, mvg_raw_a[:, ax_i], color="tab:red", lw=0.7, alpha=0.3, label="MVGFormer raw")
-        for name, a in (("OMC", omc), ("incumbent", inc_a), ("MVGFormer", mvg_a)):
-            ax.plot(t, a[:, ax_i], color=colors[name], lw=1.2 if name != "OMC" else 1.6,
-                    alpha=0.9 if name != "MVGFormer" else 0.85,
-                    label=(name + " (despiked)" if name == "MVGFormer" else name))
-        ax.set_ylabel(f"{labels[ax_i]} (mm)"); ax.grid(alpha=0.25)
-    axes[0].legend(ncol=4, loc="upper right", fontsize=8)
-
-    # speed (frame-invariant) — POSITION low-passed per axis THEN differentiated (the fair treatment:
-    # same low-pass the pipeline applies; kills the per-frame fuzz without touching the peak).
+    # POSITION low-pass per axis (the same filter the speed row differentiates) — so rows 1-3 show
+    # EXACTLY what feeds row 4. Faint line underneath = despiked-but-unfiltered, to show the fuzz.
     def pos_lp(a):
         out = a.copy()
         for k in range(3): out[:, k] = H._lp(a[:, k])
         return out
+    omc_lp, inc_lp_a, mvg_lp_a = pos_lp(omc), pos_lp(inc_a), pos_lp(mvg_a)
+
+    R_al, t_al, _ = H._kabsch(mvg, omc); mvg_raw_a = mvg_raw @ R_al.T + t_al  # raw in OMC frame
+    fig, axes = plt.subplots(4, 1, figsize=(13, 11), sharex=True)
+    for ax, ax_i in zip(axes[:3], range(3)):
+        ax.plot(t, mvg_raw_a[:, ax_i], color="tab:red", lw=0.7, alpha=0.28, label="MVGFormer raw")
+        ax.plot(t, mvg_a[:, ax_i], color="tab:red", lw=0.8, alpha=0.35, label="MVGFormer despiked")
+        for name, a in (("OMC", omc_lp), ("incumbent", inc_lp_a), ("MVGFormer", mvg_lp_a)):
+            ax.plot(t, a[:, ax_i], color=colors[name], lw=1.3 if name != "OMC" else 1.7,
+                    alpha=0.95, label=(name + " (pos-lp)" if name == "MVGFormer" else name))
+        ax.set_ylabel(f"{labels[ax_i]} (mm)"); ax.grid(alpha=0.25)
+    axes[0].legend(ncol=5, loc="upper right", fontsize=7.5)
+
+    # speed = derivative of the SAME low-passed position shown above (frame-invariant, no alignment)
     for name, a in (("OMC", omc), ("incumbent", inc), ("MVGFormer", mvg)):
         sp = H._speed(pos_lp(a))
         axes[3].plot(t, sp, color=colors[name], lw=1.3, alpha=0.85,
-                     label=(name + " (despiked, pos-lp)" if name == "MVGFormer" else name))
-    axes[3].set_ylabel("speed (mm/s)\n[pos-lp]"); axes[3].legend(ncol=3, loc="upper right", fontsize=8)
+                     label=(name + " (pos-lp)" if name == "MVGFormer" else name))
+    axes[3].legend(ncol=3, loc="upper right", fontsize=8)
     axes[3].set_ylabel("speed (mm/s)"); axes[3].set_xlabel("time (s)"); axes[3].grid(alpha=0.25)
 
     def jit(a):
         j = np.linalg.norm(np.diff(a, n=2, axis=0), axis=1); return np.nanmedian(j)
-    ncam = len(npz["cams"]) if "cams" in npz.files else "?"
+    # cam count: npz field if present (dropout runs), else the good-cam set actually triangulated
+    ncam = len(npz["cams"]) if "cams" in npz.files else len(
+        [c for c in H.GOOD_CAMS.get(args.part, []) ] or "?????")
     fig.suptitle(f"MVGFormer vs incumbent vs OMC — {args.part} {args.trial}"
                  + (f"  [{args.tag}]" if args.tag else "")
                  + f"\nMVGFormer {ncam} cams; raw jitter |d2X| med: MVGFormer {jit(mvg):.1f}mm  "
-                 f"incumbent {jit(inc):.1f}mm  (rows 1-3 = per-axis position, aligned to OMC; row 4 = speed)",
-                 fontsize=11)
+                 f"incumbent {jit(inc):.1f}mm  (rows 1-3 = per-axis position aligned to OMC; "
+                 f"row 4 = speed, position low-passed then differentiated)",
+                 fontsize=10)
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     out = OUT / f"{args.part}_{args.trial}{('_' + args.tag) if args.tag else ''}.png"
     plt.savefig(out, dpi=140); print("->", out)

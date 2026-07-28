@@ -100,12 +100,19 @@ All estimators despiked (same H._despike the incumbent triangulation uses); jitt
 - Clean 5-cam: robust triangulation BEATS it on position (5.4 vs 7.0 mm) AND is ~3× less jittery
   (2.0 vs 6.2 mm |d²X|). MVGFormer is a per-frame regression (softmax blend over 1024 queries) →
   broadband mm-scale fuzz + occasional single-frame query-swap spikes.
-- **SPEED is NOT broken (corrected):** the earlier "715% peak / unusable" was an ARTEFACT of
-  differentiating unfiltered spiky position. With despike + POSITION low-pass then differentiate (the
-  treatment any raw estimator gets), MVGFormer wrist-speed = **31.6 mm/s |Δspeed| / 7% peak err** —
-  its PEAK-velocity (the Murphy measure) BEATS the incumbent's 20% and is near SmoothNet's ~4%. Per-
-  frame |Δspeed| is ~2× the incumbent (14.6) from residual fuzz, but peaks are excellent. So MVGFormer
-  is a fine speed source once filtered; it's just position-jitterier and 40× slower than triangulation.
+- **SPEED is NOT broken.** The earlier "715% peak / unusable" was an artefact of differentiating
+  unfiltered spiky position. Recipe: **despike → low-pass the POSITION @6Hz (study default) → d/dt**.
+  Two rules learned the hard way here:
+  1. Filter POSITION, never SPEED — speed-domain filtering can't remove spike-induced velocity
+     impulses, only smears them into fake bumps: 40-90% peak overshoot at every cutoff vs ~1% for
+     pos-lp. Despike first (isolated query-swap teleports), then position low-pass.
+  2. **Don't chase valley-noise with a lower cutoff, and NEVER filter OMC to measure peak error**
+     (softening ground truth fakes a good score). vs UNFILTERED OMC (true peak 866 mm/s), MVGFormer's
+     peak err GROWS as you filter harder: **6Hz 1% → 3Hz 7% → 2.5Hz 9% → 1.5Hz 17%**. So 6Hz is the
+     right cutoff — MVGFormer's despiked position already reproduces the true peak; aggression only
+     loses it. (A discarded intermediate claimed "2.5Hz = 0% peak cost" — that was measured against a
+     co-filtered OMC and is WRONG.) Residual per-frame valley fuzz is ~2× the incumbent but cosmetic;
+     the peak (the Murphy measure) is excellent at 6Hz. Fine speed source; position-jitterier + 40× slower.
 - **2-cam dropout: MVGFormer 13 mm @ 79% vs triangulation 0%.** Triangulation needs ≥3 agreeing cams
   (KF-budget floor) and dies at 2; MVGFormer's volumetric fusion degrades gracefully (7→13 mm). THIS
   is the win — the current pipeline literally cannot produce a wrist here.
@@ -113,7 +120,9 @@ All estimators despiked (same H._despike the incumbent triangulation uses); jitt
 
 **DECISION (user, 2026-07-28): rig is ALWAYS 5 cameras → MVGFormer PARKED.** Its only edge was the
 camera-dropout regime; with 5 well-spread cams the incumbent wins on position (5.4<7.0), jitter
-(2.0<6.2, ~3×), usable raw speed, AND is ~40× faster (40–240 fps vs 1). No reason to run it and no
+(2.0<6.2, ~3×), and is ~40× faster (40–240 fps vs 1). Speed (despike+pos-lp@6Hz) is actually a TIE-ish
+(both nail the true peak: MVGFormer 1%, incumbent 13% — MVGFormer even edges peak here), so speed is
+NOT the differentiator; position-jitter + throughput are. No reason to run it and no
 reason to chase the 20 fps optimisation (best case = parity with a tool that's already worse on 5 cams).
 Useful negative result: a heavyweight learned multi-view transformer does NOT beat plain robust
 triangulation once you have enough well-spread cameras. Scripts/weights/cache kept for a future

@@ -31,10 +31,12 @@ def main():
     ap.add_argument("--trial", default="trial_13_L_unaffected")
     ap.add_argument("--tag", default="")
     ap.add_argument("--incumbent-cams", default="")
-    ap.add_argument("--lp-hz", type=float, default=2.5, help="position low-pass cutoff (Hz). Study "
-                    "default 6Hz is too gentle for MVGFormer's fuzz; 2.5Hz halves noise at 0%% peak "
-                    "cost. Applied to POSITION (never speed — speed-domain filtering can't remove "
-                    "spike-induced peaks, only smear them: 40-90%% peak overshoot vs 0%% for pos-lp).")
+    ap.add_argument("--lp-hz", type=float, default=6.0, help="position low-pass cutoff (Hz), study "
+                    "default 6Hz. Applied to POSITION not speed (speed-domain filtering can't remove "
+                    "spike-induced peaks, only smear them: 40-90%% peak overshoot vs ~1%% for pos-lp). "
+                    "Do NOT go lower to chase valley noise: vs UNFILTERED OMC, MVGFormer's peak err "
+                    "grows 6Hz 1%% -> 2.5Hz 9%% -> 1.5Hz 17%% (the '0%% at 2.5Hz' was an artefact of "
+                    "filtering OMC too — never soften ground truth). 6Hz already nails the true peak.")
     args = ap.parse_args()
     H.use_good_cams()
     if args.incumbent_cams:

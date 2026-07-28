@@ -38,6 +38,11 @@ class DeltaTrial:
 
     def __init__(self, part, trial, trial_num, amq=None):
         self.part, self.trial, self.tn = part, trial, trial_num
+        # Active hand from the trial name: DELTA's affected side is LEFT, but trial names carry the
+        # tracked side (..._L_... / ..._R_...). Tracking the wrong wrist = the RESTING hand = no
+        # motion (fast-frame mask empty, nan speed). Default left if unmarked.
+        self.wrist_name = 'right_wrist' if '_R_' in trial else 'left_wrist'
+        self.wrist_idx = COCO17.index(self.wrist_name)
         self.calib = R._calib(part)
         # cams with a cached pose.json
         self.cams, self.KP = [], {}
@@ -75,8 +80,8 @@ class DeltaTrial:
     def _load_omc(self, amq):
         try:
             mmc, nn_ = H._load_mmc(self.part, self.trial)
-            raw = H._load_omc(self.part, self.trial, nn_)['left_wrist']
-            lag = H._find_lag(mmc['left_wrist'], raw)[0]
+            raw = H._load_omc(self.part, self.trial, nn_)[self.wrist_name]
+            lag = H._find_lag(mmc[self.wrist_name], raw)[0]
             return R._shift(raw, lag)                                # (n,3) OMC wrist, aligned
         except Exception:
             return None
@@ -97,7 +102,7 @@ class DeltaTrial:
     def valid_frames(self, min_cams=3, conf=0.3):
         out = []
         for f in range(self.n):
-            v = sum(np.isfinite(self.KP[c][f, WRIST_IDX, 0]) and self.KP[c][f, WRIST_IDX, 2] > conf
+            v = sum(np.isfinite(self.KP[c][f, self.wrist_idx, 0]) and self.KP[c][f, self.wrist_idx, 2] > conf
                     for c in self.cams)
             if v >= min_cams:
                 out.append(f)
@@ -108,7 +113,7 @@ class DeltaTrial:
         imgproc.prep_view) -> rig-agnostic, matches how YOLO's backbone sees input."""
         cams_used, imgs, Ps, kp2d, kpc = [], [], [], [], []
         for c in self.cams:
-            w = self.KP[c][f, WRIST_IDX]
+            w = self.KP[c][f, self.wrist_idx]
             if not (np.isfinite(w[0]) and w[2] > conf):
                 continue
             kp_nat = self.KP[c][f, :, :2]                            # (17,2) native px (nan where undet)

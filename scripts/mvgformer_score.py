@@ -22,15 +22,26 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--part", default="P07")
     ap.add_argument("--trial", default="trial_13_L_unaffected")
+    ap.add_argument("--tag", default="", help="MVGFormer npz suffix (e.g. drop13 for a dropout run)")
+    ap.add_argument("--incumbent-cams", default="", help="restrict the INCUMBENT triangulation to "
+                    "these cam numbers (e.g. 1,3) so a dropout run is apples-to-apples vs MVGFormer")
     args = ap.parse_args()
     H.use_good_cams()
+    if args.incumbent_cams:      # same-cameras comparison for the dropout test
+        want = {f"cam_{x.strip()}" for x in args.incumbent_cams.split(",")}
+        H.GOOD_CAMS = {args.part: want}
     side = "left" if "_L_" in args.trial else "right"
     joint = f"{side}_wrist"
 
-    npz = np.load(CACHE / f"{args.part}_{args.trial}.npz")
+    npz = np.load(CACHE / f"{args.part}_{args.trial}{('_' + args.tag) if args.tag else ''}.npz")
     mvg = npz["wrist"].astype(float)        # (n,3) mm, rig/calib world frame
     score = npz["score"].astype(float)
     mvg[score < 0.1] = np.nan               # drop unconfident/empty queries
+    # MVGFormer picks argmax query per frame with NO temporal continuity -> occasional single-frame
+    # query swaps = isolated >100mm teleport spikes (see out/mvgformer plot). Despike them the SAME
+    # way the incumbent triangulation already does (H._despike, isolated fast-jump removal) so the
+    # comparison is like-for-like: both are raw-but-despiked per-frame estimators.
+    mvg = H._despike(mvg)
 
     mmc, n = H._load_mmc(args.part, args.trial)     # incumbent YOLO+robust-triangulation, mm world
     inc = mmc[joint]
@@ -45,6 +56,8 @@ def main():
 
     # rigid align each estimator -> OMC (kills the constant rig<->mocap offset; speed unaffected)
     def align(a):
+        if not (np.isfinite(a).all(1) & np.isfinite(omc).all(1)).any():
+            return a            # nothing to align (e.g. incumbent collapsed on a dropout run)
         R, t, _ = H._kabsch(a, omc)
         return a @ R.T + t
     mvg_a, inc_a = align(mvg), align(inc)
@@ -52,10 +65,27 @@ def main():
     def pos_err(a):
         d = np.linalg.norm(a - omc, axis=1)
         d = d[np.isfinite(d)]
+        if d.size == 0:
+            return None
         return np.median(d), np.percentile(d, 90)
     for name, a in (("MVGFormer", mvg_a), ("incumbent", inc_a)):
-        med, p90 = pos_err(a)
-        print(f"position vs OMC  {name:10}: median {med:5.1f} mm   p90 {p90:5.1f} mm")
+        pe = pos_err(a)
+        if pe is None:
+            print(f"position vs OMC  {name:10}: NO VALID FRAMES (estimator produced nothing)")
+        else:
+            print(f"position vs OMC  {name:10}: median {pe[0]:5.1f} mm   p90 {pe[1]:5.1f} mm")
+
+    # RAW JITTER — the fair like-for-like metric between two RAW per-frame estimators (no smoother):
+    # median magnitude of the 3D 2nd difference (accel proxy), same metric as the SmoothNet /
+    # point-tracking memos. Frame-invariant, so no alignment needed. Both are raw here.
+    def jitter(a):
+        j = np.linalg.norm(np.diff(a, n=2, axis=0), axis=1)
+        j = j[np.isfinite(j)]
+        return (np.median(j), np.percentile(j, 90)) if j.size else None
+    for name, a in (("MVGFormer", mvg), ("incumbent", inc)):
+        jr = jitter(a)
+        print(f"raw jitter (|d2X|) {name:10}: " +
+              (f"median {jr[0]:5.2f} mm   p90 {jr[1]:5.2f} mm" if jr else "NO VALID FRAMES"))
 
     # THE occlusion question: frames the incumbent LOST (nan) but OMC has a real wrist. MVGFormer's
     # volumetric fusion is meant to survive exactly these. Report how many it recovers + how well.
@@ -76,7 +106,8 @@ def main():
         if l >= 0: out[l:] = v[:len(v)-l] if l else v
         else: out[:l] = v[-l:]
         return out
-    lag, _ = H._find_lag(inc, omc)
+    ref = inc if np.isfinite(inc).all(1).any() else mvg   # sync ref (incumbent may be empty)
+    lag, _ = H._find_lag(ref, omc)
     o = H._lp(H._speed(_shift(omc, lag)))
     for name, a in (("MVGFormer", mvg), ("incumbent", inc)):
         sp = H._lp(H._speed(a)); mm = np.isfinite(sp) & np.isfinite(o)

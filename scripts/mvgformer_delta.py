@@ -159,6 +159,9 @@ def main():
     ap.add_argument("--backbone", default=str(MVG / "models/pose_resnet50_panoptic.pth.tar"))
     ap.add_argument("--smoke", action="store_true", help="one frame only, print shapes + wrist")
     ap.add_argument("--max-frames", type=int, default=0)
+    ap.add_argument("--cams", default="", help="comma list of cam numbers to RESTRICT to, e.g. 1,3,5 "
+                    "(camera-dropout / occlusion-robustness test); default = all good staged cams")
+    ap.add_argument("--tag", default="", help="suffix on the output npz (distinguishes dropout runs)")
     args = ap.parse_args()
 
     device = torch.device("cuda")
@@ -186,6 +189,9 @@ def main():
     def clip_path(c):
         return H.DELTA / args.part / "staged" / f"delta_{args.part}_{args.trial}.{c.split('_')[1]}.mp4"
     cam_names = [c for c in sorted(cams) if clip_path(c).exists()]
+    if args.cams:                                    # camera-dropout test: restrict to a subset
+        want = {f"cam_{x.strip()}" for x in args.cams.split(",")}
+        cam_names = [c for c in cam_names if c in want]
     if not cam_names:
         sys.exit(f"no staged clips for {args.part} {args.trial}")
     cams = {c: cams[c] for c in cam_names}
@@ -234,8 +240,8 @@ def main():
         caps[c].release()
 
     outdir = Path("/home/imove/Documents/cup-task/cache/mvgformer"); outdir.mkdir(parents=True, exist_ok=True)
-    outp = outdir / f"{args.part}_{args.trial}.npz"
-    np.savez(outp, wrist=wrist, score=scores, side=side, joint_idx=widx)
+    outp = outdir / f"{args.part}_{args.trial}{('_' + args.tag) if args.tag else ''}.npz"
+    np.savez(outp, wrist=wrist, score=scores, side=side, joint_idx=widx, cams=cam_names)
     print(f"[saved] {outp}  valid frames={np.isfinite(wrist).all(1).sum()}/{nfr}", flush=True)
 
 

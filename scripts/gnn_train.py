@@ -44,6 +44,7 @@ ARM = [j for j in JOINTS if "hip" not in j]
 ARM_I = [JOINTS.index(j) for j in ARM]
 
 
+
 # --------------------------------------------------------------------------- data
 def load_clean(parts=None, sync_thr=0.7, wr_thr=0.5, need_reproj=False):
     """Return list of trial dicts: {part, side, mmc(T,J,3), omc(T,J,3), valid(T,J)} (mm).
@@ -296,7 +297,7 @@ def train_fold(held, all_trials, args):
     test = [t for t in all_trials if t["part"] == held]
     if not test:
         return None
-    use_reproj = (args.loss == "reproj")
+    use_reproj = args.loss in ("reproj", "selfconsistency")   # both need per-cam 2D + calib sidecars
     # pad to the GLOBAL max cam count so a fold trained on 5-cam parts + tested on 3-cam is consistent
     max_c = max((t["uv"].shape[1] for t in all_trials), default=0) if use_reproj else 0
     ds = WindowSet(train, args.win, reproj=use_reproj, max_c=max_c)
@@ -328,6 +329,7 @@ def train_fold(held, all_trials, args):
         jw[G.wrist_idx("left")] = args.wrist_w
 
     t0 = time.time()
+    sc_terms = {}   # accumulates self-consistency term breakdown per epoch
     for ep in range(args.epochs):
         model.train()
         tot = nb = 0.0
@@ -338,7 +340,16 @@ def train_fold(held, all_trials, args):
                 mmc, omc, val = [b.to(DEV) for b in batch]
             pred = model(mmc)
             B, Tw, J, _ = pred.shape
-            if args.loss == "reproj":
+            if args.loss == "selfconsistency":
+                # OBJECTIVE = the priors DLT does NOT enforce (SMOOTHNESS + BONE RIGIDITY), with
+                # reprojection as the LEASH that stops the skeleton freezing/drifting (user's reframe:
+                # pure reproj is a weak teacher because DLT already minimised it; the value is smooth+
+                # bone). All self-supervised -> no healthy prior, no Way-0 trap.
+                loss, _terms = G.selfconsistency_loss(
+                    pred, uv, uvc, uvv, Ks, dists, Rs, ts, mask=val,
+                    bone_w=args.bone_w, smooth_w=args.smooth_w, anchor_w=args.anchor_w,
+                    huber_px=args.huber_px)
+            elif args.loss == "reproj":
                 # SELF-SUPERVISED: pull refined 3D toward the per-cam 2D dets (NO omc, NO alignment).
                 # Huber-robust so a disagreeing cam can't yank it; smooth_w buys a cleaner trajectory
                 # (the jitter fix). Where the good cams agree the raw is already on the rays -> ~0 loss
@@ -369,11 +380,21 @@ def train_fold(held, all_trials, args):
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
             tot += loss.item(); nb += 1
+            if args.loss == "selfconsistency":
+                for k, v in _terms.items():
+                    sc_terms[k] = sc_terms.get(k, 0.0) + v; sc_terms["_n"] = sc_terms.get("_n", 0) + 1
         sched.step()
+        # self-consistency term breakdown (are bone-STD + smoothness ACTUALLY dropping? reproj couldn't)
+        sc_str = ""
+        if args.loss == "selfconsistency" and sc_terms.get("_n"):
+            n = sc_terms["_n"]
+            sc_str = (f"  [anchor {sc_terms['anchor_px']/n:.2f}px  smooth {sc_terms['smooth']/n:.2f}  "
+                      f"boneSTD {sc_terms['bone_std_mm']/n:.2f}mm  ncam {sc_terms['mean_consensus']/n:.2f}]")
+            sc_terms.clear()
         do_val = ep % args.log_every == 0 or ep == args.epochs - 1
         if not do_val:
             # lightweight per-epoch line so the log is never silent for minutes (no expensive val eval)
-            print(f"  [{held}] ep{ep:3d} train_loss {tot/max(nb,1):6.2f}  ({time.time()-t0:.0f}s)",
+            print(f"  [{held}] ep{ep:3d} train_loss {tot/max(nb,1):6.2f}{sc_str}  ({time.time()-t0:.0f}s)",
                   flush=True)
         else:
             # quick val PA on held-out (raw vs refined), median over trials
@@ -387,7 +408,7 @@ def train_fold(held, all_trials, args):
                   f"wr {med(vr,'wr'):.1f}->{med(rr,'wr'):.1f}  "
                   f"elb {med(vr,'elb'):.1f}->{med(rr,'elb'):.1f}  "
                   f"jit {med(vr,'jit'):.0f}->{med(rr,'jit'):.0f}  "
-                  f"pve {med(vr,'pve'):+.0f}->{med(rr,'pve'):+.0f}  "
+                  f"pve {med(vr,'pve'):+.0f}->{med(rr,'pve'):+.0f}{sc_str}  "
                   f"({time.time()-t0:.0f}s)", flush=True)
     # final eval: raw, butter, savgol, GNN, GNN+savgol -- all vs OMC, same metrics.
     # GNN+savgol tests the complementarity claim: GNN fixes SHAPE (PA-MPJPE), which smoothers
@@ -426,12 +447,18 @@ def main(argv=None):
                     help="wrist = up-weight wrists (legacy); angle = focus elbow+shoulder (the joints "
                          "feeding the in-scope Murphy angle measures), keep wrist, downweight nose/hips")
     ap.add_argument("--bone-w", type=float, default=0.3, help="bone-length term weight (relational loss)")
-    ap.add_argument("--loss", choices=["pampjpe", "velocity", "window", "relational", "reproj"],
+    ap.add_argument("--loss",
+                    choices=["pampjpe", "velocity", "window", "relational", "reproj", "selfconsistency"],
                     default="pampjpe",
                     help="pampjpe = position shape (overfits rig geometry); "
                          "velocity = offset-invariant speed-domain loss; "
-                         "reproj = SELF-SUPERVISED reprojection to per-cam 2D (no OMC, self-gating) "
-                         "+ smooth_w jerk penalty -- the less-biased signal")
+                         "reproj = SELF-SUPERVISED reprojection to per-cam 2D (WEAK: DLT already "
+                         "minimised it); selfconsistency = SMOOTHNESS + BONE-RIGIDITY (the priors DLT "
+                         "does NOT enforce) anchored by a CONSENSUS-weighted reproj leash -- the real one")
+    ap.add_argument("--anchor-w", type=float, default=1.0,
+                    help="selfconsistency: weight of the reprojection LEASH (stops the skeleton "
+                         "freezing/drifting). Heavy => re-pins to jittery raw (weak-reproj result); "
+                         "light => skeleton freezes. This is the trade-off to sweep.")
     ap.add_argument("--huber-px", type=float, default=20.0,
                     help="reproj loss Huber threshold (px): a cam past this is capped so a "
                          "disagreeing/other-object 2D can't yank the 3D (soft consensus gate)")
@@ -450,7 +477,8 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     print(f"device={DEV}  loading clean pairs...", flush=True)
-    trials = load_clean(sync_thr=a.sync_thr, wr_thr=a.wr_thr, need_reproj=(a.loss == "reproj"))
+    trials = load_clean(sync_thr=a.sync_thr, wr_thr=a.wr_thr,
+                        need_reproj=(a.loss in ("reproj", "selfconsistency")))
     if a.only_parts:
         trials = [t for t in trials if t["part"] in a.only_parts]
         print(f"restricted to {a.only_parts}", flush=True)

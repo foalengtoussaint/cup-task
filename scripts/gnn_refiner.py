@@ -402,3 +402,114 @@ def reprojection_loss(pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts,
         acc_mag = torch.linalg.norm(acc, dim=-1)
         loss = loss + smooth_w * (acc_mag * am).sum() / am.sum().clamp(min=1.0)
     return loss
+
+
+# --------------------------------------------------------------------- self-consistency loss
+def _reproj_residual_consensus(pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts, mask,
+                               huber_px, consensus_px=15.0, temp=5.0):
+    """CONSENSUS-weighted Huber reprojection anchor (user's point: reward agreeing with the MOST
+    cameras, not the MEAN residual).  The mean-residual anchor can be gamed -- fit the 2 easiest
+    cameras well, ignore the other 3, and the mean drops.  Instead we weight each (frame,joint) by how
+    many cameras AGREE with the refined point, so being in the LARGER consensus set is what pays off
+    (the same principle as robust_triangulate's inlier count, made soft/differentiable).
+
+    Per camera c: residual res_c (px). Soft inlier gate g_c = sigmoid((consensus_px - res_c)/temp) in
+    [0,1] (~1 when the cam agrees within ~consensus_px, ~0 when it doesn't). The per-(frame,joint)
+    consensus weight = sum_c g_c (roughly 'how many cameras agree'). Each camera's Huber residual is
+    then scaled by g_c (down-weight cameras that disagree) AND by that frame-joint's consensus count
+    (a 4-cam-agreement frame-joint dominates a 2-cam one). Gradients stay alive via the Huber residual
+    (the sigmoid gate is a weight; the residual it multiplies is what the model minimises).
+
+    Returns (loss_px, mean_consensus) -- mean_consensus is the avg #cameras agreeing (a diagnostic:
+    higher = the refined pose sits in a bigger agreeing set)."""
+    B, T, C, J, _ = uv.shape
+    dev = pred.device
+    Xp = pred.unsqueeze(2).expand(B, T, C, J, 3)
+    res_list = []; gate_list = []; base_w_list = []
+    for c in range(C):
+        uvp, infront = project_torch(Xp[:, :, c], Ks[:, c], dists[:, c], Rs[:, c], ts[:, c])
+        res = torch.linalg.norm(uvp - uv[:, :, c], dim=-1)                 # (B,T,J) px
+        g = torch.sigmoid((consensus_px - res) / temp)                     # soft inlier in [0,1]
+        w = uv_valid[:, :, c].float() * uv_conf[:, :, c] * infront.float() # base validity/conf weight
+        if mask is not None:
+            w = w * mask.float()
+        res_list.append(res); gate_list.append(g * w); base_w_list.append(w)
+    gates = torch.stack(gate_list, 0)                                      # (C,B,T,J) soft-inliers*valid
+    n_agree = gates.sum(0)                                                 # (B,T,J) consensus count
+    tot = torch.zeros((), device=dev); wsum = torch.zeros((), device=dev)
+    for c in range(C):
+        res = res_list[c]
+        rob = torch.where(res <= huber_px, 0.5 * res * res / huber_px, res - 0.5 * huber_px)
+        # weight: this cam's soft-inlier gate (down-weight disagreeing cams) * frame-joint consensus
+        # count (favour points where MANY cams agree). base validity already folded into gate_list.
+        w = gate_list[c] * n_agree
+        tot = tot + (rob * w).sum(); wsum = wsum + w.sum()
+    # mean consensus over valid frame-joints (diagnostic)
+    any_valid = torch.stack(base_w_list, 0).sum(0) > 0
+    mean_consensus = (n_agree[any_valid].mean() if any_valid.any() else torch.zeros((), device=dev))
+    return tot / wsum.clamp(min=1.0), float(mean_consensus)
+
+
+def selfconsistency_loss(pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts, mask,
+                         bone_w=1.0, smooth_w=0.0, anchor_w=1.0, huber_px=20.0):
+    """SELF-SUPERVISED loss whose OBJECTIVE is BONE-LENGTH RIGIDITY (the prior per-frame DLT does NOT
+    enforce -- it triangulates each joint independently -> a rubber-band arm), with a CONSENSUS-
+    weighted reprojection LEASH so the skeleton can't just freeze. NO OMC anywhere -> no healthy prior,
+    no Way-0 cross-frame trap.
+
+    WHY this shape (measured, not assumed):
+      * Pure reproj is a WEAK teacher -- robust_triangulate already MINIMISES reproj (raw sits at the
+        floor, model moved training residual only 6.78->7.07px). So reproj is the LEASH, not the goal.
+      * DIAGNOSTIC on the first run: of {smooth, bone}, only BONE moved on training data (trial-scale
+        bone STD 13.6->11.9mm) -- the SMOOTH term did nothing, but that was a BUG (non-squared norm
+        -> unit-magnitude gradient, blind to big jitter); now squared. Jitter is CONSTANT (slowest 25%
+        still ~6000 mm/s^2) AND 4.6x worse at speed, so a squared term has plenty to grip.
+      * BONE term = within-window length variance. Per-window is fine WITHOUT a trial reference (user's
+        point): the model is ONE shared network, so penalising every window's internal length-variance
+        drives a CONSISTENT length across all windows on its own (same weights, same poses -> same
+        length) -> global rigidity emerges. No per-trial reference needed.
+    """
+    B, T, J, _ = pred.shape
+    dev = pred.device
+    m = mask.float() if mask is not None else torch.ones(B, T, J, device=dev)
+
+    # ---- L_bone: SQUARED bone-length deviation from the window mean = L̄_uv (the standard bone-length
+    # constancy term, Gemini's Σ_t Σ_limbs (||y_u-y_v|| - L̄)^2). SQUARED (not STD) so a big rubber-band
+    # excursion gets a proportionally bigger gradient (same magnitude-sensitivity lesson as smooth).
+    # L̄ = per-window mean (self-referential, no trial reference): one shared net -> a consistent length
+    # across all windows -> global rigidity (user's point). Report sqrt(mean) as bone_std_mm (mm units).
+    tot_b = torch.zeros((), device=dev); nb = torch.zeros((), device=dev)
+    for sh, el, wr in _ARM_CHAINS:
+        si, ei, wi = _JI[sh], _JI[el], _JI[wr]
+        for a, b in [(si, ei), (ei, wi)]:                              # upper-arm, forearm
+            L = torch.linalg.norm(pred[:, :, b] - pred[:, :, a], dim=-1)   # (B,T) length per frame
+            vm = m[:, :, a] * m[:, :, b]                                # both endpoints valid (B,T)
+            n = vm.sum(1, keepdim=True).clamp(min=1e-6)
+            mean_L = (L * vm).sum(1, keepdim=True) / n                  # (B,1) window mean length = L̄
+            sq = ((L - mean_L) ** 2 * vm)                              # (B,T) squared deviation
+            ok = (vm.sum(1) >= 4).float()                              # (B,) need >=4 frames
+            tot_b = tot_b + (sq.sum(1) * ok).sum(); nb = nb + (vm.sum(1) * ok).sum()
+    mean_sq = tot_b / nb.clamp(min=1.0)                                # mean squared-deviation (mm^2)
+    L_bone = mean_sq                                                   # SQUARED (the loss)
+    bone_std_report = float(torch.sqrt(mean_sq + 1e-6))               # mm, for logging
+
+    # ---- L_smooth: SQUARED accel ||y_t - 2y_{t-1} + y_{t-2}||^2 (the standard jerk penalty).
+    # ⚠ FIX: earlier used the NON-squared norm ||.|| whose gradient is acc/||acc|| = unit-magnitude,
+    # so a huge jitter spike and a tiny one got the SAME push -> the term couldn't attack the big
+    # accelerations (measured: moved nothing, 3.775->3.781). SQUARED -> gradient ∝ acc itself -> big
+    # jitter gets big gradient (what we want). Jitter is CONSTANT (slowest 25% still ~6000 mm/s^2) AND
+    # 4.6x worse at speed, so there is plenty for a magnitude-sensitive term to grip.
+    if smooth_w > 0:
+        acc = pred[:, 2:] - 2 * pred[:, 1:-1] + pred[:, :-2]
+        am = (m[:, 2:] * m[:, 1:-1] * m[:, :-2])
+        L_smooth = ((acc ** 2).sum(-1) * am).sum() / am.sum().clamp(min=1.0)   # ||.||^2
+    else:
+        L_smooth = torch.zeros((), device=dev)
+
+    # ---- L_anchor: reprojection leash, CONSENSUS-weighted (agree with the MOST cameras, not the mean)
+    L_anchor, mean_consensus = _reproj_residual_consensus(
+        pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts, mask, huber_px)
+
+    return anchor_w * L_anchor + smooth_w * L_smooth + bone_w * L_bone, \
+        {"anchor_px": L_anchor.item(), "smooth": L_smooth.item(), "bone_std_mm": bone_std_report,
+         "mean_consensus": mean_consensus}

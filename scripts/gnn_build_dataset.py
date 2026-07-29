@@ -106,6 +106,62 @@ def _shift(v, lag):
     return out
 
 
+def _build_reproj(part, trial, n):
+    """Cache the per-camera 2D keypoints + camera intrinsics/extrinsics for the REPROJECTION loss.
+
+    WHY separate from the (mmc,omc,valid) npz: the reprojection loss is SELF-SUPERVISED -- it pulls
+    the refined 3D toward where the actual 2D detections landed, needing NO OMC target and NO
+    MMC->OMC alignment (so no healthy-prior, no Way-0 frame trap). Where the good cameras already
+    AGREE (the majority of frames) the raw 3D is near the 2D rays and the reproj gradient is ~0, so
+    it LEAVES GOOD FRAMES ALONE -- the de-facto gating the OMC-supervised losses lacked.
+
+    Returns a dict of arrays for one trial (good cams only, fixed cam order):
+        uv        (T, C, J, 2)  per-cam 2D keypoint px
+        uv_conf   (T, C, J)     YOLO keypoint confidence (reproj weight)
+        uv_valid  (T, C, J)     bool: kp present AND finite
+        K         (C, 3, 3) | dist (C, 5) | R (C, 3, 3) | t (C, 3)   distortion-aware projection
+        cams      (C,) str
+    None if no good cams / no dets.
+    """
+    d = DELTA / part
+    cams = H._load_calib_mm(part)
+    per_cam = {}
+    for pj in sorted(glob.glob(str(d / H.DETS_SUBDIR / f"*{trial}*.pose.json"))):
+        cam = f"cam_{Path(pj).name.split('.')[1]}"
+        per_cam[cam] = json.loads(Path(pj).read_text())["frames"]
+    if H.GOOD_CAMS is not None and part in H.GOOD_CAMS:
+        keep = H.GOOD_CAMS[part]
+        per_cam = {c: v for c, v in per_cam.items() if c in keep}
+        cams = {c: v for c, v in cams.items() if c in keep}
+    cam_list = sorted(per_cam, key=lambda c: int(c.split("_")[1]))
+    if not cam_list:
+        return None
+    C = len(cam_list)
+    J = len(JOINTS)
+    uv = np.full((n, C, J, 2), np.nan, np.float32)
+    uv_conf = np.zeros((n, C, J), np.float32)
+    for ci, cam in enumerate(cam_list):
+        # frames list -> index by the JSON 'frame' field so it lines up with the triangulated T
+        by_f = {f["frame"]: f for f in per_cam[cam]}
+        for t in range(n):
+            fr = by_f.get(t)
+            if not fr:
+                continue
+            kps = fr.get("kps", {})
+            for ji, joint in enumerate(JOINTS):
+                p = kps.get(joint)
+                if p is not None and len(p) >= 3 and p[0] is not None:
+                    uv[t, ci, ji] = p[:2]
+                    uv_conf[t, ci, ji] = p[2]
+    uv_valid = np.isfinite(uv).all(-1) & (uv_conf > 0)
+    K = np.stack([cams[c].K for c in cam_list]).astype(np.float32)
+    dist = np.stack([np.asarray(cams[c].dist, float)[:5] for c in cam_list]).astype(np.float32)
+    Rm = np.stack([cams[c].R for c in cam_list]).astype(np.float32)
+    tv = np.stack([np.asarray(cams[c].t, float).reshape(3) for c in cam_list]).astype(np.float32)
+    return dict(uv=uv, uv_conf=uv_conf, uv_valid=uv_valid,
+                K=K, dist=dist, R=Rm, t=tv, cams=np.array(cam_list))
+
+
 def _trials_for(part):
     seen = set()
     for pj in sorted(glob.glob(str(DELTA / part / "c3d" / "*.c3d"))):
@@ -115,7 +171,21 @@ def _trials_for(part):
 
 def build_trial(part, trial, force=False):
     outnpz = CACHE / part / f"{trial}.npz"
+    reprojnpz = outnpz.with_suffix(".reproj.npz")
     if outnpz.exists() and not force:
+        # main pair cached; backfill the reproj sidecar if it's missing (added later than the pairs)
+        if not reprojnpz.exists():
+            try:
+                # frame count is already in the cached meta -> no need to re-triangulate (slow)
+                metaj = outnpz.with_suffix(".json")
+                n = json.loads(metaj.read_text())["n"] if metaj.exists() else \
+                    int(np.load(outnpz)["mmc"].shape[0])
+                rj = _build_reproj(part, trial, n)
+                if rj is not None:
+                    np.savez_compressed(reprojnpz, **rj)
+                    return f"cached +reproj C={len(rj['cams'])}"
+            except Exception as e:
+                return f"cached (reproj-err:{type(e).__name__})"
         return "cached"
     side = _trial_side(trial)
     wr = f"{side}_wrist"
@@ -135,6 +205,12 @@ def build_trial(part, trial, force=False):
 
     outnpz.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(outnpz, mmc=M.astype(np.float32), omc=O.astype(np.float32), valid=valid)
+
+    # reprojection sidecar (per-cam 2D + calib) for the self-supervised reproj loss
+    rj = _build_reproj(part, trial, n)
+    if rj is not None:
+        np.savez_compressed(outnpz.with_suffix(".reproj.npz"), **rj)
+
     meta = {
         "part": part, "trial": trial, "side": side, "n": int(n),
         "good_cams": sorted(H.GOOD_CAMS.get(part, []), key=lambda c: int(c.split("_")[1])),

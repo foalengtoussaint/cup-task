@@ -45,8 +45,12 @@ ARM_I = [JOINTS.index(j) for j in ARM]
 
 
 # --------------------------------------------------------------------------- data
-def load_clean(parts=None, sync_thr=0.7, wr_thr=0.5):
-    """Return list of trial dicts: {part, side, mmc(T,J,3), omc(T,J,3), valid(T,J)} (mm)."""
+def load_clean(parts=None, sync_thr=0.7, wr_thr=0.5, need_reproj=False):
+    """Return list of trial dicts: {part, side, mmc(T,J,3), omc(T,J,3), valid(T,J)} (mm).
+
+    need_reproj: also attach the reprojection sidecar (per-cam 2D + calib) for --loss reproj:
+        uv (T,C,J,2) uv_conf (T,C,J) uv_valid (T,C,J) K (C,3,3) dist (C,5) R (C,3,3) t (C,3).
+    A trial without a sidecar is SKIPPED when need_reproj (can't compute the loss for it)."""
     trials = []
     for mj in sorted(glob.glob(str(CACHE / "*" / "*.json"))):
         m = json.loads(Path(mj).read_text())
@@ -55,19 +59,38 @@ def load_clean(parts=None, sync_thr=0.7, wr_thr=0.5):
         if m["sync_corr"] < sync_thr or m["wrist_valid_frac"] < wr_thr:
             continue
         d = np.load(str(Path(mj).with_suffix(".npz")))
-        trials.append({"part": m["part"], "trial": m["trial"], "side": m["side"],
-                       "mmc": d["mmc"].astype(np.float32), "omc": d["omc"].astype(np.float32),
-                       "valid": d["valid"]})
+        rec = {"part": m["part"], "trial": m["trial"], "side": m["side"],
+               "mmc": d["mmc"].astype(np.float32), "omc": d["omc"].astype(np.float32),
+               "valid": d["valid"]}
+        if need_reproj:
+            rp = Path(mj).with_suffix(".reproj.npz")
+            if not rp.exists():
+                continue
+            r = np.load(str(rp))
+            rec["uv"] = r["uv"].astype(np.float32)
+            rec["uv_conf"] = r["uv_conf"].astype(np.float32)
+            rec["uv_valid"] = r["uv_valid"]
+            rec["K"] = r["K"].astype(np.float32)
+            rec["dist"] = r["dist"].astype(np.float32)
+            rec["R"] = r["R"].astype(np.float32)
+            rec["t"] = r["t"].astype(np.float32)
+        trials.append(rec)
     return trials
 
 
 class WindowSet(Dataset):
     """Sliding windows across trials. Item = (mmc_win, omc_win, valid_win) each (win,J,3)/(win,J).
-    A window is kept only if its CENTRE frame has the arm valid (so the loss has signal)."""
-    def __init__(self, trials, win):
+    A window is kept only if its CENTRE frame has the arm valid (so the loss has signal).
+
+    reproj=True: also returns per-window (uv, uv_conf, uv_valid, K, dist, R, t) padded to `max_c`
+    cameras (padded cams have uv_valid=False -> 0 loss weight) so a batch mixing participants with
+    different camera counts collates cleanly."""
+    def __init__(self, trials, win, reproj=False, max_c=None):
         self.win = win
         self.index = []      # (trial_idx, start)
         self.trials = trials
+        self.reproj = reproj
+        self.max_c = max_c or (max((t["uv"].shape[1] for t in trials), default=0) if reproj else 0)
         h = win // 2
         for ti, t in enumerate(trials):
             T = t["mmc"].shape[0]
@@ -79,6 +102,18 @@ class WindowSet(Dataset):
     def __len__(self):
         return len(self.index)
 
+    def _pad_cams(self, arr, C):
+        """Pad axis-1 (cameras) up to self.max_c with zeros. arr shape (win, C, ...) or (C, ...)."""
+        if C >= self.max_c:
+            return arr[:self.max_c] if arr.ndim <= 2 else arr[:, :self.max_c]
+        pad_c = self.max_c - C
+        if arr.ndim == 2:      # (C, k) calib
+            return np.concatenate([arr, np.zeros((pad_c,) + arr.shape[1:], arr.dtype)], 0)
+        if arr.shape[1] == C:  # (win, C, ...) per-frame
+            return np.concatenate([arr, np.zeros((arr.shape[0], pad_c) + arr.shape[2:], arr.dtype)], 1)
+        # (C, a, b) calib matrices
+        return np.concatenate([arr, np.zeros((pad_c,) + arr.shape[1:], arr.dtype)], 0)
+
     def __getitem__(self, k):
         ti, s = self.index[k]
         t = self.trials[ti]
@@ -89,8 +124,23 @@ class WindowSet(Dataset):
         # replace NaN with 0 (masked out in the loss); keeps conv finite
         mmc[~np.isfinite(mmc)] = 0.0
         omc[~np.isfinite(omc)] = 0.0
+        if not self.reproj:
+            return (torch.from_numpy(mmc), torch.from_numpy(omc),
+                    torch.from_numpy(val.astype(np.bool_)))
+        C = t["uv"].shape[1]
+        uv = self._pad_cams(t["uv"][s:e].copy(), C)          # (win, maxc, J, 2)
+        uvc = self._pad_cams(t["uv_conf"][s:e].copy(), C)    # (win, maxc, J)
+        uvv = self._pad_cams(t["uv_valid"][s:e].astype(np.bool_), C)
+        uv[~np.isfinite(uv)] = 0.0
+        K = self._pad_cams(t["K"].copy(), C)                 # (maxc,3,3)
+        dist = self._pad_cams(t["dist"].copy(), C)           # (maxc,5)
+        R = self._pad_cams(t["R"].copy(), C)                 # (maxc,3,3)
+        tv = self._pad_cams(t["t"].copy(), C)                # (maxc,3)
         return (torch.from_numpy(mmc), torch.from_numpy(omc),
-                torch.from_numpy(val.astype(np.bool_)))
+                torch.from_numpy(val.astype(np.bool_)),
+                torch.from_numpy(uv), torch.from_numpy(uvc),
+                torch.from_numpy(uvv), torch.from_numpy(K),
+                torch.from_numpy(dist), torch.from_numpy(R), torch.from_numpy(tv))
 
 
 # --------------------------------------------------------------------------- metrics (numpy, on full trials)
@@ -243,7 +293,10 @@ def train_fold(held, all_trials, args):
     test = [t for t in all_trials if t["part"] == held]
     if not test:
         return None
-    ds = WindowSet(train, args.win)
+    use_reproj = (args.loss == "reproj")
+    # pad to the GLOBAL max cam count so a fold trained on 5-cam parts + tested on 3-cam is consistent
+    max_c = max((t["uv"].shape[1] for t in all_trials), default=0) if use_reproj else 0
+    ds = WindowSet(train, args.win, reproj=use_reproj, max_c=max_c)
     dl = DataLoader(ds, batch_size=args.batch, shuffle=True, num_workers=args.workers,
                     drop_last=True, pin_memory=(DEV == "cuda"))
     model = G.GNNRefiner(hidden=args.hidden, blocks=args.blocks,
@@ -275,11 +328,22 @@ def train_fold(held, all_trials, args):
     for ep in range(args.epochs):
         model.train()
         tot = nb = 0.0
-        for mmc, omc, val in dl:
-            mmc, omc, val = mmc.to(DEV), omc.to(DEV), val.to(DEV)
+        for batch in dl:
+            if use_reproj:
+                mmc, omc, val, uv, uvc, uvv, Ks, dists, Rs, ts = [b.to(DEV) for b in batch]
+            else:
+                mmc, omc, val = [b.to(DEV) for b in batch]
             pred = model(mmc)
             B, Tw, J, _ = pred.shape
-            if args.loss == "relational":
+            if args.loss == "reproj":
+                # SELF-SUPERVISED: pull refined 3D toward the per-cam 2D dets (NO omc, NO alignment).
+                # Huber-robust so a disagreeing cam can't yank it; smooth_w buys a cleaner trajectory
+                # (the jitter fix). Where the good cams agree the raw is already on the rays -> ~0 loss
+                # -> good frames left alone (the self-gating the OMC losses lacked).
+                loss = G.reprojection_loss(pred, uv, uvc, uvv, Ks, dists, Rs, ts,
+                                           smooth_w=args.smooth_w, mask=val, joint_weights=jw,
+                                           huber_px=args.huber_px)
+            elif args.loss == "relational":
                 # impairment-agnostic 'arm as coupled linkage': supervise RELATIVE bone vectors +
                 # bone-length only, NO absolute pose -> can't learn a healthy prior (user's idea).
                 loss = G.relational_loss(pred, omc, val, bone_w=args.bone_w)
@@ -359,9 +423,15 @@ def main(argv=None):
                     help="wrist = up-weight wrists (legacy); angle = focus elbow+shoulder (the joints "
                          "feeding the in-scope Murphy angle measures), keep wrist, downweight nose/hips")
     ap.add_argument("--bone-w", type=float, default=0.3, help="bone-length term weight (relational loss)")
-    ap.add_argument("--loss", choices=["pampjpe", "velocity", "window", "relational"], default="pampjpe",
+    ap.add_argument("--loss", choices=["pampjpe", "velocity", "window", "relational", "reproj"],
+                    default="pampjpe",
                     help="pampjpe = position shape (overfits rig geometry); "
-                         "velocity = offset-invariant speed-domain loss (should transfer)")
+                         "velocity = offset-invariant speed-domain loss; "
+                         "reproj = SELF-SUPERVISED reprojection to per-cam 2D (no OMC, self-gating) "
+                         "+ smooth_w jerk penalty -- the less-biased signal")
+    ap.add_argument("--huber-px", type=float, default=20.0,
+                    help="reproj loss Huber threshold (px): a cam past this is capped so a "
+                         "disagreeing/other-object 2D can't yank the 3D (soft consensus gate)")
     ap.add_argument("--peak-w", type=float, default=0.5,
                     help="weight of the peak-wrist-speed term (velocity loss only)")
     ap.add_argument("--smooth-w", type=float, default=1.0,
@@ -377,7 +447,7 @@ def main(argv=None):
     a = ap.parse_args(argv)
 
     print(f"device={DEV}  loading clean pairs...", flush=True)
-    trials = load_clean(sync_thr=a.sync_thr, wr_thr=a.wr_thr)
+    trials = load_clean(sync_thr=a.sync_thr, wr_thr=a.wr_thr, need_reproj=(a.loss == "reproj"))
     if a.only_parts:
         trials = [t for t in trials if t["part"] in a.only_parts]
         print(f"restricted to {a.only_parts}", flush=True)

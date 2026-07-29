@@ -316,3 +316,89 @@ def velocity_loss(pred, targ, mask, joint_weights=None, peak_w=0.0, wrist_i=None
 
 def wrist_idx(side):
     return _JI[f"{side}_wrist"]
+
+
+# ---------------------------------------------------------------------------- reprojection loss
+def project_torch(X, K, dist, R, t):
+    """Differentiable Brown-Conrady projection of world points into ONE camera.
+
+    X    (B,T,J,3) world mm ;  per-SAMPLE calib: K (B,3,3) ; dist (B,5) ; R (B,3,3) world->cam ;
+    t (B,3). (K/dist/R/t also accept an un-batched (3,3)/(5,)/(3,3)/(3,) form -> broadcast to all.)
+    Returns (uv (B,T,J,2), in_front (B,T,J) bool). Mirrors cv2.projectPoints so the reproj residual
+    matches the cached-2D sanity check. All torch ops -> gradient flows back to X (the refined 3D)."""
+    B, T, J, _ = X.shape
+    # reshape per-sample calib to broadcast over (T,J): (B,1,1,3,3) etc.
+    if R.ndim == 2:      # un-batched -> add a batch dim
+        R = R.unsqueeze(0).expand(B, 3, 3)
+        t = t.unsqueeze(0).expand(B, 3)
+        K = K.unsqueeze(0).expand(B, 3, 3)
+        dist = dist.unsqueeze(0).expand(B, 5)
+    Rb = R.view(B, 1, 1, 3, 3)
+    tb = t.view(B, 1, 1, 3)
+    Xc = torch.einsum("btjk,btjmk->btjm", X, Rb.expand(B, T, J, 3, 3)) + tb   # (B,T,J,3) camera frame
+    z = Xc[..., 2].clamp(min=1e-3)
+    in_front = Xc[..., 2] > 1e-3
+    xn = Xc[..., 0] / z
+    yn = Xc[..., 1] / z                                   # normalized image coords
+    d = dist.view(B, 1, 1, 5)
+    k1, k2, p1, p2, k3 = d[..., 0], d[..., 1], d[..., 2], d[..., 3], d[..., 4]
+    r2 = xn * xn + yn * yn
+    radial = 1 + k1 * r2 + k2 * r2 * r2 + k3 * r2 * r2 * r2
+    xd = xn * radial + 2 * p1 * xn * yn + p2 * (r2 + 2 * xn * xn)
+    yd = yn * radial + p1 * (r2 + 2 * yn * yn) + 2 * p2 * xn * yn
+    fx = K[:, 0, 0].view(B, 1, 1); sk = K[:, 0, 1].view(B, 1, 1); cx = K[:, 0, 2].view(B, 1, 1)
+    fy = K[:, 1, 1].view(B, 1, 1); cy = K[:, 1, 2].view(B, 1, 1)
+    u = fx * xd + sk * yd + cx
+    v = fy * yd + cy
+    return torch.stack([u, v], dim=-1), in_front
+
+
+def reprojection_loss(pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts,
+                      smooth_w=0.0, mask=None, joint_weights=None, huber_px=20.0):
+    """SELF-SUPERVISED reprojection loss. NO OMC target, NO frame alignment.
+
+    pred      (B,T,J,3)      refined 3D (mm), the GNN output
+    uv        (B,T,C,J,2)    per-cam 2D keypoints (px)
+    uv_conf   (B,T,C,J)      YOLO kp confidence (per-observation weight)
+    uv_valid  (B,T,C,J)      bool: this cam saw this joint this frame
+    Ks,dists,Rs,ts           (B,C,3,3)/(B,C,5)/(B,C,3,3)/(B,C,3)  per-sample per-cam calib
+    smooth_w                 weight on the model's own acceleration (jerk penalty = denoise prior)
+    mask      (B,T,J)        optional: also require the 3D point defined (finite)
+    huber_px                 robust threshold -- a wildly-off cam (glass/other-object 2D) shouldn't
+                             yank the 3D; Huber caps its pull so consensus cams win (like the
+                             REPROJ_PX consensus gate, but soft + differentiable).
+
+    WHY this is the less-biased signal: it pulls pred toward where the cameras ACTUALLY saw the
+    joint, so where the good cams agree the raw 3D is already on the rays -> loss ~0 -> pred left
+    ALONE (self-gating, the thing OMC-supervised losses couldn't do). smooth_w then buys a smoother
+    trajectory at the cost of a little reproj error -> the jitter fix, physically grounded."""
+    B, T, C, J, _ = uv.shape
+    dev = pred.device
+    Xp = pred.unsqueeze(2).expand(B, T, C, J, 3)          # broadcast 3D across cams
+    # project per cam. loop C (small, <=5) -- vectorized inside.
+    tot = torch.zeros((), device=dev); wsum = torch.zeros((), device=dev)
+    for c in range(C):
+        uvp, infront = project_torch(Xp[:, :, c], Ks[:, c], dists[:, c], Rs[:, c], ts[:, c])  # (B,T,J,2)
+        res = torch.linalg.norm(uvp - uv[:, :, c], dim=-1)         # (B,T,J) px
+        # Huber: quadratic near 0, linear past huber_px -> outlier cams capped
+        h = huber_px
+        rob = torch.where(res <= h, 0.5 * res * res / h, res - 0.5 * h)
+        w = uv_valid[:, :, c].float() * uv_conf[:, :, c] * infront.float()
+        if mask is not None:
+            w = w * mask.float()
+        if joint_weights is not None:
+            w = w * joint_weights.to(dev).view(1, 1, J)
+        tot = tot + (rob * w).sum(); wsum = wsum + w.sum()
+    loss = tot / wsum.clamp(min=1.0)
+
+    if smooth_w > 0:
+        acc = pred[:, 2:] - 2 * pred[:, 1:-1] + pred[:, :-2]        # (B,T-2,J,3) mm
+        if mask is not None:
+            am = (mask[:, 2:] & mask[:, 1:-1] & mask[:, :-2]).float()
+        else:
+            am = torch.ones(pred[:, 2:].shape[:-1], device=dev)
+        if joint_weights is not None:
+            am = am * joint_weights.to(dev).view(1, 1, J)
+        acc_mag = torch.linalg.norm(acc, dim=-1)
+        loss = loss + smooth_w * (acc_mag * am).sum() / am.sum().clamp(min=1.0)
+    return loss

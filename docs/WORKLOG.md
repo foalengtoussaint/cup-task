@@ -4918,3 +4918,47 @@ DELTA footage:**
   clips (per-camera dets → triangulate → 3D MMC track) for the other AutoMQ participants.
 - ⚠ Score against OMC WRIST marker (not hand); or if targeting the HAND measure, that's a point-model
   problem the GNN can't fix from wrist input. Decide the target point before training.
+
+## 2026-07-29: GNN 3D→3D refiner — built, evaluated, NEGATIVE result (commits 1ad1d4b, 7acd599)
+Trained a graph 3D→3D pose refiner on the DELTA cohort (the thing the refiner-hunt said had to be
+trained from scratch). Scripts: scripts/gnn_{refiner,train,build_dataset,viz_correction}.py,
+detect_pose_multi.py, offset_baseline.py. Model = ST-GCN, in_channels=3, residual (identity at init),
+2.3M params (anchored to SmoothNet 0.69M / ST-GCN 3M after starting 10× too small at 72k).
+
+DATA: expanded P07/P08 6→83/88 trials by running yolo26s-pose on the SMB cut videos (detect_pose_multi,
+~220 cam-fr/s, cams 1-5); 256 clean paired (MMC 3D, OMC 3D) trials P07/P08/P15 in cache/delta/gnn_pairs.
+cam_quality.json good-cams added for P07/P08/P15/P17/P19 (reaudit_cam_quality). c3d truth defects found
+(P15 marker typo `writst_outer_L`; P19 single wrist marker).
+
+VERDICT — a learned 3D pose refiner does NOT net-improve the CLINICAL ANGLES under any of 3 losses
+(absolute PA-MPJPE / window-aligned / frame-invariant relational bone-len+elbow-angle):
+- pooled LOPO elbow angle: raw 4.4 → 4.5° (absolute), → 6.0° (relational). NO gain / worse.
+- shoulder flex/abd: flat. Only whole-arm POSITION improves (PA-MPJPE 38.7→20.8mm, wrist 28.9→19.1) —
+  which is NOT what the clinic reads.
+- ROOT CAUSE: the refiner corrects UNCONDITIONALLY → helps frames where raw is bad (P07 elbow 9→6°),
+  DAMAGES the majority already-good frames (P08 4→6°) → nets worse on angles. Confirmed across all 3
+  losses, so it's not a loss problem.
+- "affected-arm harm" (within-5° 52→30% absolute) was largely a RAW-ERROR confound: P07 is the
+  hard-to-track participant (bad raw both sides), P08/P15 already good both sides.
+- Relational loss (user's "arm as coupled linkage" idea): correctly removed the healthy-pose prior +
+  (after 2 bugs) the coordinate-frame mismatch, but empirically WORSE — weaker angle/length signal
+  perturbs the already-good frames more (harms BOTH arms: affected 52→39%, unaffected 46→35%).
+
+OTHER FINDINGS (from the same investigation, all in project_gnn_3d_refiner memory):
+- Speed error = pure JITTER not bias (overshoot melts 1.74→1.09 as cutoff hardens) → SmoothNet/low-pass
+  owns it, not a GNN.
+- Peak-velocity STRUCTURALLY blocked: computed from the HAND (SITE_RHAND), COCO-17 has no hand keypoint.
+- Murphy map: 6 arm-ANGLE measures in the model's wheelhouse (need shoulder/elbow/wrist), 6 velocity
+  measures out of scope (hand kp + jitter), trunk needs hips.
+- HIP = a CONSENSUS-GATE loss, NOT missing: YOLO detects both hips in all 5 cams but the soft pelvis
+  centroid disagrees ~30px across views → gate rejects it. Plain all-camera DLT recovers the trunk axis
+  to 3.6° (P07) / 7.7° (P08) with NO model — unlocks shoulder-flex/abd + trunk measures.
+- Methodology: per-TRIAL alignment (not per-frame Procrustes, which inflated wrist gain 57%→40%);
+  score by INTRINSIC angles/lengths (frame-invariant); stratify by raw-error + affected/unaffected +
+  pooled LOPO before believing a refiner. Hit the "Way 0" cross-frame comparison trap 3× — geometric
+  losses/metrics MUST be frame-invariant or align-first.
+
+OPEN / PARKED next steps: (1) GATING refiner — output ~0 correction where raw is reliable (the missing
+ingredient; a new model, not a loss tweak). (2) Finetune SmoothNet on our data (jitter axis, OOD-safe by
+construction). Public 3D→3D datasets (SmoothNet packaged pairs, H36M, AMASS) are ALL healthy → good for
+jitter/init, USELESS for the affected-arm distribution; only DELTA affected trials fill that.

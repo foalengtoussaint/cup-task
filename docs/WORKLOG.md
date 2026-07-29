@@ -5022,3 +5022,46 @@ P07/P08/P14/P15/P17/P19 (~6, up from 2; NOT P10-P13 = only 30 pose_jsons each, t
 and evaluate held-out on the 5 with OMC (mocap = test-only, never trained on). Must use the
 good-cams whitelist (a miscalibrated participant would teach reproj to fit WRONG rays). This
 directly tests caveat #2. Checkpoints/results preserved under out/gnn/reproj_lopo_n2/.
+
+---
+
+## 2026-07-29 (session 2) — Self-consistency / global-temporal refiner: mixed, PARKED
+
+Continued the 3D->3D refiner. Reframe (user): reprojection is a WEAK teacher because DLT
+already minimises it; the value the slow skeleton-fit adds is the priors DLT ignores --
+BONE-LENGTH RIGIDITY (rubber-band arm: trial bone STD 10.4mm vs OMC ~6) and smoothness. So
+bone rigidity = objective, reprojection = a leash, all self-supervised (no OMC).
+
+### What we measured
+- **Windowed loss has a ceiling**: per-window bone consistency plateaus at trial-scale bone
+  STD ~9.2mm over 80 epochs (in-loss window-STD keeps dropping but trial-scale is flat --
+  different windows settle at different lengths).
+- **Global model fixes it**: dilated temporal convs (RF 1017 frames = whole trial), graph
+  conv kept, feed WHOLE trials -> bone STD 10.36->6.6mm. Also ~10x faster (whole-trial =
+  each frame seen once vs ~130k overlapping windows/epoch).
+- **But rigid != correct**: at bone 6.6 the pose was mislocated -- all 5 cams' reproj
+  8->30px, OMC wrist 30->59mm (FARTHER from truth). The model drifted from UNANIMOUS
+  camera agreement.
+- **Root cause** (user caught it -- "the anchor stayed stable, that doesn't make sense"):
+  the consensus-weighted anchor is self-defeating. Its soft-inlier gate ->0 as the pose
+  drifts, muting the growing residual: real residual 25px but the loss reported 1.95px.
+  No restoring force. Fixed to a plain confidence-weighted Huber (no prediction gate);
+  verified it now reports 17px on that drifted pose.
+- **Fixed-anchor run**: bone 10.36->~7mm WHILE reproj holds ~9.4px and OMC wrist stays ~31mm
+  -- same rigidity, camera-faithful. Rigidity<->depth tension: pushing bone below 8 leaks
+  into the unobservable along-ray depth (OMC creeps up, reproj can't see it).
+- **Does it help any metric?** (82 trials vs OMC, RAW->GNN): PA-MPJPE 40.8->39.4 (better),
+  ELBOW 4.5->3.8deg (better -- the clinical measure), but wrist PA 29.9->32.2 (worse),
+  SHOULDER FLEXION 2.4->7.0deg (much worse), jitter worse. Elbow-better + shoulder-flex-worse
+  moving together = likely ONE rotational artifact, not a broad win.
+
+### Decision
+PARK the 3D deep-learning refiner. Few weeks left -> consolidate around SIMPLE algorithms;
+the learned refiner keeps giving mixed, artifact-prone results needing validation there's no
+time for. Resume only if a genuine PRETRAINED 3D->3D refiner appears (none ingests 3D today;
+SmoothNet is the sole drop-in and only smooths). Architecture + rigidity objective demonstrably
+work; the blocker is self-supervision has no signal for WHICH rigid pose is correct, and n=5 is
+too few. Recurring lesson: consistency != correctness -- every self-consistency signal (reproj,
+bone) is satisfiable by a consistent-but-wrong pose; when two metrics move opposite ways, suspect
+one shared artifact before celebrating. Code left runnable (--loss selfconsistency,
+scratchpad/train_wholetrial.py).

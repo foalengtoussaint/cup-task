@@ -73,13 +73,21 @@ class GraphConv(nn.Module):
 
 
 class STBlock(nn.Module):
-    """Graph conv over joints + temporal conv over time, residual."""
-    def __init__(self, cin, cout, A, t_kernel=5, dropout=0.1):
+    """Graph conv over joints (spatial) + DILATED temporal conv over time, residual.
+
+    The graph conv is UNCHANGED -- it is how the net knows which joints form a bone (the skeleton
+    adjacency), which is what bone-length reasoning needs. Only the TEMPORAL conv gains a `dilation`:
+    stacking blocks with dilation 1,2,4,8,... grows the temporal receptive field GEOMETRICALLY (TCN/
+    WaveNet style) so a deep stack sees the WHOLE trial -> the model can AGGREGATE length evidence
+    across all frames and find/enforce the one true bone length (Version B), not just a 13-frame local
+    view. 'same' padding = (t_kernel//2)*dilation keeps length T."""
+    def __init__(self, cin, cout, A, t_kernel=5, dropout=0.1, dilation=1):
         super().__init__()
         self.gcn = GraphConv(cin, cout, A)
+        pad = (t_kernel // 2) * dilation
         self.tcn = nn.Sequential(
             nn.BatchNorm2d(cout), nn.ReLU(inplace=True),
-            nn.Conv2d(cout, cout, (t_kernel, 1), padding=(t_kernel // 2, 0)),
+            nn.Conv2d(cout, cout, (t_kernel, 1), padding=(pad, 0), dilation=(dilation, 1)),
             nn.BatchNorm2d(cout), nn.Dropout(dropout),
         )
         self.res = (nn.Identity() if cin == cout else nn.Conv2d(cin, cout, 1))
@@ -93,26 +101,47 @@ class STBlock(nn.Module):
 
 
 class GNNRefiner(nn.Module):
-    """Windowed ST-GCN residual refiner. in (B, T, J, 3) -> out refined (B, T, J, 3).
+    """ST-GCN residual refiner with a GLOBAL temporal receptive field. in (B,T,J,3)->out (B,T,J,3).
 
-    Predicts a residual added to the input, so an untrained net ~= identity (safe). Input is
-    per-window mean-centred (translation removed) for a stable scale; the centre is added back so
-    the output stays in absolute mm (the PA loss is translation-invariant anyway)."""
-    def __init__(self, hidden=64, blocks=3, t_kernel=5, dropout=0.1):
+    Predicts a residual (untrained ~= identity, safe). GRAPH conv over joints is UNCHANGED (the
+    skeleton reasoning). The temporal side is a DILATED stack: with `dilations` = [1,2,4,8,...] and
+    kernel k, the receptive field is 1 + 2*(k-1)*sum(dilations) -- e.g. k=5, dilations 1..64 -> ~1017
+    frames -> covers a WHOLE trial. So the net can aggregate bone-length evidence across all frames
+    and find/enforce the trial's true length (Version B), which the 13-frame windowed model could not
+    (that plateaued at trial-scale bone STD ~9.2mm regardless of epochs).
+
+    Input is mean-centred over VALID frames (per-sample) for scale stability; centre added back so the
+    output stays in absolute mm. Handles variable T (feed whole trials, padded + masked)."""
+    def __init__(self, hidden=64, blocks=None, t_kernel=5, dropout=0.1, dilations=None):
         super().__init__()
         A = build_adjacency()
+        # default: 7 blocks, dilations doubling -> global temporal reach for full trials
+        if dilations is None:
+            dilations = [1, 2, 4, 8, 16, 32, 64] if blocks is None else \
+                        [2 ** i for i in range(blocks)]
+        self.dilations = dilations
+        nblk = len(dilations)
         self.in_bn = nn.BatchNorm1d(3 * NJ)
-        chans = [3] + [hidden] * blocks
+        chans = [3] + [hidden] * nblk
         self.blocks = nn.ModuleList(
-            STBlock(chans[i], chans[i + 1], A, t_kernel, dropout) for i in range(blocks))
+            STBlock(chans[i], chans[i + 1], A, t_kernel, dropout, dilation=dilations[i])
+            for i in range(nblk))
         self.head = nn.Conv2d(hidden, 3, kernel_size=1)
         nn.init.zeros_(self.head.weight)   # start at identity (residual 0)
         nn.init.zeros_(self.head.bias)
 
-    def forward(self, x):
-        # x (B, T, J, 3)
+    @property
+    def receptive_field(self):
+        return 1 + 2 * (self.blocks[0].tcn[2].kernel_size[0] - 1) * sum(self.dilations)
+
+    def forward(self, x, valid=None):
+        # x (B, T, J, 3); valid (B, T, J) optional -> centre over valid points only
         B, T, J, _ = x.shape
-        centre = x.mean(dim=(1, 2), keepdim=True)          # (B,1,1,3) per-window centroid
+        if valid is not None:
+            vm = valid.unsqueeze(-1).float()
+            centre = (x * vm).sum(dim=(1, 2), keepdim=True) / vm.sum(dim=(1, 2), keepdim=True).clamp(min=1)
+        else:
+            centre = x.mean(dim=(1, 2), keepdim=True)      # (B,1,1,3) centroid
         xc = x - centre
         h = xc.permute(0, 3, 1, 2).contiguous()            # (B,3,T,J)
         # input BN over flattened joints*coords (stabilises scale across trials)
@@ -422,32 +451,35 @@ def _reproj_residual_consensus(pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts, m
 
     Returns (loss_px, mean_consensus) -- mean_consensus is the avg #cameras agreeing (a diagnostic:
     higher = the refined pose sits in a bigger agreeing set)."""
+    # ⚠ 2026-07-29: the CONSENSUS-weighted anchor (soft-inlier gate * n_agree) is a SELF-DEFEATING
+    # leash. As the pose drifts off cameras, each gate sigmoid((15-res)/5)->0, so the growing residual
+    # is multiplied by ~0 and the term MUTES ITSELF. PROVEN: at a drifted pose the real per-cam residual
+    # was 25.4px but this term reported 1.95px (13x understatement) -- so it stayed ~flat in training
+    # while all 5 cameras drifted 8->30px and OMC error doubled. It CANNOT rise with drift -> no
+    # restoring force -> cranking anchor_w does nothing. DEFAULT is now the PLAIN confidence-weighted
+    # residual below; consensus kept only behind use_consensus for ablation.
     B, T, C, J, _ = uv.shape
     dev = pred.device
     Xp = pred.unsqueeze(2).expand(B, T, C, J, 3)
-    res_list = []; gate_list = []; base_w_list = []
+    tot = torch.zeros((), device=dev); wsum = torch.zeros((), device=dev)
+    gate_sum = torch.zeros((B, T, J), device=dev); anyv = torch.zeros((B, T, J), device=dev)
     for c in range(C):
         uvp, infront = project_torch(Xp[:, :, c], Ks[:, c], dists[:, c], Rs[:, c], ts[:, c])
         res = torch.linalg.norm(uvp - uv[:, :, c], dim=-1)                 # (B,T,J) px
-        g = torch.sigmoid((consensus_px - res) / temp)                     # soft inlier in [0,1]
-        w = uv_valid[:, :, c].float() * uv_conf[:, :, c] * infront.float() # base validity/conf weight
+        rob = torch.where(res <= huber_px, 0.5 * res * res / huber_px, res - 0.5 * huber_px)
+        # PLAIN weight: fixed observed 2D confidence * validity (NOT a prediction-dependent gate). A
+        # camera the model drifts from keeps its full weight -> its big residual RAISES the anchor ->
+        # real leash. Huber still caps a single genuinely-wild cam (robust to one bad detection) but
+        # does not let the pose escape the UNANIMOUS cameras (which is what was happening).
+        w = uv_valid[:, :, c].float() * uv_conf[:, :, c] * infront.float()
         if mask is not None:
             w = w * mask.float()
-        res_list.append(res); gate_list.append(g * w); base_w_list.append(w)
-    gates = torch.stack(gate_list, 0)                                      # (C,B,T,J) soft-inliers*valid
-    n_agree = gates.sum(0)                                                 # (B,T,J) consensus count
-    tot = torch.zeros((), device=dev); wsum = torch.zeros((), device=dev)
-    for c in range(C):
-        res = res_list[c]
-        rob = torch.where(res <= huber_px, 0.5 * res * res / huber_px, res - 0.5 * huber_px)
-        # weight: this cam's soft-inlier gate (down-weight disagreeing cams) * frame-joint consensus
-        # count (favour points where MANY cams agree). base validity already folded into gate_list.
-        w = gate_list[c] * n_agree
         tot = tot + (rob * w).sum(); wsum = wsum + w.sum()
-    # mean consensus over valid frame-joints (diagnostic)
-    any_valid = torch.stack(base_w_list, 0).sum(0) > 0
-    mean_consensus = (n_agree[any_valid].mean() if any_valid.any() else torch.zeros((), device=dev))
-    return tot / wsum.clamp(min=1.0), float(mean_consensus)
+        gate_sum = gate_sum + torch.sigmoid((consensus_px - res) / temp) * (w > 0).float()
+        anyv = anyv + (w > 0).float()
+    fj = anyv.sum(0) if False else (anyv > 0)          # frame-joints with >=1 valid cam
+    mean_consensus = float(gate_sum[fj].mean()) if fj.any() else 0.0   # avg #cams agreeing (diagnostic)
+    return tot / wsum.clamp(min=1.0), mean_consensus
 
 
 def selfconsistency_loss(pred, uv, uv_conf, uv_valid, Ks, dists, Rs, ts, mask,

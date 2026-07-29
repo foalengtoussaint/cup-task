@@ -102,17 +102,19 @@ class WindowSet(Dataset):
     def __len__(self):
         return len(self.index)
 
-    def _pad_cams(self, arr, C):
-        """Pad axis-1 (cameras) up to self.max_c with zeros. arr shape (win, C, ...) or (C, ...)."""
+    def _pad_cams(self, arr, C, cam_axis):
+        """Pad the camera axis up to self.max_c with zeros. cam_axis is EXPLICIT (the caller knows
+        it) -- do NOT guess from shape: a (C,3,3) calib matrix with C==3 is ambiguous by shape and
+        was the [3,5,3]-vs-[5,3,3] collate crash when a 3-cam participant (P19) joined the batch."""
+        # trim if this trial already has >= max_c cams
         if C >= self.max_c:
-            return arr[:self.max_c] if arr.ndim <= 2 else arr[:, :self.max_c]
+            sl = [slice(None)] * arr.ndim
+            sl[cam_axis] = slice(0, self.max_c)
+            return arr[tuple(sl)]
         pad_c = self.max_c - C
-        if arr.ndim == 2:      # (C, k) calib
-            return np.concatenate([arr, np.zeros((pad_c,) + arr.shape[1:], arr.dtype)], 0)
-        if arr.shape[1] == C:  # (win, C, ...) per-frame
-            return np.concatenate([arr, np.zeros((arr.shape[0], pad_c) + arr.shape[2:], arr.dtype)], 1)
-        # (C, a, b) calib matrices
-        return np.concatenate([arr, np.zeros((pad_c,) + arr.shape[1:], arr.dtype)], 0)
+        pad_shape = list(arr.shape)
+        pad_shape[cam_axis] = pad_c
+        return np.concatenate([arr, np.zeros(pad_shape, arr.dtype)], axis=cam_axis)
 
     def __getitem__(self, k):
         ti, s = self.index[k]
@@ -128,14 +130,15 @@ class WindowSet(Dataset):
             return (torch.from_numpy(mmc), torch.from_numpy(omc),
                     torch.from_numpy(val.astype(np.bool_)))
         C = t["uv"].shape[1]
-        uv = self._pad_cams(t["uv"][s:e].copy(), C)          # (win, maxc, J, 2)
-        uvc = self._pad_cams(t["uv_conf"][s:e].copy(), C)    # (win, maxc, J)
-        uvv = self._pad_cams(t["uv_valid"][s:e].astype(np.bool_), C)
+        # per-frame arrays: camera axis = 1 (win, C, ...).  calib arrays: camera axis = 0 (C, ...).
+        uv = self._pad_cams(t["uv"][s:e].copy(), C, 1)          # (win, maxc, J, 2)
+        uvc = self._pad_cams(t["uv_conf"][s:e].copy(), C, 1)    # (win, maxc, J)
+        uvv = self._pad_cams(t["uv_valid"][s:e].astype(np.bool_), C, 1)
         uv[~np.isfinite(uv)] = 0.0
-        K = self._pad_cams(t["K"].copy(), C)                 # (maxc,3,3)
-        dist = self._pad_cams(t["dist"].copy(), C)           # (maxc,5)
-        R = self._pad_cams(t["R"].copy(), C)                 # (maxc,3,3)
-        tv = self._pad_cams(t["t"].copy(), C)                # (maxc,3)
+        K = self._pad_cams(t["K"].copy(), C, 0)                 # (maxc,3,3)
+        dist = self._pad_cams(t["dist"].copy(), C, 0)           # (maxc,5)
+        R = self._pad_cams(t["R"].copy(), C, 0)                 # (maxc,3,3)
+        tv = self._pad_cams(t["t"].copy(), C, 0)                # (maxc,3)
         return (torch.from_numpy(mmc), torch.from_numpy(omc),
                 torch.from_numpy(val.astype(np.bool_)),
                 torch.from_numpy(uv), torch.from_numpy(uvc),

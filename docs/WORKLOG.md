@@ -4962,3 +4962,63 @@ OPEN / PARKED next steps: (1) GATING refiner — output ~0 correction where raw 
 ingredient; a new model, not a loss tweak). (2) Finetune SmoothNet on our data (jitter axis, OOD-safe by
 construction). Public 3D→3D datasets (SmoothNet packaged pairs, H36M, AMASS) are ALL healthy → good for
 jitter/init, USELESS for the affected-arm distribution; only DELTA affected trials fill that.
+
+---
+
+## 2026-07-29 — Self-supervised reprojection loss for the pose refiner (overturns the elbow verdict)
+
+Yesterday's GNN verdict: every OMC-supervised loss (absolute PA-MPJPE, window-aligned,
+relational) made the clinical **elbow angle WORSE** (4.4 -> 4.5-6.0 deg) because the refiner
+corrects UNCONDITIONALLY -- it helps bad-raw frames but damages the already-good majority.
+The stated missing ingredient was **gating**. This session built the thing that gates itself.
+
+### The idea (user's framing): amortize the pipeline's slow skeleton fit
+The slow pipeline solves an optimization per trial -- fit a skeleton whose joints reproject
+onto every camera's 2D, subject to bone-length + temporal constraints. A **reprojection loss**
+trains a feed-forward net to do the same: pull the refined 3D toward where each good camera's
+OWN 2D detection landed. It uses **no OMC target and no MMC->OMC alignment** (so no healthy
+prior, no cross-frame "Way 0" trap), and it is ~0 where the cameras already agree -> it LEAVES
+GOOD FRAMES ALONE. That is the gating, in the loss instead of the architecture. Mocap is only
+the eval yardstick, never the training target -- so this can train on participants with no OMC.
+
+### Built (commit 464d5d3)
+- `gnn_refiner.py`: `project_torch` = differentiable Brown-Conrady, **verified 0.0px vs
+  cv2.projectPoints**, batched (B,T,J,3). `reprojection_loss` = Huber-robust per-cam residual
+  (soft consensus gate, --huber-px 20) weighted by YOLO kp confidence + optional accel prior.
+- `gnn_build_dataset.py`: caches a `.reproj.npz` sidecar per trial (per-cam uv/conf/valid +
+  K/dist/R/t, good cams only). 438 sidecars built (P07/P08/P15/P17/P19).
+- `gnn_train.py`: `--loss reproj`, reproj-aware WindowSet padding cams to a global max so
+  mixed-cam-count batches collate.
+
+### Measured — FULL LOPO (P07/P08/P15, sw=0, 12 epochs), pooled 256 trials, raw -> reproj
+| metric | raw | reproj | GNN+savgol |
+|---|---|---|---|
+| PA-MPJPE mm | 38.7 | **36.9** | 36.9 |
+| wrist PA mm | 28.9 | **26.2** | 26.1 |
+| elbow ang deg | 4.4 | **4.1** | 4.1 |
+| jitter | 14406 | 14441 | **1338** |
+| \|peakvel\| % | 38 | 38 | **6** |
+
+**First refiner in the thread to improve the elbow, with zero mocap in the loss.** Position
+(PA/wrist) improves on ALL three folds -- the robust, transferable win.
+
+### Honest caveats (the P15-only smoke was rosier than the real LOPO)
+1. Elbow gain is **modest and non-uniform**: P15 3.7->3.1, P08 4.1->4.0, but **P07 (hard
+   participant, raw 9.1) DEGRADES 9.1->9.5**. Reprojection helps where the 2D is decent-but-
+   greedily-triangulated; it can't rescue a participant whose cameras/2D are the real problem.
+2. **n=2 training participants per fold is too few to expect generalization** (user's point).
+   The P07 miss is confounded with "trained on P08+P15, never saw a 9-deg-raw regime." Can't yet
+   distinguish "can't extrapolate from 2 people" from "reproj can't help hard cases."
+3. **Jitter is structurally un-fixable inside this loss.** Swept smooth_w {0,0.3,1,3}; measured
+   the terms comparable (reproj 5.66px vs smooth 2.91, equal at sw~1.9 -- NOT a scale mismatch).
+   At sw=3 (smooth dominates 3:1) the model still moves the wrist 6.87mm but accel stays flat
+   (2.225->2.237). Cause: reproj anchors each frame to its OWN jittery 2D, so the reproj-optimal
+   curve IS the jittery curve. Jitter belongs downstream (savgol/SmoothNet). GNN+savgol composes:
+   reproj fixes shape, savgol fixes jitter -> elbow 4.1 + jitter 1338 + pve 6%.
+
+### Next (the experiment the self-supervision unlocks)
+Train reproj on ALL trustworthy-calib participants (2D+calib only, no mocap) --
+P07/P08/P14/P15/P17/P19 (~6, up from 2; NOT P10-P13 = only 30 pose_jsons each, too sparse) --
+and evaluate held-out on the 5 with OMC (mocap = test-only, never trained on). Must use the
+good-cams whitelist (a miscalibrated participant would teach reproj to fit WRONG rays). This
+directly tests caveat #2. Checkpoints/results preserved under out/gnn/reproj_lopo_n2/.

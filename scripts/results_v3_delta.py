@@ -529,6 +529,175 @@ def _angle_scalars(P, phases, side):
             "interjoint_coordination": ijc}
 
 
+# ============================================================================================
+# CONSOLIDATION GRID: score every candidate pose pipeline vs OMC on the FULL Murphy set, emit a
+# tidy per-trial table (variant, part, trial, arm, measure, omc, mmc) for the Fig.4 scatter +
+# median|err| + Bland-Altman. Cohort = gnn_train.load_clean (328 trials, 5 OMC parts), which also
+# supplies BA's native sidecar format and trial-ids that match the BA trajectory cache.
+#
+# STAGES (composable):
+#   A triangulation : "pipeline" (load_clean mmc = robust-consensus DLT) | "BA" (cached BA+guard traj)
+#   B smoother (3D) : "none" | "savgol" | "smoothnet"
+#   C wrist-speed   : handled inside compute_position_measures (pos-diff on the chosen pose). The
+#                     flow-BLEND path is a separate C option added once its gate is LOPO-tuned.
+#   D elbow-angular : "posdiff" (angle-rate of the pose) | "flowcloud" (two-segment flow) -- D slot
+#                     is filled once scripts/elbow_flow_angular is validated; posdiff is the default.
+# Cup is FIXED = v3 UETrack for every pose variant, so phases are constant and POSE is the variable.
+# ============================================================================================
+_GRID_JOINTS = ["right_wrist", "right_elbow", "right_shoulder", "left_wrist", "left_elbow",
+                "left_shoulder", "right_hip", "left_hip", "nose"]   # == gnn_refiner.JOINTS order
+
+
+def _savgol_joint(xyz, win=21, order=3):
+    """Savitzky-Golay per-axis, NaN-gap-safe, restores NaN where the whole point was missing."""
+    from scipy.signal import savgol_filter
+    out = xyz.copy().astype(float)
+    v = np.isfinite(xyz).all(1)
+    if v.sum() < win:
+        return out
+    idx = np.flatnonzero(v)
+    for ax in range(3):
+        xi = np.interp(np.arange(len(xyz)), idx, xyz[idx, ax])
+        out[:, ax] = savgol_filter(xi, win, order, mode="interp")
+    out[~v] = np.nan
+    return out
+
+
+def _ba_traj_cache():
+    """Load the cached BA+guard trajectories (fb150) -> {id -> (T,9,3)}. Built by ba_cache_traj.py."""
+    p = ROOT / "cache" / "ba_traj" / "traj_sw0_fb150.npz"
+    if not p.exists():
+        return None
+    d = np.load(str(p), allow_pickle=True)
+    return {str(i): tr for i, tr in zip(d["ids"], d["traj"])}
+
+
+def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
+    """Produce the pose joint-dict for one (triangulation, smoother) cell from a load_clean record.
+    Returns {joint_name: (T,3)} or None if unavailable."""
+    part, trial = trial_rec["part"], trial_rec["trial"]
+    if triangulation == "pipeline":
+        arr = trial_rec["mmc"]                                    # (T,9,3) robust-consensus DLT
+    elif triangulation == "BA":
+        if ba_cache is None or f"{part}/{trial}" not in ba_cache:
+            return None
+        arr = np.asarray(ba_cache[f"{part}/{trial}"], float)      # (T,9,3) BA+guard
+    else:
+        raise ValueError(triangulation)
+    pose = {j: arr[:, k] for k, j in enumerate(_GRID_JOINTS)}
+    if smoother == "none":
+        pass
+    elif smoother == "savgol":
+        pose = {j: _savgol_joint(x) for j, x in pose.items()}
+    elif smoother == "smoothnet":
+        pose = {j: _smooth_joint(x) for j, x in pose.items()}
+    else:
+        raise ValueError(smoother)
+    return pose
+
+
+def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
+                out_csv="out/gnn/murphy_grid.csv"):
+    """Score each pose variant vs OMC on all 15 Murphy measures; write the tidy per-trial table.
+
+    variants: list of dicts {name, triangulation, smoother}. Default = the A x B grid.
+    Cup FIXED = v3 (UETrack) so phases are constant. Angular stage D = posdiff for now.
+    """
+    import csv as _csv
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import gnn_train as GT
+    H.use_good_cams()          # init the per-participant good-camera whitelist (as main() does)
+
+    if variants is None:
+        variants = [
+            {"name": "pipeline",          "triangulation": "pipeline", "smoother": "none"},
+            {"name": "pipeline+savgol",   "triangulation": "pipeline", "smoother": "savgol"},
+            {"name": "pipeline+smoothnet","triangulation": "pipeline", "smoother": "smoothnet"},
+            {"name": "BA+smoothnet",      "triangulation": "BA",       "smoother": "smoothnet"},
+            {"name": "BA+savgol",         "triangulation": "BA",       "smoother": "savgol"},
+        ]
+    ba_cache = _ba_traj_cache()
+    trials = [t for t in GT.load_clean(need_reproj=False) if t["part"] in parts]
+    print(f"murphy_grid: {len(trials)} trials, {len(variants)} variants, cup=v3(UETrack)", flush=True)
+    print(f"  BA cache: {'loaded '+str(len(ba_cache))+' trajs' if ba_cache else 'MISSING'}", flush=True)
+
+    rows = []       # tidy: variant, part, trial, arm, side, measure, omc, mmc
+    n_ok = 0; n_fail = 0
+    ALL_M = POSITION_MEASURES + ANGLE_MEASURES
+    for ti, t in enumerate(trials):
+        part, trial, side = t["part"], t["trial"], t["side"]
+        arm = "affected" if "unaffected" not in trial else "unaffected"
+        other = "right" if side == "left" else "left"
+        n = t["mmc"].shape[0]
+        calib = _calib(part)
+        # OMC (same loader/lag path as murphy()) + v3 cup for phases
+        omc = H._load_omc(part, trial, n)
+        lag, _ = H._find_lag(t["mmc"][:, _GRID_JOINTS.index(f"{side}_wrist")],
+                             omc[f"{side}_wrist"])
+        omc = {j: _shift(v, lag) for j, v in omc.items()}
+        oc = _shift(_omc_cup(part, trial, n), lag)
+        c3 = _cup_v3(part, trial, calib, n)
+        wr = f"{side}_wrist"
+
+        def phases_for(cup_xyz, hand_xyz):
+            try:
+                seg = segment.segment_cup_only(_fill(cup_xyz), fps=FPS)
+                return segment.to_murphy_phases(seg, _fill(hand_xyz), _fill(cup_xyz), fps=FPS)
+            except Exception:
+                return None
+
+        ph_o = phases_for(oc, omc[wr])
+        if not ph_o:
+            n_fail += 1
+            continue
+        # OMC measures (once per trial)
+        trunk_o = (omc[f"{side}_shoulder"] + omc[f"{other}_shoulder"]) / 2
+        try:
+            mo = compute_position_measures(omc[wr], trunk_o, ph_o, side, fps=FPS)
+            ao = _angle_scalars(omc, ph_o, side)
+        except Exception:
+            n_fail += 1
+            continue
+
+        for spec in variants:
+            pose = _pose_variant(t, spec["triangulation"], spec["smoother"], ba_cache)
+            if pose is None:
+                continue
+            ph = phases_for(c3, pose[wr])           # each pose segments with the v3 cup
+            if not ph:
+                continue
+            trunk = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2
+            try:
+                mm = compute_position_measures(pose[wr], trunk, ph, side, fps=FPS)
+                am = _angle_scalars(pose, ph, side)
+            except Exception:
+                continue
+            for m in POSITION_MEASURES:
+                ov = getattr(mo, m, None); mv = getattr(mm, m, None)
+                if ov is None or mv is None or not np.isfinite(ov) or not np.isfinite(mv):
+                    continue
+                rows.append((spec["name"], part, trial, arm, side, m, float(ov), float(mv)))
+            for m in ANGLE_MEASURES:
+                if not np.isfinite(ao[m]) or not np.isfinite(am[m]):
+                    continue
+                rows.append((spec["name"], part, trial, arm, side, m, float(ao[m]), float(am[m])))
+        n_ok += 1
+        if (ti + 1) % 25 == 0:
+            print(f"  {ti+1}/{len(trials)} trials  ({n_ok} scored, {n_fail} failed, {len(rows)} rows)",
+                  flush=True)
+
+    outp = ROOT / out_csv
+    outp.parent.mkdir(parents=True, exist_ok=True)
+    with open(outp, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["variant", "part", "trial", "arm", "side", "measure", "omc", "mmc"])
+        w.writerows(rows)
+    print(f"\nPROCESSING CHECK: {n_ok} trials scored, {n_fail} failed, {len(rows)} tidy rows", flush=True)
+    print(f"wrote {outp}", flush=True)
+    print("DONE", flush=True)
+    return rows
+
+
 def murphy(own_phases: bool = True):
     """Murphy measures, v1 (raw pose + every-frame cup) vs v3 (SmoothNet pose + UETrack cup).
 

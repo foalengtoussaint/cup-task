@@ -594,7 +594,12 @@ def _flowcloud_elbow_cache():
     for p in cdir.glob("*.npz"):
         try:
             z = np.load(str(p), allow_pickle=True)
-            d[p.stem.replace("__", "/")] = (float(z["peak_cloud"]), float(z["peak_omc"]))
+            # RECONCILE: the cached scalar peaks are p95; recompute both as MAX of the low-passed
+            # per-frame series (eav_omc, rate_cloud) so the elbow panel uses the SAME peak definition
+            # (max) as the pose path's _angle_scalars -> a fair common OMC x-axis across all variants.
+            peak_omc = float(np.nanmax(H._lp(z["eav_omc"])))
+            peak_cloud = float(np.nanmax(H._lp(z["rate_cloud"])))
+            d[p.stem.replace("__", "/")] = (peak_cloud, peak_omc)
         except Exception:
             continue
     return d

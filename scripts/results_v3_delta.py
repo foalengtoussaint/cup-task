@@ -636,7 +636,7 @@ def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
 
 
 def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
-                out_csv="out/gnn/murphy_grid.csv", fixed_phases=False):
+                out_csv="out/murphy_grid.csv", fixed_phases=False):
     """Score each pose variant vs OMC on all 15 Murphy measures; write the tidy per-trial table.
 
     variants: list of dicts {name, triangulation, smoother}. Default = the A x B grid.
@@ -892,7 +892,7 @@ def main(argv=None):
     ap.add_argument("--fixed-phases", action="store_true",
                     help="score Murphy with OMC-cup phases for every arm (isolates the pose). "
                          "Default is END-TO-END: each arm segments with its own cup track.")
-    ap.add_argument("--out-csv", default="out/gnn/murphy_grid.csv",
+    ap.add_argument("--out-csv", default="out/murphy_grid.csv",
                     help="grid: where to write the tidy per-trial OMC-vs-MMC table")
     a = ap.parse_args(argv)
     H.use_good_cams()

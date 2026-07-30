@@ -161,14 +161,14 @@ def rs_and_err_table(rows, stratum_parts, outdir):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--csv", default="out/gnn/murphy_grid.csv")
+    ap.add_argument("--csv", default="out/murphy_grid.csv")
     ap.add_argument("--stratum", choices=["all", "clean", "miscal"], default="all")
     a = ap.parse_args()
     rows = load(ROOT / a.csv)
     parts = {"all": CLEAN | MISCAL, "clean": CLEAN, "miscal": MISCAL}[a.stratum]
     # per-stratum subfolder so all figures + the table for one stratum live together and the three
     # strata don't overwrite each other's identically-named files.
-    outdir = ROOT / "out" / "gnn" / f"murphy_{a.stratum}"; outdir.mkdir(parents=True, exist_ok=True)
+    outdir = ROOT / "out" / f"murphy_{a.stratum}"; outdir.mkdir(parents=True, exist_ok=True)
     print(f"variants: {list(rows.keys())}   stratum={a.stratum} ({sorted(parts)}) -> {outdir}", flush=True)
     for v in rows:
         p1 = fig_variant(v, rows[v], outdir, parts)

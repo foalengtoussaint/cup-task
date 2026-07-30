@@ -166,8 +166,10 @@ def main():
     a = ap.parse_args()
     rows = load(ROOT / a.csv)
     parts = {"all": CLEAN | MISCAL, "clean": CLEAN, "miscal": MISCAL}[a.stratum]
-    outdir = ROOT / "out" / "gnn"; outdir.mkdir(parents=True, exist_ok=True)
-    print(f"variants: {list(rows.keys())}   stratum={a.stratum} ({sorted(parts)})", flush=True)
+    # per-stratum subfolder so all figures + the table for one stratum live together and the three
+    # strata don't overwrite each other's identically-named files.
+    outdir = ROOT / "out" / "gnn" / f"murphy_{a.stratum}"; outdir.mkdir(parents=True, exist_ok=True)
+    print(f"variants: {list(rows.keys())}   stratum={a.stratum} ({sorted(parts)}) -> {outdir}", flush=True)
     for v in rows:
         p1 = fig_variant(v, rows[v], outdir, parts)
         p2 = fig_bland(v, rows[v], outdir, parts)

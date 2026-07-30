@@ -149,9 +149,26 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False):
 
 
 def _trials_for(part):
-    """Trials to build = the load_clean survivors for this participant (what the grid will score)."""
+    """Trials to build for this participant.
+
+    Prefer the load_clean survivors (the trials the grid will score). But a freshly-imported
+    participant has no gnn_pairs cache yet (that MMC/OMC pairing is a downstream stage), so
+    load_clean returns nothing for it. Fall back to the trials that have DETECTIONS pulled
+    (<part>/dets/*.cup.json) -- that is exactly the set UETrack can build a cup track for."""
     import gnn_train as GT
-    return sorted({t["trial"] for t in GT.load_clean(need_reproj=False) if t["part"] == part})
+    trials = sorted({t["trial"] for t in GT.load_clean(need_reproj=False) if t["part"] == part})
+    if trials:
+        return trials
+    # fallback: derive from detection files  delta_<part>_<trial>.<cam>.cup.json
+    import re, glob
+    dets = glob.glob(str(ROOT / "cache" / "delta" / part / "dets" / f"delta_{part}_*.cup.json"))
+    pat = re.compile(rf"delta_{re.escape(part)}_(.+)\.\d+\.cup\.json$")
+    out = set()
+    for f in dets:
+        m = pat.search(Path(f).name)
+        if m:
+            out.add(m.group(1))
+    return sorted(out)
 
 
 def main(argv=None):

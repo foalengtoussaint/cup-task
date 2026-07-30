@@ -124,6 +124,58 @@ def smooth_track(track: list[dict], min_len: int = WINDOW) -> list[dict]:
     return refined
 
 
+def smooth_joints_batched(joints_xyz: dict) -> dict:
+    """Batched SmoothNet over MANY joints at once -- identical math to smooth_track, one GPU pass.
+
+    joints_xyz: {name: (T,3) mm}. Returns {name: (T,3) mm} smoothed, originally-missing frames -> NaN.
+
+    smooth_track runs one batch-1 forward per sliding window per joint (a 450-frame trial = ~420
+    tiny (1,3,32) calls, x9 joints = ~3800 launches -> launch-bound, GPU ~35%). Here every window of
+    every joint is stacked into ONE (Nwin_total, 3, WINDOW) tensor and run in a single forward, then
+    scattered back. Per-window mean-centring (the offset-covariance fix) is preserved exactly.
+    """
+    import torch
+    names = list(joints_xyz)
+    m = _load_model()
+    # build all windows across all joints, remembering (joint, start) for scatter-back
+    win_list, meta, per_joint = [], [], {}
+    for nm in names:
+        X = np.asarray(joints_xyz[nm], float)
+        T = len(X)
+        nan = ~np.isfinite(X).all(1)
+        per_joint[nm] = (X, nan, T)
+        if T < WINDOW or (~nan).sum() < 2:
+            continue
+        filled = X.copy(); idx = np.arange(T); good = ~nan
+        for c in range(3):
+            filled[:, c] = np.interp(idx, idx[good], X[good, c])
+        filled = filled / 1000.0                                  # mm -> m
+        for s in range(0, T - WINDOW + 1):
+            win = filled[s:s + WINDOW]
+            off = win.mean(0)
+            win_list.append((win - off).T)                       # (3,WINDOW)
+            meta.append((nm, s, off))
+    out_acc = {nm: (np.zeros((T, 3)), np.zeros(T)) for nm, (_, _, T) in per_joint.items()}
+    if win_list:
+        big = torch.from_numpy(np.stack(win_list, 0)).float().to(m._device)   # (N,3,WINDOW)
+        with torch.no_grad():
+            ys = m(big).cpu().numpy()                             # (N,3,WINDOW)
+        for i, (nm, s, off) in enumerate(meta):
+            y = ys[i].T + off                                    # (WINDOW,3)
+            acc, cnt = out_acc[nm]
+            acc[s:s + WINDOW] += y; cnt[s:s + WINDOW] += 1
+    result = {}
+    for nm, (X, nan, T) in per_joint.items():
+        acc, cnt = out_acc[nm]
+        if cnt.sum() == 0:                                        # too short -> passthrough
+            result[nm] = X.copy()
+            continue
+        sm = (acc / np.maximum(cnt[:, None], 1)) * 1000.0        # -> mm
+        sm[nan] = np.nan
+        result[nm] = sm
+    return result
+
+
 def smooth_tracks(tracks: dict, targets=("mouth", "left_wrist", "right_wrist")) -> dict:
     """Refine the POSE targets of a fuse_3d result in place-ish (returns a new dict).
 

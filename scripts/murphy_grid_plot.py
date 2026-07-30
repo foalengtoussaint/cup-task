@@ -127,10 +127,16 @@ def fig_bland(variant, mdata, outdir, stratum_parts):
 
 
 def rs_and_err_table(rows, stratum_parts, outdir):
-    """rs + median|err| per (variant, measure) across all variants -> CSV + printed summary."""
+    """rs + median|err| per (variant, measure) across all variants -> CSV + printed summary.
+
+    Covers EVERY measure in the data (the union across variants), not just the 12 plotted panels --
+    this table is what the pipeline decision is read off, so it must not silently drop the 3 measures
+    the figure omits for space (the % timing variants + shoulder_abduction_drinking)."""
     out = []
     variants = list(rows.keys())
-    for mk, lab in MEASURES:
+    labeled = [mk for mk, _ in MEASURES]
+    all_measures = labeled + sorted({mk for v in variants for mk in rows[v]} - set(labeled))
+    for mk in all_measures:
         row = {"measure": mk}
         for v in variants:
             data = [d for d in rows[v].get(mk, []) if d[0] in stratum_parts]

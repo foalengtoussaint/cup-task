@@ -510,7 +510,13 @@ def _angle_scalars(P, phases, side):
         return None
 
     def mx(a, w):
-        return float(np.nanmax(a[w[0]:w[1]])) if w and w[1] > w[0] else float("nan")
+        # an all-NaN phase window (e.g. an occluded arm over that phase) legitimately means the
+        # measure isn't computable for this trial -> NaN, which the scorer skips. Suppress the
+        # nanmax All-NaN RuntimeWarning so it doesn't flood the log.
+        if not (w and w[1] > w[0]):
+            return float("nan")
+        seg = a[w[0]:w[1]]
+        return float(np.nanmax(seg)) if np.isfinite(seg).any() else float("nan")
 
     r, d, fw = ph("reaching"), ph("drinking"), ph("forward_transport")
     rf = (r[0], fw[1]) if (r and fw) else r
@@ -670,7 +676,9 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
     rows = []       # tidy: variant, part, trial, arm, side, measure, omc, mmc
     n_ok = 0; n_fail = 0
     ALL_M = POSITION_MEASURES + ANGLE_MEASURES
-    for ti, t in enumerate(trials):
+    from tqdm import tqdm
+    pbar = tqdm(list(enumerate(trials)), total=len(trials), desc="murphy_grid", unit="trial")
+    for ti, t in pbar:
         part, trial, side = t["part"], t["trial"], t["side"]
         arm = "affected" if "unaffected" not in trial else "unaffected"
         other = "right" if side == "left" else "left"
@@ -740,9 +748,7 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
                     continue
                 rows.append((spec["name"], part, trial, arm, side, m, float(omv), float(amv)))
         n_ok += 1
-        if (ti + 1) % 25 == 0:
-            print(f"  {ti+1}/{len(trials)} trials  ({n_ok} scored, {n_fail} failed, {len(rows)} rows)",
-                  flush=True)
+        pbar.set_postfix(scored=n_ok, failed=n_fail, rows=len(rows))
 
     outp = ROOT / out_csv
     outp.parent.mkdir(parents=True, exist_ok=True)

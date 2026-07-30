@@ -33,6 +33,21 @@ PEAK_TYPE = {"peak_velocity", "peak_elbow_ang_vel", "elbow_extension_reaching",
 POS = R.POSITION_MEASURES; ANG = R.ANGLE_MEASURES
 
 
+def _lp_hz(x, hz, order=2):
+    """Zero-phase Butterworth at `hz` (NaN-safe: interp gaps, filter, keep). MMC cutoff knob."""
+    from scipy.signal import butter, filtfilt
+    x = np.asarray(x, float)
+    if x.ndim == 2:                                   # per-column for (T,3)
+        return np.stack([_lp_hz(x[:, k], hz, order) for k in range(x.shape[1])], 1)
+    v = np.isfinite(x)
+    if v.sum() < 8:
+        return x
+    idx = np.flatnonzero(v)
+    xi = np.interp(np.arange(len(x)), idx, x[idx])
+    b, a = butter(order, hz / (FPS / 2))
+    return filtfilt(b, a, xi)
+
+
 def _summ(a, w, how):
     """max|p95 of signal a over window w=(s,e). how in {'max','p95'}. NaN-safe."""
     if not (w and w[1] > w[0]):
@@ -51,16 +66,16 @@ def _phase(phases, *names):
     return None
 
 
-def _angle_measures(P, phases, side, how):
-    """The angle measures + peak_elbow_ang_vel, with peak-type summary = `how` (else max)."""
+def _angle_measures(P, phases, side, how, hz):
+    """The angle measures + peak_elbow_ang_vel, peak summary `how`, MMC low-pass at `hz`."""
     from compare_pose_omc_delta import _murphy_signals
     sh, el, wr = f"{side}_shoulder", f"{side}_elbow", f"{side}_wrist"
     u, v = P[sh] - P[el], P[wr] - P[el]
     c = (u * v).sum(1) / (np.linalg.norm(u, axis=1) * np.linalg.norm(v, axis=1) + 1e-9)
-    elb = H._lp(np.degrees(np.arccos(np.clip(c, -1, 1))))
+    elb = _lp_hz(np.degrees(np.arccos(np.clip(c, -1, 1))), hz)
     try:
         sig = _murphy_signals(P, side=side)
-        flex, abd = H._lp(sig["shoulder_flexion"]), H._lp(sig["shoulder_abduction"])
+        flex, abd = _lp_hz(sig["shoulder_flexion"], hz), _lp_hz(sig["shoulder_abduction"], hz)
     except Exception:
         flex = abd = np.full(len(elb), np.nan)
     eav = np.abs(np.gradient(elb)) * FPS
@@ -81,10 +96,10 @@ def _angle_measures(P, phases, side, how):
             "interjoint_coordination": ijc}
 
 
-def _wrist_pv(hand_xyz, phases, how):
-    """peak_velocity with summary `how`, over the reaching window, filtered like the scorer (4Hz)."""
+def _wrist_pv(hand_xyz, phases, how, hz):
+    """peak_velocity with summary `how`, over the reaching window, MMC position low-passed at `hz`."""
     from cup_task.score import _smoothed_xyz, _hand_speed_mmps
-    sp = _hand_speed_mmps(_smoothed_xyz(np.asarray(hand_xyz, float), FPS, 4.0, 2), FPS)
+    sp = _hand_speed_mmps(_smoothed_xyz(np.asarray(hand_xyz, float), FPS, hz, 2), FPS)
     r = _phase(phases, "reaching")
     return _summ(sp, r, how)
 
@@ -103,14 +118,14 @@ def _load_sm(part, trial):
     return out
 
 
-def run(summ, out_csv):
+def run(summ, out_csv, mmc_hz=4.0, trunk_summ="max"):
     import gnn_train as GT
     from tqdm import tqdm
     H.use_good_cams()
     trials = GT.load_clean(need_reproj=False)
     rows = []; nok = nfail = 0
-    print(f"rescore: {len(trials)} trials, MMC peak summary = {summ} (OMC = max), all 15 measures",
-          flush=True)
+    print(f"rescore: {len(trials)} trials, MMC peak summary={summ}, MMC cutoff={mmc_hz}Hz, "
+          f"trunk={trunk_summ} (OMC=max @default), all 15 measures", flush=True)
     for t in tqdm(trials, desc="rescore", unit="trial"):
         part, trial, side = t["part"], t["trial"], t["side"]
         arm = "affected" if "unaffected" not in trial else "unaffected"
@@ -131,9 +146,10 @@ def run(summ, out_csv):
         trunk_o = (omc[f"{side}_shoulder"] + omc[f"{other}_shoulder"]) / 2
         try:
             mo = compute_position_measures(omc[wr], trunk_o, ph, side, fps=FPS)
-            ao = _angle_measures(omc, ph, side, "max")
-            o_pv = _wrist_pv(omc[wr], ph, "max")
-            o_trunk = _summ(np.abs(H._lp(trunk_o[:, 1]) - H._lp(trunk_o[:, 1])[0]), (0, n), "max")
+            ao = _angle_measures(omc, ph, side, "max", H.LP_HZ)          # OMC truth: default 6Hz, max
+            o_pv = _wrist_pv(omc[wr], ph, "max", 4.0)
+            oty = _lp_hz(trunk_o[:, 1], H.LP_HZ)
+            o_trunk = _summ(np.abs(oty - oty[0]), (0, n), "max")
         except Exception:
             nfail += 1; continue
 
@@ -143,10 +159,12 @@ def run(summ, out_csv):
         for vname, pose in cached.items():
             trunk = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2
             try:
-                mm = compute_position_measures(pose[wr], trunk, ph, side, fps=FPS)
-                am = _angle_measures(pose, ph, side, summ)
-                m_pv = _wrist_pv(pose[wr], ph, summ)
-                m_trunk = _summ(np.abs(H._lp(trunk[:, 1]) - H._lp(trunk[:, 1])[0]), (0, n), summ)
+                mm = compute_position_measures(pose[wr], trunk, ph, side, fps=FPS,
+                                               lowpass_hz=mmc_hz)
+                am = _angle_measures(pose, ph, side, summ, mmc_hz)
+                m_pv = _wrist_pv(pose[wr], ph, summ, mmc_hz)
+                mty = _lp_hz(trunk[:, 1], mmc_hz)
+                m_trunk = _summ(np.abs(mty - mty[0]), (0, n), trunk_summ)   # trunk keeps MAX
             except Exception:
                 continue
             for m in POS:

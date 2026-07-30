@@ -83,3 +83,13 @@ data (more participants/trials) or heavier pretraining — not more finetuning o
   triangulation + SmoothNet — position is already ~5mm on clean frames).
 - If finetuning DELTA: get more trials first; freeze the backbone; tiny LR + early stop on the
   zero-shot number.
+
+## 2026-07-27 (late): confidence-weighted fusion WINS vs mean-pool (per-joint, clean)
+Replaced hand-invented mean-pool with MVGFormer's per-view confidence-weighted sum. Final SynBody
+held-out per-joint MPJPE (mm), mean-pool -> confidence:
+  head 30->31 | hips 46->34 | shoulders 76->62 | knees 92->85 | ankles 107->94 | elbows 145->141
+  | l_wri 210->152 (-28%) | wrists(grp) 243->170 (-30%) | MEAN17 103->87 (-16%)
+Every joint improved/held; biggest gains = EXTREMITIES (where views disagree, averaging smeared).
+Confirms "mean defeats the point of fusing". BUT wrist 152mm still ~5x the head (31mm) — residual
+likely 80x80 grid resolution (small/fast joint) +/- SynBody wrist GT noise. Next: higher-res decode
+OR take this model to the DELTA transfer test.

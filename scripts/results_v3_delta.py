@@ -510,7 +510,13 @@ def _angle_scalars(P, phases, side):
         return None
 
     def mx(a, w):
-        return float(np.nanmax(a[w[0]:w[1]])) if w and w[1] > w[0] else float("nan")
+        # an all-NaN phase window (e.g. an occluded arm over that phase) legitimately means the
+        # measure isn't computable for this trial -> NaN, which the scorer skips. Suppress the
+        # nanmax All-NaN RuntimeWarning so it doesn't flood the log.
+        if not (w and w[1] > w[0]):
+            return float("nan")
+        seg = a[w[0]:w[1]]
+        return float(np.nanmax(seg)) if np.isfinite(seg).any() else float("nan")
 
     r, d, fw = ph("reaching"), ph("drinking"), ph("forward_transport")
     rf = (r[0], fw[1]) if (r and fw) else r
@@ -527,6 +533,233 @@ def _angle_scalars(P, phases, side):
             "shoulder_abduction_drinking": mx(abd, d),
             "peak_elbow_ang_vel": mx(eav, (0, len(elb))),
             "interjoint_coordination": ijc}
+
+
+# ============================================================================================
+# CONSOLIDATION GRID: score every candidate pose pipeline vs OMC on the FULL Murphy set, emit a
+# tidy per-trial table (variant, part, trial, arm, measure, omc, mmc) for the Fig.4 scatter +
+# median|err| + Bland-Altman. Cohort = gnn_train.load_clean (328 trials, 5 OMC parts), which also
+# supplies BA's native sidecar format and trial-ids that match the BA trajectory cache.
+#
+# STAGES (composable):
+#   A triangulation : "pipeline" (load_clean mmc = robust-consensus DLT) | "BA" (cached BA+guard traj)
+#   B smoother (3D) : "none" | "savgol" | "smoothnet"
+#   C wrist-speed   : handled inside compute_position_measures (pos-diff on the chosen pose). The
+#                     flow-BLEND path is a separate C option added once its gate is LOPO-tuned.
+#   D elbow-angular : "posdiff" (angle-rate of the pose) | "flowcloud" (two-segment flow) -- D slot
+#                     is filled once scripts/elbow_flow_angular is validated; posdiff is the default.
+# Cup is FIXED = v3 UETrack for every pose variant, so phases are constant and POSE is the variable.
+# ============================================================================================
+_GRID_JOINTS = ["right_wrist", "right_elbow", "right_shoulder", "left_wrist", "left_elbow",
+                "left_shoulder", "right_hip", "left_hip", "nose"]   # == gnn_refiner.JOINTS order
+
+
+def _savgol_joint(xyz, win=21, order=3):
+    """Savitzky-Golay per-axis, NaN-gap-safe, restores NaN where the whole point was missing."""
+    from scipy.signal import savgol_filter
+    out = xyz.copy().astype(float)
+    v = np.isfinite(xyz).all(1)
+    if v.sum() < win:
+        return out
+    idx = np.flatnonzero(v)
+    for ax in range(3):
+        xi = np.interp(np.arange(len(xyz)), idx, xyz[idx, ax])
+        out[:, ax] = savgol_filter(xi, win, order, mode="interp")
+    out[~v] = np.nan
+    return out
+
+
+def _ba_traj_cache():
+    """Load the cached BA+guard trajectories (fb150) -> {id -> (T,9,3)}. Built by ba_cache_traj.py."""
+    p = ROOT / "cache" / "ba_traj" / "traj_sw0_fb150.npz"
+    if not p.exists():
+        return None
+    d = np.load(str(p), allow_pickle=True)
+    return {str(i): tr for i, tr in zip(d["ids"], d["traj"])}
+
+
+def _flow_peak_velocity(part, trial, side, calib, n):
+    """Raw PyrLK-flow wrist PEAK velocity (mm/s): peak of the low-passed flow speed. The 'flow' C
+    option. No blend, no gate -- the honest flow method on its own. NaN if no flow cache."""
+    try:
+        sp = H._lp(_flow_speed(part, trial, f"{side}_wrist", calib, n))
+        return float(np.nanmax(sp)) if np.isfinite(sp).any() else np.nan
+    except Exception:
+        return np.nan
+
+
+def _flowcloud_elbow_cache():
+    """Load cached two-segment flow-cloud peak_elbow_ang_vel (validation cohort n=12), if present.
+    Built by scripts/elbow_flow_angular.py -> cache/elbow_flow/<part>__<trial>.npz. Returns
+    {id -> (peak_cloud, peak_omc)} deg/s, so the flow-cloud panel is scored from its OWN OMC pairing
+    (the cache stores peak_omc/peak_raw/peak_sn/peak_cloud)."""
+    d = {}
+    cdir = ROOT / "cache" / "elbow_flow"
+    if not cdir.exists():
+        return d
+    for p in cdir.glob("*.npz"):
+        try:
+            z = np.load(str(p), allow_pickle=True)
+            # RECONCILE: the cached scalar peaks are p95; recompute both as MAX of the low-passed
+            # per-frame series (eav_omc, rate_cloud) so the elbow panel uses the SAME peak definition
+            # (max) as the pose path's _angle_scalars -> a fair common OMC x-axis across all variants.
+            peak_omc = float(np.nanmax(H._lp(z["eav_omc"])))
+            peak_cloud = float(np.nanmax(H._lp(z["rate_cloud"])))
+            d[p.stem.replace("__", "/")] = (peak_cloud, peak_omc)
+        except Exception:
+            continue
+    return d
+
+
+def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
+    """Produce the pose joint-dict for one (triangulation, smoother) cell from a load_clean record.
+    Returns {joint_name: (T,3)} or None if unavailable."""
+    part, trial = trial_rec["part"], trial_rec["trial"]
+    if triangulation == "pipeline":
+        arr = trial_rec["mmc"]                                    # (T,9,3) robust-consensus DLT
+    elif triangulation == "BA":
+        if ba_cache is None or f"{part}/{trial}" not in ba_cache:
+            return None
+        arr = np.asarray(ba_cache[f"{part}/{trial}"], float)      # (T,9,3) BA+guard
+    else:
+        raise ValueError(triangulation)
+    pose = {j: arr[:, k] for k, j in enumerate(_GRID_JOINTS)}
+    if smoother == "none":
+        pass
+    elif smoother == "savgol":
+        pose = {j: _savgol_joint(x) for j, x in pose.items()}
+    elif smoother == "smoothnet":
+        pose = {j: _smooth_joint(x) for j, x in pose.items()}
+    else:
+        raise ValueError(smoother)
+    return pose
+
+
+def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
+                out_csv="out/murphy_grid.csv", fixed_phases=False):
+    """Score each pose variant vs OMC on all 15 Murphy measures; write the tidy per-trial table.
+
+    variants: list of dicts {name, triangulation, smoother}. Default = the A x B grid.
+
+    fixed_phases: if True, score EVERY variant with the OMC-cup phase boundaries (ph_o) instead of
+      segmenting each pose with its own v3 (UETrack) cup. This ISOLATES the pose/smoother/flow choice
+      -- the variable actually under comparison -- by removing segmentation as a confound, and it is
+      the only way to score participants that have no markerless cup track (P15/P17/P19). Default
+      (False) is END-TO-END: each pose segments with the v3 cup (needs a tracks_uetrack file).
+    """
+    import csv as _csv
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import gnn_train as GT
+    H.use_good_cams()          # init the per-participant good-camera whitelist (as main() does)
+
+    if variants is None:
+        variants = [
+            {"name": "pipeline",          "triangulation": "pipeline", "smoother": "none"},
+            {"name": "pipeline+savgol",   "triangulation": "pipeline", "smoother": "savgol"},
+            {"name": "pipeline+smoothnet","triangulation": "pipeline", "smoother": "smoothnet"},
+            {"name": "BA+smoothnet",      "triangulation": "BA",       "smoother": "smoothnet"},
+            # C: raw PyrLK flow for peak_velocity (that measure only; rest = SmoothNet pose)
+            {"name": "flow-speed",        "triangulation": "pipeline", "smoother": "smoothnet",
+             "speed": "flow"},
+            # D: two-segment flow-cloud for peak_elbow_ang_vel (that measure only, cached n=12)
+            {"name": "flow-cloud-elbow",  "triangulation": "pipeline", "smoother": "smoothnet",
+             "angular": "flowcloud"},
+        ]
+    ba_cache = _ba_traj_cache()
+    fc_cache = _flowcloud_elbow_cache()
+    print(f"  flow-cloud elbow cache: {len(fc_cache)} trials", flush=True)
+    trials = [t for t in GT.load_clean(need_reproj=False) if t["part"] in parts]
+    phase_src = "OMC-cup phases (fixed, pose isolated)" if fixed_phases else "v3 UETrack cup (end-to-end)"
+    print(f"murphy_grid: {len(trials)} trials, {len(variants)} variants, phases={phase_src}", flush=True)
+    print(f"  BA cache: {'loaded '+str(len(ba_cache))+' trajs' if ba_cache else 'MISSING'}", flush=True)
+
+    rows = []       # tidy: variant, part, trial, arm, side, measure, omc, mmc
+    n_ok = 0; n_fail = 0
+    ALL_M = POSITION_MEASURES + ANGLE_MEASURES
+    from tqdm import tqdm
+    pbar = tqdm(list(enumerate(trials)), total=len(trials), desc="murphy_grid", unit="trial")
+    for ti, t in pbar:
+        part, trial, side = t["part"], t["trial"], t["side"]
+        arm = "affected" if "unaffected" not in trial else "unaffected"
+        other = "right" if side == "left" else "left"
+        n = t["mmc"].shape[0]
+        calib = _calib(part)
+        # OMC (same loader/lag path as murphy()) + v3 cup for phases
+        omc = H._load_omc(part, trial, n)
+        lag, _ = H._find_lag(t["mmc"][:, _GRID_JOINTS.index(f"{side}_wrist")],
+                             omc[f"{side}_wrist"])
+        omc = {j: _shift(v, lag) for j, v in omc.items()}
+        oc = _shift(_omc_cup(part, trial, n), lag)
+        c3 = None if fixed_phases else _cup_v3(part, trial, calib, n)
+        wr = f"{side}_wrist"
+
+        def phases_for(cup_xyz, hand_xyz):
+            try:
+                seg = segment.segment_cup_only(_fill(cup_xyz), fps=FPS)
+                return segment.to_murphy_phases(seg, _fill(hand_xyz), _fill(cup_xyz), fps=FPS)
+            except Exception:
+                return None
+
+        ph_o = phases_for(oc, omc[wr])
+        if not ph_o:
+            n_fail += 1
+            continue
+        # OMC measures (once per trial)
+        trunk_o = (omc[f"{side}_shoulder"] + omc[f"{other}_shoulder"]) / 2
+        try:
+            mo = compute_position_measures(omc[wr], trunk_o, ph_o, side, fps=FPS)
+            ao = _angle_scalars(omc, ph_o, side)
+        except Exception:
+            n_fail += 1
+            continue
+
+        for spec in variants:
+            pose = _pose_variant(t, spec["triangulation"], spec["smoother"], ba_cache)
+            if pose is None:
+                continue
+            # fixed_phases: score with the OMC-cup phases (isolates pose; works with no cup track).
+            # end-to-end: each pose segments with its own v3 (UETrack) cup.
+            ph = ph_o if fixed_phases else phases_for(c3, pose[wr])
+            if not ph:
+                continue
+            trunk = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2
+            try:
+                mm = compute_position_measures(pose[wr], trunk, ph, side, fps=FPS)
+                am = _angle_scalars(pose, ph, side)
+            except Exception:
+                continue
+            for m in POSITION_MEASURES:
+                ov = getattr(mo, m, None); mv = getattr(mm, m, None)
+                # C override: raw PyrLK flow for peak_velocity (no blend, no gate)
+                if m == "peak_velocity" and spec.get("speed") == "flow":
+                    mv = _flow_peak_velocity(part, trial, side, calib, n)
+                if ov is None or mv is None or not np.isfinite(ov) or not np.isfinite(mv):
+                    continue
+                rows.append((spec["name"], part, trial, arm, side, m, float(ov), float(mv)))
+            for m in ANGLE_MEASURES:
+                omv, amv = ao[m], am[m]
+                # D override: two-segment flow-cloud for peak_elbow_ang_vel (cached n=12; carries own OMC)
+                if m == "peak_elbow_ang_vel" and spec.get("angular") == "flowcloud":
+                    fc = fc_cache.get(f"{part}/{trial}")
+                    if fc is None:
+                        continue                      # not in the validation cohort -> skip (sparse panel)
+                    amv, omv = fc                     # (peak_cloud, peak_omc) deg/s
+                if not np.isfinite(omv) or not np.isfinite(amv):
+                    continue
+                rows.append((spec["name"], part, trial, arm, side, m, float(omv), float(amv)))
+        n_ok += 1
+        pbar.set_postfix(scored=n_ok, failed=n_fail, rows=len(rows))
+
+    outp = ROOT / out_csv
+    outp.parent.mkdir(parents=True, exist_ok=True)
+    with open(outp, "w", newline="") as f:
+        w = _csv.writer(f)
+        w.writerow(["variant", "part", "trial", "arm", "side", "measure", "omc", "mmc"])
+        w.writerows(rows)
+    print(f"\nPROCESSING CHECK: {n_ok} trials scored, {n_fail} failed, {len(rows)} tidy rows", flush=True)
+    print(f"wrote {outp}", flush=True)
+    print("DONE", flush=True)
+    return rows
 
 
 def murphy(own_phases: bool = True):
@@ -654,13 +887,18 @@ def murphy(own_phases: bool = True):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--what", choices=["accuracy", "speed", "segment", "murphy", "all"],
+    ap.add_argument("--what", choices=["accuracy", "speed", "segment", "murphy", "grid", "all"],
                     default="all")
     ap.add_argument("--fixed-phases", action="store_true",
                     help="score Murphy with OMC-cup phases for every arm (isolates the pose). "
                          "Default is END-TO-END: each arm segments with its own cup track.")
+    ap.add_argument("--out-csv", default="out/murphy_grid.csv",
+                    help="grid: where to write the tidy per-trial OMC-vs-MMC table")
     a = ap.parse_args(argv)
     H.use_good_cams()
+    if a.what == "grid":
+        murphy_grid(out_csv=a.out_csv, fixed_phases=a.fixed_phases)
+        return
     if a.what in ("accuracy", "all"):
         accuracy()
     if a.what in ("speed", "all"):

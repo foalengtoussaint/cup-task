@@ -572,6 +572,34 @@ def _ba_traj_cache():
     return {str(i): tr for i, tr in zip(d["ids"], d["traj"])}
 
 
+def _flow_peak_velocity(part, trial, side, calib, n):
+    """Raw PyrLK-flow wrist PEAK velocity (mm/s): peak of the low-passed flow speed. The 'flow' C
+    option. No blend, no gate -- the honest flow method on its own. NaN if no flow cache."""
+    try:
+        sp = H._lp(_flow_speed(part, trial, f"{side}_wrist", calib, n))
+        return float(np.nanmax(sp)) if np.isfinite(sp).any() else np.nan
+    except Exception:
+        return np.nan
+
+
+def _flowcloud_elbow_cache():
+    """Load cached two-segment flow-cloud peak_elbow_ang_vel (validation cohort n=12), if present.
+    Built by scripts/elbow_flow_angular.py -> cache/elbow_flow/<part>__<trial>.npz. Returns
+    {id -> (peak_cloud, peak_omc)} deg/s, so the flow-cloud panel is scored from its OWN OMC pairing
+    (the cache stores peak_omc/peak_raw/peak_sn/peak_cloud)."""
+    d = {}
+    cdir = ROOT / "cache" / "elbow_flow"
+    if not cdir.exists():
+        return d
+    for p in cdir.glob("*.npz"):
+        try:
+            z = np.load(str(p), allow_pickle=True)
+            d[p.stem.replace("__", "/")] = (float(z["peak_cloud"]), float(z["peak_omc"]))
+        except Exception:
+            continue
+    return d
+
+
 def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
     """Produce the pose joint-dict for one (triangulation, smoother) cell from a load_clean record.
     Returns {joint_name: (T,3)} or None if unavailable."""
@@ -614,9 +642,16 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
             {"name": "pipeline+savgol",   "triangulation": "pipeline", "smoother": "savgol"},
             {"name": "pipeline+smoothnet","triangulation": "pipeline", "smoother": "smoothnet"},
             {"name": "BA+smoothnet",      "triangulation": "BA",       "smoother": "smoothnet"},
-            {"name": "BA+savgol",         "triangulation": "BA",       "smoother": "savgol"},
+            # C: raw PyrLK flow for peak_velocity (that measure only; rest = SmoothNet pose)
+            {"name": "flow-speed",        "triangulation": "pipeline", "smoother": "smoothnet",
+             "speed": "flow"},
+            # D: two-segment flow-cloud for peak_elbow_ang_vel (that measure only, cached n=12)
+            {"name": "flow-cloud-elbow",  "triangulation": "pipeline", "smoother": "smoothnet",
+             "angular": "flowcloud"},
         ]
     ba_cache = _ba_traj_cache()
+    fc_cache = _flowcloud_elbow_cache()
+    print(f"  flow-cloud elbow cache: {len(fc_cache)} trials", flush=True)
     trials = [t for t in GT.load_clean(need_reproj=False) if t["part"] in parts]
     print(f"murphy_grid: {len(trials)} trials, {len(variants)} variants, cup=v3(UETrack)", flush=True)
     print(f"  BA cache: {'loaded '+str(len(ba_cache))+' trajs' if ba_cache else 'MISSING'}", flush=True)
@@ -674,13 +709,23 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
                 continue
             for m in POSITION_MEASURES:
                 ov = getattr(mo, m, None); mv = getattr(mm, m, None)
+                # C override: raw PyrLK flow for peak_velocity (no blend, no gate)
+                if m == "peak_velocity" and spec.get("speed") == "flow":
+                    mv = _flow_peak_velocity(part, trial, side, calib, n)
                 if ov is None or mv is None or not np.isfinite(ov) or not np.isfinite(mv):
                     continue
                 rows.append((spec["name"], part, trial, arm, side, m, float(ov), float(mv)))
             for m in ANGLE_MEASURES:
-                if not np.isfinite(ao[m]) or not np.isfinite(am[m]):
+                omv, amv = ao[m], am[m]
+                # D override: two-segment flow-cloud for peak_elbow_ang_vel (cached n=12; carries own OMC)
+                if m == "peak_elbow_ang_vel" and spec.get("angular") == "flowcloud":
+                    fc = fc_cache.get(f"{part}/{trial}")
+                    if fc is None:
+                        continue                      # not in the validation cohort -> skip (sparse panel)
+                    amv, omv = fc                     # (peak_cloud, peak_omc) deg/s
+                if not np.isfinite(omv) or not np.isfinite(amv):
                     continue
-                rows.append((spec["name"], part, trial, arm, side, m, float(ao[m]), float(am[m])))
+                rows.append((spec["name"], part, trial, arm, side, m, float(omv), float(amv)))
         n_ok += 1
         if (ti + 1) % 25 == 0:
             print(f"  {ti+1}/{len(trials)} trials  ({n_ok} scored, {n_fail} failed, {len(rows)} rows)",

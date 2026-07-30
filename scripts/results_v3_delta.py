@@ -630,11 +630,16 @@ def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
 
 
 def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
-                out_csv="out/gnn/murphy_grid.csv"):
+                out_csv="out/gnn/murphy_grid.csv", fixed_phases=False):
     """Score each pose variant vs OMC on all 15 Murphy measures; write the tidy per-trial table.
 
     variants: list of dicts {name, triangulation, smoother}. Default = the A x B grid.
-    Cup FIXED = v3 (UETrack) so phases are constant. Angular stage D = posdiff for now.
+
+    fixed_phases: if True, score EVERY variant with the OMC-cup phase boundaries (ph_o) instead of
+      segmenting each pose with its own v3 (UETrack) cup. This ISOLATES the pose/smoother/flow choice
+      -- the variable actually under comparison -- by removing segmentation as a confound, and it is
+      the only way to score participants that have no markerless cup track (P15/P17/P19). Default
+      (False) is END-TO-END: each pose segments with the v3 cup (needs a tracks_uetrack file).
     """
     import csv as _csv
     sys.path.insert(0, str(ROOT / "scripts"))
@@ -658,7 +663,8 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
     fc_cache = _flowcloud_elbow_cache()
     print(f"  flow-cloud elbow cache: {len(fc_cache)} trials", flush=True)
     trials = [t for t in GT.load_clean(need_reproj=False) if t["part"] in parts]
-    print(f"murphy_grid: {len(trials)} trials, {len(variants)} variants, cup=v3(UETrack)", flush=True)
+    phase_src = "OMC-cup phases (fixed, pose isolated)" if fixed_phases else "v3 UETrack cup (end-to-end)"
+    print(f"murphy_grid: {len(trials)} trials, {len(variants)} variants, phases={phase_src}", flush=True)
     print(f"  BA cache: {'loaded '+str(len(ba_cache))+' trajs' if ba_cache else 'MISSING'}", flush=True)
 
     rows = []       # tidy: variant, part, trial, arm, side, measure, omc, mmc
@@ -676,7 +682,7 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
                              omc[f"{side}_wrist"])
         omc = {j: _shift(v, lag) for j, v in omc.items()}
         oc = _shift(_omc_cup(part, trial, n), lag)
-        c3 = _cup_v3(part, trial, calib, n)
+        c3 = None if fixed_phases else _cup_v3(part, trial, calib, n)
         wr = f"{side}_wrist"
 
         def phases_for(cup_xyz, hand_xyz):
@@ -703,7 +709,9 @@ def murphy_grid(variants=None, parts=("P07", "P08", "P15", "P17", "P19"),
             pose = _pose_variant(t, spec["triangulation"], spec["smoother"], ba_cache)
             if pose is None:
                 continue
-            ph = phases_for(c3, pose[wr])           # each pose segments with the v3 cup
+            # fixed_phases: score with the OMC-cup phases (isolates pose; works with no cup track).
+            # end-to-end: each pose segments with its own v3 (UETrack) cup.
+            ph = ph_o if fixed_phases else phases_for(c3, pose[wr])
             if not ph:
                 continue
             trunk = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2
@@ -873,13 +881,18 @@ def murphy(own_phases: bool = True):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--what", choices=["accuracy", "speed", "segment", "murphy", "all"],
+    ap.add_argument("--what", choices=["accuracy", "speed", "segment", "murphy", "grid", "all"],
                     default="all")
     ap.add_argument("--fixed-phases", action="store_true",
                     help="score Murphy with OMC-cup phases for every arm (isolates the pose). "
                          "Default is END-TO-END: each arm segments with its own cup track.")
+    ap.add_argument("--out-csv", default="out/gnn/murphy_grid.csv",
+                    help="grid: where to write the tidy per-trial OMC-vs-MMC table")
     a = ap.parse_args(argv)
     H.use_good_cams()
+    if a.what == "grid":
+        murphy_grid(out_csv=a.out_csv, fixed_phases=a.fixed_phases)
+        return
     if a.what in ("accuracy", "all"):
         accuracy()
     if a.what in ("speed", "all"):

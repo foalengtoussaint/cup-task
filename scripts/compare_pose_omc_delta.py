@@ -187,12 +187,24 @@ def _load_omc(part, trial, n_video):
     L = c["parameters"]["POINT"]["LABELS"]["value"]
     P = c["data"]["points"]   # (4, m, T) mm
 
+    T = P.shape[2]
+
     def marker(nm):
+        # NaN for a label this C3D doesn't have (e.g. some P15 R-arm trials lack wrist_outer_L, the
+        # NON-scored arm). Averaging below then falls back to the present marker(s), or leaves the
+        # whole joint NaN -- which the validity masks downstream already handle. A missing marker on
+        # the arm actually being scored surfaces later as NaN measures, not a hard crash on load.
+        if nm not in L:
+            return np.full((T, 3), np.nan)
         return P[:3, L.index(nm), :].T
 
     out = {}
     for joint, mks in JOINTS.items():
-        raw = np.mean([marker(m) for m in mks], axis=0)
+        with np.errstate(invalid="ignore"):          # all-NaN joint (missing non-scored arm) -> NaN
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                raw = np.nanmean([marker(m) for m in mks], axis=0)
         grid = _despike(_resample(raw, C3D_RATE, VIDEO_FPS))
         # pad/trim to video length
         if len(grid) < n_video:

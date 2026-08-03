@@ -5238,3 +5238,39 @@ CANNOT separate the failure modes (all ~25-30px) but spatialR2 does —
     SHUFFLED CUT (error is NOT a function of 3D position). Agrees with cut_placement_audit.
 So three independent methods now agree: P10 cam4 = miscalibration, P12 cam4/5 = shuffled cuts. The
 spatial-systematicity test is the cleanest single discriminator and the prior tooling lacked it.
+
+### 2026-08-03 (cont.) — FULL-COHORT camera audit + spatial test (answer: "do ALL participants have problems?")
+
+Ran reaudit + spatial_miscalib_check across ALL 11 participants. **No — there's clear structure, not
+"everyone broken":**
+  - **CLEAN CORE (all 5 cams fine):** P07, P08, P15 (the shared-room cohort), + P251 effectively clean.
+  - **Everyone else: 1-2 bad cams, but the MECHANISM differs** — and reproj-only mislabels them all
+    "recalib". The spatial error-field test (spatialR2 = is the error a smooth function of 3D position)
+    splits real miscalib (systematic, high spatialR2) from shuffled cuts (incoherent, low spatialR2)
+    AND rescues cams reproj wrongly condemned.
+
+**Corrected per-camera verdicts (reproj-only -> spatial-test truth):**
+  P10 cam4  : MISCALIB  (spatialR2 0.64) — real, agrees w/ prior + cut-audit
+  P12 cam4,5: SHUFFLED  (0.30/0.26, cam5 dirR 0.06) — cut_placement confirms, RE-CUTTABLE
+  P13 cam5  : SHUFFLED  (0.29);   cam2: **FINE** (0.11) — reproj "recalib" OVERTURNED, cam2 usable
+  P14 cam5  : MISCALIB  (0.47);   cam2: **FINE** (0.21) — cam2 OVERTURNED, usable
+  P17 cam5  : SHUFFLED  (0.28)
+  P19 cam5  : MISCALIB  (0.72, 132px!);  cam2: MISCALIB (0.65, small but systematic)
+  P251 cam5 : ~FINE     (0.18, 21px)
+  P252 cam5 : SHUFFLED  (0.13)
+  P07/P08/P15: all 5 FINE.
+=> failures are ~half REAL MISCALIB (P10c4, P14c5, P19c2/c5) and ~half SHUFFLED CUTS (P12c4/5, P13c5,
+P17c5, P252c5). Shuffled = re-cuttable; miscalib = recalibrate or drop. Reproj-only would call them ALL
+miscalib (wrong for ~half) and would WRONGLY condemn P13c2/P14c2 (both actually fine).
+
+**cam_5 is the systematically weak camera** (bad in P17/P19/P13/P14/P252, borderline P251) — likely one
+camera moved/marginal in the rig across later sessions; but the mechanism varies (miscalib vs shuffled),
+so it's not one single fix.
+
+**P25 (supervisor asked):** correctly SPLIT into P251/P252 — the two sessions differ (P251 cam5 fine,
+P252 cam5 shuffled; calib RMS 0.47 vs 3.13). Treating P25 unsplit would MIX a fine + a shuffled cam5 in
+one "participant" and corrupt ~half its trials undiagnosably. The split was necessary, not cosmetic.
+
+Every participant remains USABLE (each has >=3 good cams after correct classification). Net: the cohort
+is a clean core (P07/08/15/251) + participants each needing 1-2 cams dropped-or-recut, NOT a broken
+dataset.

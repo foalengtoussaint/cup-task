@@ -5357,3 +5357,26 @@ P13c2 fine->shuffled, P17c5 shuffled->cuts-ok, P252c5 shuffled->cuts-ok). => spa
 over-confident; the pixel-exact cut-placement is required. Net: MOST bad cameras are RE-CUTTABLE
 (5 cams) not miscalibrated (3 cams) — dataset better than reproj-only implied. Final table in
 docs/DATASET_STATUS.md §3.
+
+### 2026-08-03 (cont.) — "coverage gap" RETRACTED; sync should use best joint + displacement (user pushed)
+
+User: "are you sure P17/P19 have a coverage gap? you don't only have to use the wrist for sync." Both
+right. Tested sync on wrist vs elbow/shoulder/nose, and best-joint recovery of wrist-failing trials:
+  - **P17: NOT a coverage gap.** Its unaffected arm triangulates fine; only the WRIST KEYPOINT is
+    poorly tracked (occluded/jittery in that view). ELBOW syncs at 0.94/0.95/0.86 vs wrist 0.22/0.41/
+    0.25. Best-joint sync recovers **25/25** sampled fails -> P17 goes 41 -> ~83 scorable. My
+    "unaffected arm barely triangulates" claim was WRONG (measured on the bad-cam whitelist).
+  - **P19: genuinely unsyncable on the unaffected arm — but it's an OMC GROUND-TRUTH gap, not our
+    pipeline.** best-joint recovers 0/25. Root cause: P19's OMC has NO wrist_inner/outer markers for
+    the unaffected (L) side (only cluster_wrist_L_*), so _load_omc's inner/outer-midpoint wrist target
+    is missing/garbage -> nothing valid to correlate against. Matches memory (P19 wrist target =
+    'outer_only'). Not fixable by us; the unaffected arm just isn't OMC-validatable for P19.
+  - **P251/P252: NOT a wrong-joint problem** — wrist is already their best joint (best-joint recovers
+    only 1/15, 3/17). Their fails are the raw-SPEED jitter issue -> fix = DISPLACEMENT / SmoothNet-
+    smoothed sync (see earlier §C1), not a different joint.
+
+**Net: the sync GATE should use (a) the best-correlating joint (elbow rescues P17) AND (b) displacement/
+smoothed speed (rescues P251/P252) — not the raw wrist speed.** Camera-wise every participant has >=3
+good cams and the geometry is fine; the trial losses were sync-METRIC artifacts (P17, P251/2) + one
+real OMC gap (P19 unaffected arm), NOT camera or re-cut problems. So WITHOUT re-cutting, with a proper
+sync gate, ~all trials are usable except P19's unaffected arm.

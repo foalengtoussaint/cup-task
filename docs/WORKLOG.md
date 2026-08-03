@@ -5274,3 +5274,30 @@ one "participant" and corrupt ~half its trials undiagnosably. The split was nece
 Every participant remains USABLE (each has >=3 good cams after correct classification). Net: the cohort
 is a clean core (P07/08/15/251) + participants each needing 1-2 cams dropped-or-recut, NOT a broken
 dataset.
+
+### 2026-08-03 (cont.) — ARM-level reconciliation (user: "you said P251 had many bad trials but also that it's clean")
+
+Fair contradiction. Resolved: P251's CAMERAS are clean, but 15/39 trials fail the sync>=0.7 gate.
+Cause is NOT cameras/cuts -- it's an ARM effect. Per-arm sync pass-rate + wrist-validity, cohort-wide:
+
+  BOTH ARMS FINE:   P07 40/41 & 42/42 | P08 39/40 & 48/48 | P15 45/45 & 43/45 | P10 40/40 & 28/34 |
+                    P13 40/40 & 38/40
+  AFFECTED-ARM SYNC CONFOUND: P251 aff 9/19 vs unaff 15/20 ; P252 aff 5/21 vs unaff 18/19 ; P14
+                    aff 33/43 vs unaff 45/46. Affected pose is VALID (wr_valid ~0.98) -- the paretic
+                    arm moves slowly/small-amplitude so its wrist-SPEED signal is weak -> the speed
+                    xcorr that estimates lag has no clean peak -> low sync_corr + scattered lag,
+                    even though everything is fine. This is the documented motion/viewpoint confound
+                    (project_delta_cohort_transfer: low wrist-speed corr != bad). These trials are
+                    RECOVERABLE (gate on a session-constant lag or the unaffected arm, not per-trial
+                    affected-arm speed xcorr).
+  UNAFFECTED-ARM MISSING: P17 unaff 0/42 (wr_valid 0.34), P19 unaff 0/45 (wr_valid 0.00!). Opposite
+                    problem, worse: for P17/P19 the UNAFFECTED side is barely triangulated at all --
+                    a per-arm camera-coverage gap (the good cams mostly view the affected side). So
+                    P17/P19's earlier "41/31 scorable" was AFFECTED-ARM ONLY; their unaffected arm is
+                    effectively unusable.
+
+**Corrected takeaways:** (a) my "scorable" counts were per-arm-blind and pessimistic for the affected
+arm (sync gate biased against slow arms -- the clinically important side). (b) P17/P19 have a real
+unaffected-arm coverage hole. (c) most of the cohort (P07/08/15/10/13) is genuinely fine both arms.
+The sync>=0.7 gate needs fixing (session-constant lag, not per-trial affected-arm speed xcorr) before
+trusting affected-arm trial counts.

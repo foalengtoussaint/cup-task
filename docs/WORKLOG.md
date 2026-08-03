@@ -5145,3 +5145,18 @@ exclusion. P13 itself now yields 43 usable trials here (its clean-clip subset sy
 **Cohort status:** original 5 (P07 82, P08 87, P15 87, P17 41, P19 31) + new usable (P10 61, P13 43,
 P14 78, P251 27, P252 20; P12 excluded) = the OMC-scorable pool for murphy_grid. Next: run the grid /
 scoring on the expanded cohort.
+
+**⚠⚠ P12 EXCLUSION RETRACTED — it was MISCALIBRATED CAMERAS, not bad geometry (user asked to check
+miscalib vs cut/sync).** Ran the reprojection re-audit (`scripts/archive/reaudit_cam_quality.py`,
+reproject each cam vs RANSAC-consensus 3D wrist, stratified still/moving). Verdict: **every low-sync
+participant's problem is 1-2 MISCALIBRATED cameras, NOT desync, NOT mis-cut** — all FINE cams have
+lag~0 (lagSD~0.5), so timing/ordering is correct; the bad cams show 100-234px reproj HIGH both still
+AND moving = pure geometry. Per-participant FINE / recalib-drop:
+  P10 fine[1,2,3,5] drop[4] | P12 fine[1,2,3] drop[4,5] (cam4/5 = 205/234px!) |
+  P13 fine[1,3,4] drop[2,5] | P251 fine[1,2,3,4] drop[5] | P252 fine[1,2,3,4] drop[5].
+Updated `cam_quality.json` to the FINE sets, rebuilt gnn_pairs (--force, re-triangulate on good cams
+only). **P12 wrist_valid 0.08→0.99, sync 0.33→0.97, scorable 4/82→81/82** — the exact P15-style
+recovery (bad cams poison triangulation; restrict → validity jumps). Full recovery: P12 4→81, P13
+43→78, P10 61→68. **Cohort now 680 OMC-scorable trials (was 328). P12 is USABLE, not excluded.**
+Lesson (again): a whole-participant failure is usually a few bad cameras, not the participant —
+classify by REPROJECTION stratified by motion before excluding.

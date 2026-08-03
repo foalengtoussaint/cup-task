@@ -5065,3 +5065,53 @@ too few. Recurring lesson: consistency != correctness -- every self-consistency 
 bone) is satisfiable by a consistent-but-wrong pose; when two metrics move opposite ways, suspect
 one shared artifact before celebrating. Code left runnable (--loss selfconsistency,
 scratchpad/train_wholetrial.py).
+
+---
+
+### 2026-08-03 — Added 6 valid participants; consensus reproject-seed; P10 broken-clip exclusion
+
+**Added participants** (grid cohort was only P07/P08/P15/P17/P19). Selection = calib RMS<6 in the
+study CSV (`cache/delta/study_docs/2024_10_23_1138_Calibration_errors.csv`) **AND** has OMC in
+**AutoMQ** (`~/Documents/AutoMQ/<P>/`, the processed-OMC store — not the SMB `iDrink/OMC_data_newStruct`).
+Result: **P10 P12 P13 P14 + P25**. Excluded despite good calib: P16/P18/P20/P21/P22 (absent from
+AutoMQ = no OMC), P24 (no OMC). Pulled cam **1-5 only** from the SMB share (`add_participants.sh`,
+GVFS `research_analyzed_dataset/DELTA`), ran batched cup+pose detections + UETrack. Enforced cam1-5
+via `cam_quality.json` whitelist (P14 had stale cam6-10 from an old import; verified tracks use 1-5).
+
+**P25 is a SPLIT participant.** Two sessions with two calibrations: **P251 = trials 10-41**,
+**P252 = trials 42+** (the study splits them; AutoMQ keeps OMC unsplit under P25, but the raw c3d IS
+split on the share). Processed as two participants, each its own calib+c3d. Unsplit-P25 partial pull
+moved to `cache/delta/_P25_unsplit_partial/` (kept, not deleted).
+
+**Seeding inconsistency found (user caught it).** P07/P08 tracks were built with **consensus
+reproject-seeding** — their frame-0 tracks seed cameras that YOLO did NOT detect until frames 53/128
+(same cup model, older dets), i.e. the builder triangulated the frame-0 cup from the detecting
+cameras and reprojected it into the non-detecting ones. My `cache_uetrack_tracks.py` (P15/17/19 + the
+6 new) only seeded cameras with a DIRECT YOLO detection → fewer cameras tracked → weaker tracks.
+Measured baseline (`check_track_quality.py`, intrinsic consensus coverage, no OMC): P10 21/82,
+P12 36/82, P13 35/80 "good" (~50% valid, median **2** cams) vs P251 41/41 (100%, 5 cams). The weak
+ones are exactly the few-camera-detected participants — reproject-seed is the fix.
+
+**Fix: consensus-gated reproject-seed** (`cache_uetrack_tracks.py`). Seed a non-detecting camera by
+reprojecting the consensus 3D **only when ≥2 detecting cameras AGREE** (`consensus3` reprojection
+gate — the "only seed if cameras agree" requirement). Reprojected seeds tagged
+`seeded_by:"reproject"` (direct = `"yolo"`) so downstream can DROP the reprojected tracks. Efficiency
+per requirements: SKIP a trial if reproject adds no camera; NEVER re-run cameras that already have a
+track — track only the new reprojected cams and MERGE into the existing JSON. Smoke: P10 trial_60
+2cam/46%→4cam/69% valid. `_consensus_seed` scans frames that actually have ≥2 detections (works for
+cut clips and late co-detections; earlier fixed-window version wrongly skipped).
+
+**⚠ P10 DATA ISSUE — ~13 broken trials, EXCLUDED, NOT re-pulled (user's call).** Clip+OMC audit
+(`audit_clip_omc.py` → `cache/delta/clip_omc_audit.json`) checks n_video==n_det and n_omc(c3d→video
+fps)≈n_video. **OMC↔camera mapping is otherwise INTACT** (DET_MISMATCH=0 everywhere; P12/P13/P17
+perfectly clean; P07/P08 reference nearly clean). But P10 has ~13 trials that are UNCUT (trial_20 =
+12434 frames / 3.5 min, trial_30 = 4469) and/or OMC_MISMATCH (c3d is a different time window than the
+clip → mapping broken for THAT trial: e.g. trial_29 video 565 vs OMC 279) and/or NO_OMC
+(trial_41/42/43 c3d missing). These are a data-provenance problem (wrong clip cut / OMC not aligned on
+the share), NOT a tracking failure — **excluded via `--audit-clean`, run P10 with its ~70 clean
+trials. Decided NOT to re-pull.** Reproject-seed + any OMC scoring must gate on the clean list.
+
+**Not yet done:** these participants have no `gnn_pairs` cache, so they don't appear in `murphy_grid`
+yet — building that (MMC↔OMC pairing with lag-sync) is the step to make them scorable. The reproject-
+seed rebuild (560 audit-clean trials) was running at end of session; re-run `check_track_quality.py`
+after it to confirm P10/P12/P13 valid%/cams improved vs the baseline above.

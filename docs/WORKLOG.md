@@ -5301,3 +5301,12 @@ arm (sync gate biased against slow arms -- the clinically important side). (b) P
 unaffected-arm coverage hole. (c) most of the cohort (P07/08/15/10/13) is genuinely fine both arms.
 The sync>=0.7 gate needs fixing (session-constant lag, not per-trial affected-arm speed xcorr) before
 trusting affected-arm trial counts.
+
+**Sync-gate failure ROOT CAUSE (refined 3x — final).** NOT slow-arm (bad-sync P251 trials have peak
+speed 979 vs good 952 — no difference), NOT desync (session-constant lag recovers 0/15). Inspected the
+curves directly (P251 trial_27): MMC wrist peak 1443 vs OMC 626 mm/s, 271 vs 180 high-speed frames,
+100% valid, argmax roughly aligned (381 vs 399). => the RAW markerless wrist speed is JITTER-DOMINATED,
+which decorrelates the two speed curves even at the right lag (the doc's 1mm-wobble->60mm/s effect).
+So the sync GATE fails on jitter, not on any real defect; SmoothNet (downstream in scoring) removes
+exactly this, so these trials are likely scorable — the gate just uses the RAW speed. Fix: gate on
+smoothed speed / session-constant lag. Wrote docs/DATASET_STATUS.md (standing dataset summary).

@@ -1,0 +1,139 @@
+# DELTA drink-task dataset — status & known problems
+
+*Compiled 2026-08-03. Companion to `docs/WORKLOG.md` (chronological detail) — this is the standing
+summary of what's in the cohort and every known data problem, with how each was diagnosed and its fix.*
+
+The dataset is the DELTA/iDrink stroke drink-task: multi-camera video (cams 1–5 used) + Qualisys OMC
+mocap ground truth, per participant, ~40–90 drinking-task repetitions each (affected + unaffected
+arm). Markerless pipeline = YOLO26-pose + detect-once UETrack cup → triangulate → SmoothNet → Murphy
+measures. OMC comes from `~/Documents/AutoMQ/<P>/` (processed) and raw c3d on the SMB share.
+
+---
+
+## 1. Cohort — who's in, who's usable
+
+**11 participants**, selected = calibration RMS < 6 (study CSV) **AND** has OMC in AutoMQ.
+Excluded: P16/P18/P20/P21/P22 (good calib but **no OMC**), P24 (no OMC).
+
+| group | participants | state |
+|---|---|---|
+| **Clean core** | P07, P08, P15 | all 5 cameras fine, both arms good — the reference cohort |
+| Original OMC | P17, P19 | usable but each has bad cameras + an unaffected-arm gap (below) |
+| Newly added | P10, P12, P13, P14, P251, P252 | usable after per-camera cleanup (below) |
+
+**P25 is SPLIT** into **P251 (trials 10–41)** and **P252 (trials 42+)** — two recording sessions with
+*different* calibrations (RMS 0.47 vs 3.13) and different camera health (P251 cam5 fine, P252 cam5
+shuffled). AutoMQ/OMC bookkeep P25 unsplit; treating it that way would mix a fine + a shuffled camera
+in one "participant." **The split is necessary, not cosmetic.**
+
+**Cohort scorable pool ≈ 680 trials** (was 328 for the original 5). Counts are per-arm-sensitive —
+see §4.
+
+---
+
+## 2. Problem A — broken / mis-cut CLIPS  (`audit_clip_omc.py`)
+
+Some staged clips are not the cut drinking trial. Per-trial check: `n_video == n_det` and
+`n_omc(c3d→60fps) ≈ n_video`. **The OMC↔video mapping is otherwise INTACT** (n_det==n_video
+everywhere; P07/P08 reference nearly clean).
+
+- **P10: ~13 broken trials** — UNCUT (e.g. trial_20 = 12 434 frames / 3.5 min; trial_30 = 4 469),
+  OMC_MISMATCH (c3d a different time window than the clip → mapping broken *for that trial*), or NO_OMC.
+- **Decision: excluded, NOT re-pulled** (user's call). P10 runs on its ~70 clean trials.
+- Clean-trial list cached at `cache/delta/clip_omc_audit.json`; all downstream builds gate on it.
+
+---
+
+## 3. Problem B — bad CAMERAS: miscalibration vs shuffled cuts
+
+**Most participants have 1–2 bad cameras**, but the *mechanism* differs and MUST be told apart —
+because a shuffled cut is RE-CUTTABLE while miscalibration needs recalibration/dropping.
+
+⚠ **Reprojection error MAGNITUDE alone cannot tell them apart** (both give ~25–30 px). Three methods,
+in order of authority:
+1. `reaudit_cam_quality.py` — reproj vs RANSAC-consensus 3D, stratified still/moving (separates FINE /
+   desync / bad; but mislabels shuffled cuts as "miscalib").
+2. `multijoint_reproj.py` — spatial: real geometry displaces ALL joints incl. stable nose/shoulders;
+   error that grades with joint *speed* is not pure geometry.
+3. `cut_placement_audit.py` — pixel-exact NCC of each cut clip in its OWN uncut → catches SHUFFLED
+   cuts (clip = a *different* repetition, +tens–hundreds of seconds off, invisible to reproj).
+4. **`spatial_miscalib_check.py`** (built this session, the cleanest single test) — the reprojection
+   **error VECTOR** must be a *smooth function of 3D position* for real miscalibration.
+   `spatialR2` = R² of `error ~ linear(X,Y,Z)`. **High spatialR2 = real miscalib; low = shuffled/noise.**
+
+**Per-camera verdicts (spatialR2-confirmed):**
+
+| participant | camera | median px | spatialR2 | verdict | fix |
+|---|---|---|---|---|---|
+| P10 | cam4 | 28 | 0.64 | **MISCALIB** | recalibrate / drop |
+| P12 | cam4 | 25 | 0.30 | **SHUFFLED** | re-cut |
+| P12 | cam5 | 30 | 0.26 (dirR 0.06) | **SHUFFLED** | re-cut |
+| P13 | cam5 | 28 | 0.29 | **SHUFFLED** | re-cut |
+| P13 | cam2 | 20 | 0.11 | **FINE** (reproj was wrong) | keep |
+| P14 | cam5 | 47 | 0.47 | **MISCALIB** | drop |
+| P14 | cam2 | 15 | 0.21 | **FINE** (reproj was wrong) | keep |
+| P17 | cam5 | 39 | 0.28 | **SHUFFLED** | re-cut |
+| P19 | cam5 | 132 | 0.72 | **MISCALIB (severe)** | drop |
+| P19 | cam2 | 14 | 0.65 | **MISCALIB (mild)** | drop |
+| P251 | cam5 | 21 | 0.18 | ~FINE | keep |
+| P252 | cam5 | 29 | 0.13 | **SHUFFLED** | re-cut |
+
+**Net:** failures are ~half real miscalibration (P10c4, P14c5, P19c2/c5) and ~half shuffled cuts
+(P12c4/5, P13c5, P17c5, P252c5). **cam_5 is the systematically weak camera** (bad in most later
+sessions — likely moved/marginal in the rig) but the mechanism varies, so there's no single fix.
+Dropping the bad cameras and re-triangulating on the good ones **rescued the affected participants**:
+P12 4→81, P13 43→78, P10 61→68 scorable (wrist-validity e.g. P12 0.08→0.99). Whitelist =
+`cache/delta/cam_quality.json`; verdicts = `cache/delta/reaudit_cam_quality.json`.
+
+⚠ This confirms the prior work (2026-07-17): same cameras flagged, and they had already RE-CUT P13
+cam2 (a placement fix, not recalibration) — matching our shuffled-vs-miscalib split.
+
+---
+
+## 4. Problem C — the SYNC gate is biased (affected arm), and a per-arm coverage gap
+
+Trials are gated into the scorable pool by `sync_corr ≥ 0.7` (wrist-speed cross-correlation MMC↔OMC).
+Two distinct issues:
+
+**(C1) The sync gate spuriously fails good trials — it's a JITTER artifact, not desync.** On the failing
+trials the pose is VALID (wrist_valid ~0.98), no gaps, and roughly time-aligned — but the *raw*
+markerless wrist speed is jitter-dominated (measured on P251 trial_27: MMC peak 1443 vs OMC 626 mm/s,
+271 vs 180 high-speed frames), which decorrelates the two speed curves even at the correct lag. A
+session-constant lag does NOT recover them (0/15 on P251) — because it isn't a timing error. **These
+trials are likely fine for actual Murphy scoring (SmoothNet removes exactly this jitter downstream);
+they only fail the raw-speed sync GATE.** So current "scorable" counts UNDERCOUNT — especially the
+affected arm, whose lower-amplitude motion has a worse speed-SNR. ⚠ *Open: re-gate on a SmoothNet-
+smoothed speed or a session-constant lag before trusting affected-arm counts.*
+
+**(C2) P17/P19 — the UNAFFECTED arm is barely triangulated at all** (wrist_valid P17 0.34, P19 **0.00**;
+0/42 and 0/45 unaffected trials pass). This is a real per-arm camera-coverage hole — the good cameras
+mostly view the affected side. P17/P19's earlier "41/31 scorable" was **affected-arm only.**
+
+Per-arm pass-rate summary (affected / unaffected):
+P07 40·42 | P08 39·48 | P15 45·43 | P10 40·28 | P13 40·38  (all fine) ·
+P14 33·45 | P251 9·15 | P252 5·18  (affected sync-gate penalty, pose valid) ·
+**P17 41·0 | P19 31·0**  (unaffected arm missing).
+
+---
+
+## 5. What's solid vs what needs work
+
+**Solid:** P07/P08/P15 both arms; the markerless pose/cup pipeline itself (detect-once UETrack +
+consensus reproject-seed matches the reference build); the OMC↔video mapping (audited); the
+camera-classification tooling (4 independent methods agree).
+
+**Needs work / open:**
+- **Re-cut the shuffled cameras** (P12 cam4/5, P13 cam5, P17 cam5, P252 cam5) to add them back — they're
+  recoverable, not lost. Needs the uncut session videos pulled (mostly not local).
+- **Fix the sync gate** (§C1) so affected-arm trials aren't spuriously dropped — likely the biggest
+  lever on usable-trial count, and it's the *clinically important* arm.
+- **P17/P19 unaffected-arm coverage** (§C2) — a genuine limitation; those arms may be unrecoverable.
+- **Recalibration** for the real-miscalib cameras (P10c4, P14c5, P19c2/c5) if their views are needed;
+  else drop (current approach) and accept fewer cameras on those participants.
+
+---
+
+*Scripts: `audit_clip_omc.py`, `reaudit_cam_quality.py`, `multijoint_reproj.py`,
+`cut_placement_audit.py`, `spatial_miscalib_check.py`, `check_track_quality.py`,
+`cache_uetrack_tracks.py` (reproject-seed), `gnn_build_dataset.py` (lag-sync). Caches:
+`cache/delta/{clip_omc_audit,cam_quality,reaudit_cam_quality}.json`, `cache/delta/gnn_pairs/`.*

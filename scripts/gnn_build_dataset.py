@@ -228,7 +228,15 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--parts", nargs="+", default=DEFAULT_PARTS)
     ap.add_argument("--force", action="store_true")
+    ap.add_argument("--audit-clean", action="store_true",
+                    help="only pair trials that PASS cache/delta/clip_omc_audit.json -- excludes uncut "
+                         "clips + trials whose OMC time-window doesn't map to the video (broken pairing)")
     a = ap.parse_args(argv)
+
+    audit = {}
+    if a.audit_clean:
+        ap_ = DELTA / "clip_omc_audit.json"
+        audit = json.loads(ap_.read_text()) if ap_.exists() else {}
 
     H.use_good_cams()   # cams 1-5 GOOD whitelist -- critical, bad cams poison triangulation
     print(f"good-cam whitelist: "
@@ -238,6 +246,12 @@ def main(argv=None):
     n_ok = n_skip = 0
     for part in a.parts:
         trials = _trials_for(part)
+        if a.audit_clean and part in audit:
+            clean = set(audit[part]["clean"])
+            before = len(trials)
+            trials = [t for t in trials if t in clean]
+            print(f"### {part}: audit-clean keeps {len(trials)}/{before} "
+                  f"(dropped {before-len(trials)} broken-clip/OMC-mismatch)", flush=True)
         print(f"\n### {part}  ({len(trials)} trials)", flush=True)
         for i, trial in enumerate(trials):
             r = build_trial(part, trial, force=a.force)

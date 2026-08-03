@@ -5160,3 +5160,23 @@ recovery (bad cams poison triangulation; restrict → validity jumps). Full reco
 43→78, P10 61→68. **Cohort now 680 OMC-scorable trials (was 328). P12 is USABLE, not excluded.**
 Lesson (again): a whole-participant failure is usually a few bad cameras, not the participant —
 classify by REPROJECTION stratified by motion before excluding.
+
+**⚠⚠⚠ "MISCALIB" verdict CORRECTED AGAIN — P12 cam4/cam5 are SHUFFLED CUTS, not miscalibration
+(user: "did you use temporal AND spatial consistency").** I had run only `reaudit_cam_quality`
+(motion-stratified REPROJ) and called cam4/cam5 MISCALIB. That is the exact trap the prior work
+documented: a shuffled cut (clip = a DIFFERENT drink repetition) produces plausibly-wrong wrist
+positions that NO lag and NO calibration fits, so every reproj test reads "high error still+moving =
+miscalib". Ran the two methods I had SKIPPED:
+  - `multijoint_reproj.py` (SPATIAL): P12 cam4/cam5 error is NOT uniform across joints — it GRADES
+    with joint speed (nose 14-24px, shoulder ~17px, elbow 88-118px, wrist 224-243px). Pure geometry
+    would blow up the stable joints equally; this speed-gradient is a timing/wrong-rep signature.
+  - `cut_placement_audit.py` (TEMPORAL PLACEMENT, pixel-exact NCC in each cam's own uncut): **cam4 =
+    SHUFFLED (misplacement +58..+171s, varying per trial), cam5 = SHUFFLED (+144..+171s).** Every cut
+    matches its OWN uncut at NCC 0.999 — real footage, just the WRONG repetition. This is literally the
+    "P12 discovery" in cut_placement_audit's docstring.
+**So P12 cam4/cam5 are RECOVERABLE BY RE-CUTTING (at t_ref + session_offset), not lost to bad calib.**
+Dropping them gave the right OUTCOME (P12 81/82 on the 3 correctly-cut cams) but the LABEL was wrong.
+⚠ Every other "MISCALIB (recalib)" verdict from reaudit is now SUSPECT (reproj-only) — P10 cam4,
+P13 cam2/5, P251 cam5, P252 cam5 must be re-checked with cut_placement_audit before calling them
+miscalib vs shuffled. LESSON (third time): reproj/motion alone cannot tell miscalib from a shuffled
+cut — must add multijoint-spatial + cut-placement (pixel-exact NCC in the uncut).

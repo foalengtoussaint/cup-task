@@ -81,28 +81,144 @@ def _center(xywh):
     return [x + w / 2.0, y + h / 2.0]
 
 
-def cache_trial(batch_cls, part, trial, calib, overwrite=False):
-    """Build one trial's per-camera UETrack track file. Returns (path, n_frames, n_cams_used)."""
-    cf = OUT / f"{part}__{trial}__uetrack__fs1.json"
-    if cf.exists() and not overwrite:
-        return cf, None, None, True
+def _boxes_at(part, trial, cam, frame):
+    """The YOLO cup box (xyxy) for this cam at a specific frame, or None."""
+    stem = _clip_stem(part, trial)
+    f = DETS / part / "dets" / f"{stem}.{_cam_num(cam)}.cup.json"
+    if not f.exists():
+        return None
+    frames = json.loads(f.read_text()).get("frames", [])
+    if frame < len(frames):
+        fr = frames[frame]
+        if fr.get("frame") == frame and fr.get("box"):
+            return fr["box"]                                  # xyxy
+    for fr in frames:                                         # fallback: search
+        if fr.get("frame") == frame:
+            return fr.get("box")
+    return None
 
+
+def _consensus_seed(part, trial, calib, cams, max_frame=180):
+    """Find the EARLIEST frame where >=2 detecting cameras AGREE (consensus3 passes the reprojection
+    gate), and return (seed_frame, X_mm, {cam: xywh_box}, kept_cams). This is the 'only seed if the
+    cameras agree' gate you asked for -- a reprojected seed is only placed off a 3D the detecting
+    cameras actually concur on. None if no agreeing frame in the first max_frame frames.
+
+    Reprojection into the NON-detecting cameras is done by the caller (needs X + calib)."""
+    from cup_task import consensus
+    # per-cam first-detection frame, so we know where boxes start appearing
+    first = {c: _seed_box_xywh(part, trial, c) for c in cams}
+    first = {c: v for c, v in first.items() if v is not None}
+    if len(first) < 2:
+        return None
+    lo = min(v[0] for v in first.values())
+    for f in range(lo, min(lo + max_frame, 10_000)):
+        obs = {}
+        boxes = {}
+        for c in cams:
+            b = _boxes_at(part, trial, c, f)                 # xyxy
+            if b:
+                x1, y1, x2, y2 = b
+                obs[c] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)  # box centre for consensus
+                boxes[c] = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]  # xywh
+        if len(obs) < 2:
+            continue
+        X, kept, _ = consensus.consensus3({c: obs[c] for c in obs}, calib)
+        if X is not None and len(kept) >= 2:
+            return f, np.asarray(X, float), boxes, set(kept)
+    return None
+
+
+def _existing_cams(cf):
+    """Cameras that the existing track file actually tracks (have any non-null trk)."""
+    if not cf.exists():
+        return set()
+    try:
+        d = json.loads(cf.read_text())
+    except Exception:
+        return set()
+    cams = set()
+    for fr in d.values():
+        cams |= {c for c, v in fr.items() if v.get("trk") is not None}
+    return cams
+
+
+def _reproj_box(X, cam, ref_wh=(46.0, 46.0)):
+    """Reproject world 3D X into `cam` -> an xywh box centred there, sized like a cup (ref_wh px).
+    None if the point is behind the camera or off-image is unknown (caller checks bounds)."""
+    from cup_task.kalman_3d import project
+    uv, ok = project(cam, np.asarray(X, float))
+    if not ok:
+        return None
+    w, h = ref_wh
+    return [float(uv[0] - w / 2), float(uv[1] - h / 2), float(w), float(h)]
+
+
+def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
+    """Build one trial's per-camera UETrack track file. Returns (path, n_frames, n_cams_used, existed).
+
+    reproject=True: seed cameras that have NO direct YOLO detection by reprojecting the CONSENSUS 3D
+    (only when >=2 detecting cameras AGREE -- _consensus_seed gates on the reprojection consensus).
+    Reprojected seeds are tagged `seeded_by:"reproject"` (direct ones `"yolo"`) so a downstream reader
+    can drop the reprojected cameras. SKIP rule: if a track already exists and reproject-seed would add
+    NO new camera, keep it (don't waste GPU) -- unless overwrite."""
+    cf = OUT / f"{part}__{trial}__uetrack__fs1.json"
     stem = _clip_stem(part, trial)
     sd = _staged_dir(part)
-    # cameras we can actually use: good-cam AND has a clip AND has a seed box
-    seeds, vids = {}, {}
-    for cam in calib:
-        v = sd / f"{stem}.{_cam_num(cam)}.mp4"
-        s = _seed_box_xywh(part, trial, cam)
-        if v.exists() and s is not None:
-            vids[cam] = v
-            seeds[cam] = s                       # (seed_frame, xywh)
-    if len(vids) < 2:
-        return cf, 0, len(vids), False           # can't triangulate; write nothing
 
-    cams = sorted(vids, key=_cam_num)
+    # all cameras with a clip (reprojected cams need a slot even with no detection)
+    vids = {c: sd / f"{stem}.{_cam_num(c)}.mp4" for c in calib
+            if (sd / f"{stem}.{_cam_num(c)}.mp4").exists()}
+    if len(vids) < 2:
+        return cf, 0, len(vids), False
+
+    # direct-YOLO per-cam first-detection seeds
+    direct = {c: _seed_box_xywh(part, trial, c) for c in vids}
+    direct = {c: v for c, v in direct.items() if v is not None}       # (frame, xywh)
+
+    # consensus seed (for reprojection into non-detecting cams)
+    seed3 = _consensus_seed(part, trial, calib, list(vids)) if reproject else None
+    reproj_cams = set()
+    if seed3 is not None:
+        sf, X, cboxes, kept = seed3
+        for c in vids:
+            if c not in direct:                                       # no direct detection -> reproject
+                box = _reproj_box(X, calib[c])
+                if box is not None:
+                    reproj_cams.add(c)
+
+    # cameras this build will track = direct-seeded + reproject-seeded
+    build_cams = set(direct) | reproj_cams
+    if len(build_cams) < 2:
+        return cf, 0, len(build_cams), False
+
+    # ONLY track cameras that don't already have a track. Existing (direct-YOLO) cameras are kept
+    # verbatim from the old file -- never re-run (wastes GPU + would perturb good tracks). We track
+    # ONLY the newly-reprojected cameras and MERGE them into the existing JSON.
+    have = _existing_cams(cf) if not overwrite else set()
+    new_cams = sorted(build_cams - have, key=_cam_num)
+    if not new_cams:
+        return cf, None, None, True                                  # nothing new -> keep as-is
+
+    existing = {}
+    if cf.exists():
+        try:
+            existing = json.loads(cf.read_text())
+        except Exception:
+            existing = {}
+    merge = bool(existing) and not overwrite                          # merge new cams into old file
+
+    cams = new_cams if merge else sorted(build_cams, key=_cam_num)
     caps = {c: cv2.VideoCapture(str(vids[c])) for c in cams}
     nframes = min(int(caps[c].get(cv2.CAP_PROP_FRAME_COUNT)) for c in cams)
+
+    # per-cam seed plan: (frame, xywh, origin)
+    plan = {}
+    for c in cams:
+        if c in direct:
+            plan[c] = (direct[c][0], direct[c][1], "yolo")
+        elif c in reproj_cams:
+            plan[c] = (seed3[0], _reproj_box(seed3[1], calib[c]), "reproject")
 
     b = batch_cls(len(cams))
     cam_idx = {c: i for i, c in enumerate(cams)}
@@ -114,38 +230,50 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False):
         for c in cams:
             ok, im = caps[c].read()
             if ok:
-                imgs[c] = im                     # BGR
+                imgs[c] = im
         row = {}
-        # 1) seed any camera whose detect-once frame is now (RGB for the tracker)
         for c in cams:
-            if not seeded[c] and c in imgs and seeds[c][0] == f:
-                b.init(cam_idx[c], imgs[c][:, :, ::-1].copy(), seeds[c][1])
+            if not seeded[c] and c in imgs and plan[c][0] == f:
+                b.init(cam_idx[c], imgs[c][:, :, ::-1].copy(), plan[c][1])
                 seeded[c] = True
-                row[c] = {"yolo": seeds[c][1], "trk": _center(seeds[c][1]), "seeded": True}
-        # 2) batched update for all already-seeded cameras with a frame this step
+                row[c] = {"yolo": plan[c][1] if plan[c][2] == "yolo" else None,
+                          "trk": _center(plan[c][1]), "seeded": True,
+                          "seeded_by": plan[c][2]}
         rgbs = [None] * len(cams)
         for c in cams:
             if seeded[c] and c in imgs and c not in row:
                 rgbs[cam_idx[c]] = imgs[c][:, :, ::-1].copy()
         if any(r is not None for r in rgbs):
-            out = b.update(rgbs)                  # list per camera, xywh|None
+            out = b.update(rgbs)
             for c in cams:
                 if rgbs[cam_idx[c]] is not None:
                     xywh = out[cam_idx[c]]
-                    row[c] = {"yolo": None,
-                              "trk": (None if xywh is None else _center(xywh)),
-                              "seeded": False}
-        # cameras not yet seeded (or no frame) get an explicit null so the schema is dense
+                    row[c] = {"yolo": None, "trk": (None if xywh is None else _center(xywh)),
+                              "seeded": False, "seeded_by": plan[c][2]}
         for c in cams:
             if c not in row:
-                row[c] = {"yolo": None, "trk": None, "seeded": False}
+                row[c] = {"yolo": None, "trk": None, "seeded": False, "seeded_by": plan[c][2]}
         rec[str(f)] = row
 
     for c in caps.values():
         c.release()
+
+    if merge:
+        # graft the newly-tracked cameras' entries into the existing per-frame rows (keep old cams)
+        for f in range(nframes):
+            k = str(f)
+            base = existing.get(k, {})
+            base.update(rec.get(k, {}))                               # new cams override/add
+            existing[k] = base
+        out_rec = existing
+        n_out_cams = len(_existing_cams(cf)) + len(cams)
+    else:
+        out_rec = rec
+        n_out_cams = len(cams)
+
     OUT.mkdir(parents=True, exist_ok=True)
-    cf.write_text(json.dumps(rec))
-    return cf, nframes, len(cams), False
+    cf.write_text(json.dumps(out_rec))
+    return cf, nframes, n_out_cams, False
 
 
 def _trials_for(part):

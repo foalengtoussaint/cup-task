@@ -5332,3 +5332,16 @@ CONFIRMED so far:
 Running/pending: P10 cam4, P17 cam5, P13 cam5/cam2, P19 cam5/cam2, P252 cam5 (P252 uncut = the P25
 unsplit-session path). NOTE: an audit that STARTS before its uncut finishes copying throws a transient
 ffmpeg decode error (exit 183) -- re-run after the copy completes (P17 cam2 hit this, fine on retry).
+
+**⚠ cut_placement OVERTURNS the spatial-only verdicts on 2/5 cams — spatialR2 alone is NOT enough.**
+  - **P10 cam4: CONST-OFFSET +58.50s** (every trial exactly +58.5s, NCC 1.000) -- NOT miscalibration
+    (I said spatialR2 0.64=miscalib; prior work said miscalib too). A CONST-OFFSET cut shifts the WHOLE
+    clip consistently -> produces a SMOOTH spatial error field (high spatialR2) that MIMICS
+    miscalibration. **Recoverable by ONE re-cut shift.** Triple-wrong before cut-placement.
+  - **P17 cam5: CUTS-OK** (all +0.00s, NCC 1.000) -- NOT shuffled (I said spatialR2 0.28=shuffled).
+    0.28 is the spatial test's gray zone; cut-placement resolves it -> correctly cut, so its error is
+    mild real-miscalib/detection-noise.
+  - AGREE: P14 cam2 CUTS-OK=FINE (0.21), P14 cam5 CUTS-OK=REAL MISCALIB (0.47), P12 cam4/5 SHUFFLED.
+**LESSON: spatialR2 cannot separate CONST-OFFSET-cut (smooth field, high R2) from real miscalibration,
+nor resolve its 0.2-0.35 gray zone. cut_placement_audit (pixel-exact NCC in the uncut) is REQUIRED for
+the final label.** Running: P13, P19 (uncut pulling); P252 (P25 unsplit path).

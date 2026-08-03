@@ -5180,3 +5180,48 @@ Dropping them gave the right OUTCOME (P12 81/82 on the 3 correctly-cut cams) but
 P13 cam2/5, P251 cam5, P252 cam5 must be re-checked with cut_placement_audit before calling them
 miscalib vs shuffled. LESSON (third time): reproj/motion alone cannot tell miscalib from a shuffled
 cut — must add multijoint-spatial + cut-placement (pixel-exact NCC in the uncut).
+
+### 2026-08-03 (cont.) — Cross-check vs PRIOR DELTA work + full failure-mode chain (supervisor summary)
+
+**Q (supervisor-relevant): did the earlier use of this dataset hit problems on the SAME
+cameras/trials/participants?** Checked the prior artifacts (2026-07-17, before this session):
+`cache/delta/reaudit.log`, `recut_P13.log`, `recut_align.log`, study's `study_docs/P13_Notes.txt`.
+**Answer: YES, largely the same — and the prior team had already classified several as timing/re-cut,
+not calibration, which my reproj-only pass today initially got wrong.**
+
+Prior (07-17) vs today, per camera:
+  - **P10 cam_4**: prior = MISCALIB(recalib), today = same. **Both independent runs agree → genuinely bad.**
+  - **P13**: prior reaudit said REFERENCE-WEAK (24% consensus) + all-cams-FINE-but-huge-lagSD, and they
+    **RE-CUT cam2** (`recut_P13.log`: located in uncut, recut +139fr). So prior treated P13 cam2 as a
+    CUT-PLACEMENT problem. My reaudit-today calling P13 cam2/5 "recalib" is the SAME reproj-only error;
+    the prior re-cut proves it is placement, not calibration.
+  - **P14**: prior (10-cam) flagged cam_3,4,5,8 recalib; today (cams1-5) flagged cam_2,5. Overlap on the
+    5-cam subset differs — worth re-checking, but P14 works fine either way (78/90 scorable).
+  - **P17 / P19**: prior used the DESYNC-vs-MISCALIB split explicitly — P17 cam_1,3,4,9 = DESYNC(re-cut),
+    cam_8 = recalib; P19 cam_1,4 = DESYNC, cam_2,3 = recalib — and acted on it (recut logs). So the
+    temporal/spatial framework was ALREADY applied by the prior work and found re-cut (timing) issues,
+    not just miscalibration.
+
+**Full failure-mode chain for the newly-added participants (methods = the prior work's tooling):**
+  1. `audit_clip_omc.py` — n_video==n_det, n_omc≈n_video. Excludes UNCUT clips + broken OMC↔video
+     mapping. (P10 ~13 broken trials excluded.)
+  2. `reaudit_cam_quality.py` — reproject each cam vs RANSAC-consensus 3D wrist, stratified
+     still/moving. Separates FINE / DESYNC / MISCALIB. ⚠ CANNOT tell miscalib from a SHUFFLED cut.
+  3. `multijoint_reproj.py` — SPATIAL coherence: real geometry error hits ALL joints (incl. stable
+     nose/shoulders); wrist-only or speed-graded error = NOT pure geometry. (P12 cam4/5 = speed-graded
+     → not clean miscalib.)
+  4. `cut_placement_audit.py` — pixel-exact NCC of each cut clip in its OWN uncut → SHUFFLED cuts
+     (clip = a DIFFERENT drink repetition). **P12 cam4 = SHUFFLED (+58..+171s varying), cam5 = SHUFFLED
+     (+144..+171s).** This is the fix P12 needs: RE-CUT, not recalib.
+
+**Bottom line for the supervisor:** the newly-added participants' "bad" cameras are a MIX of
+shuffled/mis-cut clips (P12 cam4/5 — recoverable by re-cutting) and some genuine miscalibration
+(P10 cam4 — agrees with prior). NONE is a bad participant: after dropping the bad cameras and
+re-triangulating on the good ones, P12 4→81, P13 43→78, P10 61→68 scorable; **cohort 328→680**.
+Correct labels require ALL FOUR checks above — reproj/motion ALONE mislabels shuffled cuts as
+miscalibration (documented failure, hit here and in the prior work).
+
+**OUTSTANDING:** re-run multijoint_reproj + cut_placement_audit on P10 cam4, P13 cam2/5, P251/P252
+cam5 to give each a FINAL label (SHUFFLED vs real MISCALIB). Needs the UNCUT session videos pulled
+(only P10 cam4 + P13 cam2 uncut are local now). Shuffled ones are RECOVERABLE by re-cutting → would
+add cameras back → more robust triangulation.

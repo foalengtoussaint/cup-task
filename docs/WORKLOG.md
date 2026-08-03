@@ -5115,3 +5115,13 @@ trials. Decided NOT to re-pull.** Reproject-seed + any OMC scoring must gate on 
 yet — building that (MMC↔OMC pairing with lag-sync) is the step to make them scorable. The reproject-
 seed rebuild (560 audit-clean trials) was running at end of session; re-run `check_track_quality.py`
 after it to confirm P10/P12/P13 valid%/cams improved vs the baseline above.
+
+**Reproject-seed RESULT (256 trials rebuilt, 304 skipped).** Track quality before→after
+(`check_track_quality.py`, good = valid≥60% & ≥2 cams & no teleport): **P10 21→47/82** (valid
+50→64%, med 2→3 cams — clear win), P12 36→38, P13 35→35 (barely moved), P14 84→83/90, P15 62/87,
+P17 35/41, P19 28/31, P251 41/41, P252 41/42. ⚠ **Reproject-seed only helps where ≥2 cameras reach
+consensus** — P12/P13's cameras often don't agree well enough to produce a reprojectable 3D, so the
+consensus gate correctly refuses and those trials stay 2-cam. So it's not a universal fix: big win on
+P10, honest no-op on P12/P13 (a detection/calibration limit there, not a seeding gap). Cohort is now
+seeded consistently with P07/P08 (consensus reproject-seed); `seeded_by` tags allow dropping the
+reprojected tracks downstream.

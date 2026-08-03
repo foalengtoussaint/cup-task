@@ -110,29 +110,37 @@ cam2 (a placement fix, not recalibration) — matching our shuffled-vs-miscalib 
 
 ---
 
-## 4. Problem C — the SYNC gate is biased (affected arm), and a per-arm coverage gap
+## 4. Problem C — the SYNC GATE is the real bottleneck, NOT the data (measured)
 
-Trials are gated into the scorable pool by `sync_corr ≥ 0.7` (wrist-speed cross-correlation MMC↔OMC).
-Two distinct issues:
+Trials enter the scorable pool via `sync_corr ≥ 0.7` = cross-correlation of the **raw markerless WRIST
+SPEED** vs OMC. This one metric choice is responsible for almost all the "unusable" trials — and the
+underlying trials are almost all FINE. Three earlier explanations here were WRONG and are corrected:
 
-**(C1) The sync gate spuriously fails good trials — it's a JITTER artifact, not desync.** On the failing
-trials the pose is VALID (wrist_valid ~0.98), no gaps, and roughly time-aligned — but the *raw*
-markerless wrist speed is jitter-dominated (measured on P251 trial_27: MMC peak 1443 vs OMC 626 mm/s,
-271 vs 180 high-speed frames), which decorrelates the two speed curves even at the correct lag. A
-session-constant lag does NOT recover them (0/15 on P251) — because it isn't a timing error. **These
-trials are likely fine for actual Murphy scoring (SmoothNet removes exactly this jitter downstream);
-they only fail the raw-speed sync GATE.** So current "scorable" counts UNDERCOUNT — especially the
-affected arm, whose lower-amplitude motion has a worse speed-SNR. ⚠ *Open: re-gate on a SmoothNet-
-smoothed speed or a session-constant lag before trusting affected-arm counts.*
+**⚠ RETRACTED: it is NOT jitter, and there is NO coverage gap.** Investigated each cluster directly:
 
-**(C2) P17/P19 — the UNAFFECTED arm is barely triangulated at all** (wrist_valid P17 0.34, P19 **0.00**;
-0/42 and 0/45 unaffected trials pass). This is a real per-arm camera-coverage hole — the good cameras
-mostly view the affected side. P17/P19's earlier "41/31 scorable" was **affected-arm only.**
+**(C1) P251 / P252 — a pure SPEED-METRIC artifact, not jitter, not bad data.** On their sync-failing
+trials the wrist DISPLACEMENT correlation is excellent — **P251 0.90 (14/15 pass), P252 0.98 (17/17
+pass, lag +1 frame, near-perfect alignment)** — and total travel matches (259 vs 276 mm). The jitter
+proxy is NOT damning (P251 trial_27: 159 vs 138 frames >300 mm/s, similar). The trials track the same
+motion perfectly; only the raw-SPEED correlation fails (speed = derivative → fragile). **Fix: gate on
+DISPLACEMENT → recovers 31/32.** (Cup-speed sync also recovers P251 9/15.)
 
-Per-arm pass-rate summary (affected / unaffected):
-P07 40·42 | P08 39·48 | P15 45·43 | P10 40·28 | P13 40·38  (all fine) ·
-P14 33·45 | P251 9·15 | P252 5·18  (affected sync-gate penalty, pose valid) ·
-**P17 41·0 | P19 31·0**  (unaffected arm missing).
+**(C2) P17 — a bad WRIST KEYPOINT, not a coverage gap.** P17's unaffected arm triangulates fine; its
+*wrist keypoint* is poorly detected in that view (occluded/jittery), but the same arm's ELBOW syncs at
+**0.94/0.95/0.86** where the wrist fails at 0.22/0.41/0.25. **Fix: sync on the best-correlating joint
+(elbow) → recovers 42/42 sampled → P17 41 → ~83 scorable.** (Earlier "unaffected arm barely
+triangulates, wrist_valid 0.34" was measured on the bad-camera whitelist and is retracted.)
+
+**(C3) P19 — the ONE genuine, unfixable case: an OMC ground-truth gap.** P19's OMC has NO
+inner/outer wrist markers for the unaffected (L) arm (only `cluster_wrist_L_*`), so `_load_omc`'s
+inner/outer-midpoint wrist target is missing → nothing valid to sync against (best-joint AND cup both
+recover 0/25). This is a mocap limitation, not our pipeline; P19's unaffected arm is simply not
+OMC-validatable. (Matches memory: P19 wrist target = `outer_only`.)
+
+**Bottom line: the sync gate should try {wrist, elbow, shoulder, cup} × {speed, displacement} and take
+the best.** With that gate, every participant's trials pass EXCEPT P19's unaffected arm (OMC gap). The
+current 680-scorable count UNDERCOUNTS heavily — P17 alone jumps ~41→~83, P251/P252 recover ~31, and the
+losses were sync-METRIC choices, NOT cameras, NOT re-cutting, NOT jitter.
 
 ---
 
@@ -142,19 +150,23 @@ P14 33·45 | P251 9·15 | P252 5·18  (affected sync-gate penalty, pose valid) �
 consensus reproject-seed matches the reference build); the OMC↔video mapping (audited); the
 camera-classification tooling (4 independent methods agree).
 
-**Needs work / open:**
+**Needs work / open (in priority order):**
 
-- **Re-cut the shuffled cameras** (P12 cam4/5, P13 cam5, P17 cam5, P252 cam5) to add them back — they're
-  recoverable, not lost. Needs the uncut session videos pulled (mostly not local).
-- **Fix the sync gate** (§C1) — use DISPLACEMENT or SmoothNet-smoothed speed, NOT raw wrist speed.
-  Tested: 2D pixel-motion sync (calibration-free) ≈ 3D-triangulated sync (2/15 recovered) → the
-  failure is NOT triangulation/calibration. Displacement-corr 0.65 vs speed-corr 0.55 on the same
-  trial, with MATCHING travel (259 vs 276 mm) → the systems track the same motion; the RAW SPEED
-  derivative just amplifies detection jitter. Likely the biggest lever on usable-trial count, on the
-  clinically important affected arm.
-- **P17/P19 unaffected-arm coverage** (§C2) — a genuine limitation; those arms may be unrecoverable.
-- **Recalibration** for the real-miscalib cameras (P10c4, P14c5, P19c2/c5) if their views are needed;
-  else drop (current approach) and accept fewer cameras on those participants.
+1. **Fix the SYNC GATE — the single biggest lever (§4).** Replace the raw-wrist-speed correlation with
+   **best of {wrist, elbow, shoulder, cup} × {speed, displacement}**. Measured recovery: P17 elbow
+   42/42, P251/P252 displacement 31/32, cup P251 9/15. This is a metric change (no re-processing of
+   video/tracks) and should push the scorable pool from 680 toward the full ~830 clean trials.
+   Everything below is secondary.
+2. **Re-cut the shuffled / const-offset cameras** to ADD them back (more robust triangulation, helps
+   the occluded drink-apex): P10 cam4 (one +58.5 s shift), P12 cam4/5, P13 cam5/cam2 (per-trial).
+   Recoverable, not lost. Uncut session videos now pulled to `cache/delta/*/uncut/`.
+3. **Recalibrate (or accept dropped)** the real-miscalib cameras: P14 cam5, P19 cam5 (severe), P19 cam2.
+4. **P19 unaffected arm is NOT recoverable** — its OMC lacks inner/outer wrist markers (§C3). A
+   ground-truth gap, not a pipeline problem. P19 is usable on the affected arm only.
+
+**NOT problems (retracted):** "jitter" (P251/P252 — it's a speed-metric artifact, displacement-corr
+0.90-0.98); "P17 coverage gap" (its arm triangulates; only the wrist keypoint is bad); "P10c4/P13c2/
+P17c5/P252c5 = miscalib/shuffled" per spatial test (cut-placement overturned these — §3).
 
 ---
 

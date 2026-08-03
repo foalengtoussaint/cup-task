@@ -5320,3 +5320,15 @@ systems DO track the same motion; the raw-SPEED derivative amplifies detection j
 kills the correlation. **Actionable: gate sync on DISPLACEMENT or SmoothNet-smoothed speed, not raw
 wrist speed.** Pixel-motion is calibration-robust and worth using where triangulation is untrusted, but
 here it confirmed the issue is derivative-jitter, not geometry.
+
+### 2026-08-03 (cont.) — cut_placement_audit on ALL flagged cams (two-method confirmation, in progress)
+
+Pulling uncut session videos (~1.2-3.6GB/cam) to run pixel-exact cut-placement on every flagged camera,
+so each gets a shuffled-vs-miscalib label confirmed by BOTH cut-placement AND the spatial test.
+CONFIRMED so far:
+  - P12 cam4/cam5: SHUFFLED (cut-placement +58..171s varying) + spatialR2 0.30/0.26 -> AGREE (shuffled).
+  - P14 cam2: CUTS-OK (+0.00s, NCC 1.000) + spatialR2 0.21 -> AGREE (FINE; reproj "recalib" was wrong).
+  - P14 cam5: CUTS-OK (+0.00s) + spatialR2 0.47 -> AGREE (REAL MISCALIBRATION, correctly cut).
+Running/pending: P10 cam4, P17 cam5, P13 cam5/cam2, P19 cam5/cam2, P252 cam5 (P252 uncut = the P25
+unsplit-session path). NOTE: an audit that STARTS before its uncut finishes copying throws a transient
+ffmpeg decode error (exit 183) -- re-run after the copy completes (P17 cam2 hit this, fine on retry).

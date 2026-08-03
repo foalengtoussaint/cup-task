@@ -5225,3 +5225,16 @@ miscalibration (documented failure, hit here and in the prior work).
 cam5 to give each a FINAL label (SHUFFLED vs real MISCALIB). Needs the UNCUT session videos pulled
 (only P10 cam4 + P13 cam2 uncut are local now). Shuffled ones are RECOVERABLE by re-cutting → would
 add cameras back → more robust triangulation.
+
+**SPATIAL error-field test (supervisor's criterion) — CONFIRMS the classification via a 3rd method.**
+Supervisor: "for miscalibration it should be spatially consistent — detection at similar 3D positions
+gives similar errors in similar directions, and it should change systematically in space." Built
+`spatial_miscalib_check.py`: reprojection ERROR VECTOR vs FINE-cam consensus 3D; report spatialR2 =
+R^2 of a linear fit error~[1,X,Y,Z] (is the error a smooth function of position). Result: median-px
+CANNOT separate the failure modes (all ~25-30px) but spatialR2 does —
+  P10 cam4: spatialR2 0.64, dirR 0.79 -> REAL MISCALIB (systematic spatial field). Agrees with prior
+    07-17 reaudit AND cut-audit-not-shuffled.
+  P12 cam4: spatialR2 0.30 ; cam5: spatialR2 0.26, dirR 0.06 (directions random) -> INCOHERENT =
+    SHUFFLED CUT (error is NOT a function of 3D position). Agrees with cut_placement_audit.
+So three independent methods now agree: P10 cam4 = miscalibration, P12 cam4/5 = shuffled cuts. The
+spatial-systematicity test is the cleanest single discriminator and the prior tooling lacked it.

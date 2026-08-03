@@ -5380,3 +5380,20 @@ smoothed speed (rescues P251/P252) — not the raw wrist speed.** Camera-wise ev
 good cams and the geometry is fine; the trial losses were sync-METRIC artifacts (P17, P251/2) + one
 real OMC gap (P19 unaffected arm), NOT camera or re-cut problems. So WITHOUT re-cutting, with a proper
 sync gate, ~all trials are usable except P19's unaffected arm.
+
+### 2026-08-03 (cont.) — "jitter" claim for P251/P252 was WRONG (user challenged it). It's a pure speed-metric artifact.
+
+User: "why are you so sure the problem with P25 is jitter?" -- I was NOT justified. Tested directly:
+on P251/P252's sync-FAILING trials, DISPLACEMENT correlation (not speed) is EXCELLENT:
+  P251: disp-corr median 0.90, 14/15 would pass; disp-lag median -4 (std 29).
+  P252: disp-corr median 0.98, 17/17 would pass; disp-lag median +1 (std 6, near-perfect alignment).
+And the jitter proxy is NOT damning (P251 trial_27: MMC 159 frames>300mm/s vs OMC 138 -- SIMILAR, not
+jitter-dominated), total travel matches (259 vs 276mm). => the trials are FINE and well-aligned; only
+the RAW-SPEED cross-correlation fails (speed is the derivative -- fragile even when position is perfect).
+**NOT jitter, NOT bad data -- a pure sync-METRIC failure. Fix = gate on DISPLACEMENT: recovers 31/32.**
+
+Complete sync-fix map (all sync-gate artifacts, no re-cut / no camera issue):
+  P17  -> best JOINT (elbow syncs 0.94 where wrist fails 0.22): recovers 42.
+  P251/P252 -> DISPLACEMENT (not speed): recovers 14/15 + 17/17.  [CUP also recovers P251 9/15.]
+  P19  -> genuinely unfixable: OMC has no inner/outer wrist markers for the unaffected arm.
+Retract every earlier "jitter" attribution for P25x.

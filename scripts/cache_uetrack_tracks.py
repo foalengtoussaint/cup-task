@@ -98,34 +98,48 @@ def _boxes_at(part, trial, cam, frame):
     return None
 
 
-def _consensus_seed(part, trial, calib, cams, max_frame=180):
+def _consensus_seed(part, trial, calib, cams):
     """Find the EARLIEST frame where >=2 detecting cameras AGREE (consensus3 passes the reprojection
     gate), and return (seed_frame, X_mm, {cam: xywh_box}, kept_cams). This is the 'only seed if the
     cameras agree' gate you asked for -- a reprojected seed is only placed off a 3D the detecting
-    cameras actually concur on. None if no agreeing frame in the first max_frame frames.
+    cameras actually concur on. None if no frame ever has >=2 agreeing cameras.
 
-    Reprojection into the NON-detecting cameras is done by the caller (needs X + calib)."""
+    Scans the frames that actually HAVE >=2 detections (not a fixed early window), so it works for a
+    cut clip AND for an uncut recording where the cup only enters late (e.g. cam co-detect at frame
+    827). Reprojection into the NON-detecting cameras is done by the caller (needs X + calib)."""
     from cup_task import consensus
-    # per-cam first-detection frame, so we know where boxes start appearing
-    first = {c: _seed_box_xywh(part, trial, c) for c in cams}
-    first = {c: v for c, v in first.items() if v is not None}
-    if len(first) < 2:
-        return None
-    lo = min(v[0] for v in first.values())
-    for f in range(lo, min(lo + max_frame, 10_000)):
-        obs = {}
-        boxes = {}
-        for c in cams:
-            b = _boxes_at(part, trial, c, f)                 # xyxy
-            if b:
-                x1, y1, x2, y2 = b
-                obs[c] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)  # box centre for consensus
-                boxes[c] = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]  # xywh
-        if len(obs) < 2:
+    # per-cam set of detection frames + the box at each
+    det = {}
+    for c in cams:
+        stem = _clip_stem(part, trial)
+        fp = DETS / part / "dets" / f"{stem}.{_cam_num(c)}.cup.json"
+        if not fp.exists():
             continue
-        X, kept, _ = consensus.consensus3({c: obs[c] for c in obs}, calib)
+        boxes = {}
+        for fr in json.loads(fp.read_text()).get("frames", []):
+            if fr.get("box"):
+                boxes[int(fr["frame"])] = fr["box"]          # xyxy
+        if boxes:
+            det[c] = boxes
+    if len(det) < 2:
+        return None
+    # candidate frames = those where >=2 cams detect, earliest first
+    from collections import Counter
+    cnt = Counter()
+    for c, boxes in det.items():
+        for f in boxes:
+            cnt[f] += 1
+    cand = sorted(f for f, k in cnt.items() if k >= 2)
+    for f in cand:
+        obs, xywh = {}, {}
+        for c in det:
+            if f in det[c]:
+                x1, y1, x2, y2 = det[c][f]
+                obs[c] = ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+                xywh[c] = [float(x1), float(y1), float(x2 - x1), float(y2 - y1)]
+        X, kept, _ = consensus.consensus3(obs, calib)
         if X is not None and len(kept) >= 2:
-            return f, np.asarray(X, float), boxes, set(kept)
+            return f, np.asarray(X, float), xywh, set(kept)
     return None
 
 
@@ -305,15 +319,29 @@ def main(argv=None):
     ap.add_argument("--parts", nargs="+", default=["P15", "P17", "P19"])
     ap.add_argument("--limit", type=int, default=None, help="cap trials/participant (smoke test)")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--audit-clean", action="store_true",
+                    help="only build trials that PASS the clip/OMC audit (cache/delta/clip_omc_audit.json)"
+                         " -- excludes uncut clips + trials whose OMC time-window doesn't map to the video")
     a = ap.parse_args(argv)
 
     H.use_good_cams()
     from uetrack_wrap import UETrackBatch
 
+    audit = {}
+    if a.audit_clean:
+        ap_ = ROOT / "cache" / "delta" / "clip_omc_audit.json"
+        audit = json.loads(ap_.read_text()) if ap_.exists() else {}
+
     # count work up front for a real ETA in the log
     work = []
     for p in a.parts:
         trials = _trials_for(p)
+        if a.audit_clean and p in audit:
+            clean = set(audit[p]["clean"])
+            before = len(trials)
+            trials = [t for t in trials if t in clean]
+            print(f"  {p}: audit-clean keeps {len(trials)}/{before} trials "
+                  f"(dropped {before-len(trials)} broken-clip/OMC-mismatch)", flush=True)
         if a.limit:
             trials = trials[:a.limit]
         work += [(p, t) for t in trials]

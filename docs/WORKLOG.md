@@ -5345,3 +5345,15 @@ ffmpeg decode error (exit 183) -- re-run after the copy completes (P17 cam2 hit 
 **LESSON: spatialR2 cannot separate CONST-OFFSET-cut (smooth field, high R2) from real miscalibration,
 nor resolve its 0.2-0.35 gray zone. cut_placement_audit (pixel-exact NCC in the uncut) is REQUIRED for
 the final label.** Running: P13, P19 (uncut pulling); P252 (P25 unsplit path).
+
+**cut_placement audit COMPLETE — all flagged cams two-method classified.** Authoritative labels:
+  RE-CUTTABLE (timing/placement, recoverable): P10c4 CONST-OFFSET +58.5s (one shift); P12c4/5,
+    P13c5, P13c2 SHUFFLED (per-trial).
+  REAL MISCALIBRATION: P14c5, P19c5 (severe 132px), P19c2 — CUTS-OK + high spatialR2, both methods agree.
+  MILD/borderline: P17c5, P252c5 (CUTS-OK, spatialR2 gray-zone) — keep or drop.
+  FINE: P14c2 (CUTS-OK).
+**cut-placement OVERTURNED my spatial-only call on 4/11 cams** (P10c4 miscalib->const-offset,
+P13c2 fine->shuffled, P17c5 shuffled->cuts-ok, P252c5 shuffled->cuts-ok). => spatialR2 alone is
+over-confident; the pixel-exact cut-placement is required. Net: MOST bad cameras are RE-CUTTABLE
+(5 cams) not miscalibrated (3 cams) — dataset better than reproj-only implied. Final table in
+docs/DATASET_STATUS.md §3.

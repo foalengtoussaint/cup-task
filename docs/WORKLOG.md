@@ -5125,3 +5125,23 @@ consensus gate correctly refuses and those trials stay 2-cam. So it's not a univ
 P10, honest no-op on P12/P13 (a detection/calibration limit there, not a seeding gap). Cohort is now
 seeded consistently with P07/P08 (consensus reproject-seed); `seeded_by` tags allow dropping the
 reprojected tracks downstream.
+
+**gnn_pairs LAG-SYNC built for the new participants** (`gnn_build_dataset.py --audit-clean`, 401 new
+pairs). MMC = triangulated YOLO pose (cams 1-5), OMC = mocap resampled 100->60Hz + despiked +
+lag-shifted onto MMC via wrist-speed xcorr (`H._find_lag`). Trials with sync_corr<0.7 auto-drop in
+`load_clean`. **Scorable (pass sync>=0.7) per NEW participant:** P14 78/89 (88%, median sync 0.86),
+P10 61/74 (82%, 0.80), P251 27/39 (69%, 0.77), P252 20/40 (50%, 0.70), P13 43/80 (54%, 0.72),
+**P12 4/82 (5%, median sync 0.33)**. Total cohort scorable now **561 trials** (was 328).
+
+**⚠ P12 is a BAD-GEOMETRY participant — exclude from validation.** Its sync failure is NOT OMC drift
+(that was P13's problem): it's bad POSE TRIANGULATION. P12 wrist_valid_frac median = **0.08** (the
+markerless wrist triangulates in only 8% of frames) vs P14's high validity + lag std 1 frame; P12's
+lag is a random walk (std 83fr, hitting the ±180 rail) because there's almost no wrist track to sync.
+Same root cause as P12's cup-consensus failure and reproject-seed no-op: its multi-camera geometry
+(calib RMS 4.90, borderline) doesn't triangulate well enough for EITHER cup or pose. Not fixable by
+more seeding/sync work — it's the calibration/geometry limit. Treat like the doc's P13-clock-drift
+exclusion. P13 itself now yields 43 usable trials here (its clean-clip subset syncs OK).
+
+**Cohort status:** original 5 (P07 82, P08 87, P15 87, P17 41, P19 31) + new usable (P10 61, P13 43,
+P14 78, P251 27, P252 20; P12 excluded) = the OMC-scorable pool for murphy_grid. Next: run the grid /
+scoring on the expanded cohort.

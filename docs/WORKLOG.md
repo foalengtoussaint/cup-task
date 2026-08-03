@@ -5310,3 +5310,13 @@ which decorrelates the two speed curves even at the right lag (the doc's 1mm-wob
 So the sync GATE fails on jitter, not on any real defect; SmoothNet (downstream in scoring) removes
 exactly this, so these trials are likely scorable — the gate just uses the RAW speed. Fix: gate on
 smoothed speed / session-constant lag. Wrote docs/DATASET_STATUS.md (standing dataset summary).
+
+**Sync gate — tested pixel-motion (user's idea) + displacement (final).** User: use video PIXEL motion
+for sync (no triangulation/calib). Tested 2D wrist-pixel speed vs OMC on P251's 15 failing trials:
+≈ identical to the 3D-triangulated sync (recovers only 2/15, both already 0.69). => the low correlation
+is NOT a triangulation/calibration artifact — it's in the raw 2D detection too. BUT displacement (not
+speed) corr = 0.65 vs speed 0.55 on trial_27, with MATCHING travel (MMC 259 vs OMC 276 mm) → the two
+systems DO track the same motion; the raw-SPEED derivative amplifies detection jitter and that's what
+kills the correlation. **Actionable: gate sync on DISPLACEMENT or SmoothNet-smoothed speed, not raw
+wrist speed.** Pixel-motion is calibration-robust and worth using where triangulation is untrusted, but
+here it confirmed the issue is derivative-jitter, not geometry.

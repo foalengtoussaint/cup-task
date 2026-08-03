@@ -125,8 +125,12 @@ camera-classification tooling (4 independent methods agree).
 **Needs work / open:**
 - **Re-cut the shuffled cameras** (P12 cam4/5, P13 cam5, P17 cam5, P252 cam5) to add them back — they're
   recoverable, not lost. Needs the uncut session videos pulled (mostly not local).
-- **Fix the sync gate** (§C1) so affected-arm trials aren't spuriously dropped — likely the biggest
-  lever on usable-trial count, and it's the *clinically important* arm.
+- **Fix the sync gate** (§C1) — use DISPLACEMENT or SmoothNet-smoothed speed, NOT raw wrist speed.
+  Tested: 2D pixel-motion sync (calibration-free) ≈ 3D-triangulated sync (2/15 recovered) → the
+  failure is NOT triangulation/calibration. Displacement-corr 0.65 vs speed-corr 0.55 on the same
+  trial, with MATCHING travel (259 vs 276 mm) → the systems track the same motion; the RAW SPEED
+  derivative just amplifies detection jitter. Likely the biggest lever on usable-trial count, on the
+  clinically important affected arm.
 - **P17/P19 unaffected-arm coverage** (§C2) — a genuine limitation; those arms may be unrecoverable.
 - **Recalibration** for the real-miscalib cameras (P10c4, P14c5, P19c2/c5) if their views are needed;
   else drop (current approach) and accept fewer cameras on those participants.

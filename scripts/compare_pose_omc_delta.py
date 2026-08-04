@@ -227,6 +227,59 @@ def _find_lag(mmc_wrist, omc_wrist, max_lag=180):
     return blag, best
 
 
+def _disp_from_start(X):
+    """Distance travelled from the first valid frame (rotation-invariant, less jitter than speed)."""
+    X = np.asarray(X, float)
+    v = np.isfinite(X).all(1)
+    out = np.full(len(X), np.nan)
+    if v.sum() >= 2:
+        i0 = np.flatnonzero(v)[0]
+        out[v] = np.linalg.norm(X[v] - X[i0], axis=1)
+    return out
+
+
+def _corr_at_lag(a, b, max_lag=180):
+    """Best correlation of low-passed a vs lag-shifted b, returns (lag, corr)."""
+    a = _lp(a); best, blag = -2, 0
+    for lag in range(-max_lag, max_lag + 1):
+        bs = np.roll(_lp(b), lag)
+        m = np.isfinite(a) & np.isfinite(bs)
+        if m.sum() < 40:
+            continue
+        c = np.corrcoef(a[m], bs[m])[0, 1]
+        if np.isfinite(c) and c > best:
+            best, blag = c, lag
+    return blag, best
+
+
+def _find_lag_multi(mmc, omc, side, mmc_cup=None, omc_cup=None, max_lag=180):
+    """Robust MMC<->OMC sync: try SEVERAL signals and keep the best-correlating one.
+
+    The single-wrist-SPEED gate (_find_lag) fails on trials that are actually fine -- a poorly-detected
+    wrist keypoint (P17: elbow syncs 0.94 where wrist fails 0.22), or the speed derivative being fragile
+    even when position is perfect (P251/P252: displacement corr 0.90-0.98 vs speed 0.54). So correlate
+    {wrist,elbow,shoulder} x {speed,displacement} plus the CUP (arm-independent), and take the max.
+
+    Returns (lag, best_corr, signal_name). Falls back to the wrist-speed result if nothing beats it, so
+    it is never worse than _find_lag.
+    """
+    cands = []
+    for j in ("wrist", "elbow", "shoulder"):
+        jn = f"{side}_{j}"
+        if jn in mmc and jn in omc:
+            cands.append((f"{j}_speed", _speed(mmc[jn]), _speed(omc[jn])))
+            cands.append((f"{j}_disp", _disp_from_start(mmc[jn]), _disp_from_start(omc[jn])))
+    if mmc_cup is not None and omc_cup is not None:
+        cands.append(("cup_speed", _speed(mmc_cup), _speed(omc_cup)))
+        cands.append(("cup_disp", _disp_from_start(mmc_cup), _disp_from_start(omc_cup)))
+    best_c, best_lag, best_sig = -2.0, 0, "none"
+    for name, a, b in cands:
+        lag, c = _corr_at_lag(a, b, max_lag)
+        if c > best_c:
+            best_c, best_lag, best_sig = c, lag, name
+    return best_lag, float(best_c), best_sig
+
+
 def _murphy_signals(P, side="right"):
     """side-aware wrapper: DELTA's affected arm is the LEFT one, so the signals must be able to
     follow either arm (the trunk axis uses both shoulders/hips regardless)."""

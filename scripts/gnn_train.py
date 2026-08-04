@@ -57,7 +57,11 @@ def load_clean(parts=None, sync_thr=0.7, wr_thr=0.5, need_reproj=False):
         m = json.loads(Path(mj).read_text())
         if parts and m["part"] not in parts:
             continue
-        if m["sync_corr"] < sync_thr or m["wrist_valid_frac"] < wr_thr:
+        # gate on the BETTER of raw-wrist-speed sync and the multi-signal sync (best joint/cup x
+        # speed/displacement). The multi metric rescues trials a bad wrist keypoint or fragile speed
+        # derivative spuriously fails, without ever being worse (it includes wrist-speed as a candidate).
+        sync = max(m.get("sync_corr", 0.0), m.get("sync_corr_multi", 0.0))
+        if sync < sync_thr or m["wrist_valid_frac"] < wr_thr:
             continue
         d = np.load(str(Path(mj).with_suffix(".npz")))
         rec = {"part": m["part"], "trial": m["trial"], "side": m["side"],

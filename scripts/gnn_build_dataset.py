@@ -197,6 +197,19 @@ def build_trial(part, trial, force=False):
 
     # sync on the AFFECTED-side wrist speed (same as the harness), shift OMC onto MMC
     lag, sc = H._find_lag(mmc[wr], omc[wr])
+    # MULTI-SIGNAL sync: best of {wrist,elbow,shoulder}x{speed,disp} + cup -- rescues trials the raw
+    # wrist-speed gate spuriously fails (bad wrist keypoint / fragile speed derivative). Stored
+    # alongside sync_corr so load_clean can gate on the better metric.
+    try:
+        import results_v3_delta as _R
+        calib = _R._calib(part)
+        mcup = _R._cup_v3(part, trial, calib, n)
+        ocup = _R._omc_cup(part, trial, n)
+        if not np.isfinite(mcup).any():
+            mcup = None
+    except Exception:
+        mcup = ocup = None
+    lag_m, sc_m, sig_m = H._find_lag_multi(mmc, omc, side, mcup, ocup)
     omc = {j: _shift(v, lag) for j, v in omc.items()}
 
     M = np.stack([mmc[j] for j in JOINTS], axis=1)    # (T, J, 3)
@@ -215,6 +228,7 @@ def build_trial(part, trial, force=False):
         "part": part, "trial": trial, "side": side, "n": int(n),
         "good_cams": sorted(H.GOOD_CAMS.get(part, []), key=lambda c: int(c.split("_")[1])),
         "lag": int(lag), "sync_corr": float(sc),
+        "sync_corr_multi": float(sc_m), "sync_signal": sig_m, "lag_multi": int(lag_m),
         "target_wrist_source": wrist_src,
         "wrist_valid_frac": float(valid[:, JOINTS.index(wr)].mean()),
         "joints": JOINTS,

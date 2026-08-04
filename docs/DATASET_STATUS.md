@@ -1,4 +1,3 @@
-y
 
 # DELTA drink-task dataset — status & known problems
 

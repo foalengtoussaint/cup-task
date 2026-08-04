@@ -188,8 +188,14 @@ P10 −c4, P12 −c4/5, P13 −c2/5, P14 −c5, P17 −c5, P19 −c2/5, P251/P25
 100% via cup/displacement sync; P14 100% after cam5 drop).
 
 **P17/P19 still partial (51% / 47%) — but NOT a sync problem now:** their unaffected-arm trials pass
-sync (0.98 via elbow) but fail the separate **`wrist_valid_frac ≥ 0.5`** gate — P17's unaffected WRIST
-KEYPOINT is only ~37–41% valid (sparse detection in that view; the arm/elbow is fine). Whether those
-trials are usable depends on the measure (wrist-based Murphy measures: marginal; angle/elbow measures:
-fine). P19 unaffected also has the OMC-marker gap (§C3). So the sync fix is complete; the residual P17
-limitation is a wrist-KEYPOINT detection issue, not sync — a smaller, real, separate ceiling.
+sync (0.98 via elbow) but fail the separate **`wrist_valid_frac ≥ 0.5`** gate. ⚠ CORRECTED CAUSE (I was wrong twice — not
+'coverage gap', not 'sparse detection'): the 2D wrist is detected **100%** in all 4 good cams, but the
+3D TRIANGULATION keeps <2 agreeing cams on most frames (P17 trial_10: 276/427 frames, median 0 kept;
+reproj 18px on the survivors) → no 3D wrist. This is **residual CALIBRATION error amplified at the
+wrist** (fast, far-from-centre = hardest point); central/slower joints (nose/shoulder/ELBOW) triangulate
+fine — which is exactly why the elbow syncs at 0.94. It is **P17/P19-SPECIFIC** (unaffected-wrist 3D
+validity: every other participant 0.97–1.00; P17 0.34, P19 0.00) because they are the two MISCALIBRATED
+participants — even their surviving cameras carry enough residual error that the wrist won't triangulate.
+Consequence: P17/P19 unaffected-arm WRIST-based measures (peak velocity, movement units) are compromised;
+angle/elbow measures are fine. P19 is doubly hit (calibration + the OMC-marker gap §C3). NOTE: only 2
+participants are low (P17 51%, P19 47%); the other 9 are 99–100%.

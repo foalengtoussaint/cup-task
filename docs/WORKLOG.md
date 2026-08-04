@@ -5397,3 +5397,59 @@ Complete sync-fix map (all sync-gate artifacts, no re-cut / no camera issue):
   P251/P252 -> DISPLACEMENT (not speed): recovers 14/15 + 17/17.  [CUP also recovers P251 9/15.]
   P19  -> genuinely unfixable: OMC has no inner/outer wrist markers for the unaffected arm.
 Retract every earlier "jitter" attribution for P25x.
+
+### 2026-08-04 — SESSION SUMMARY: cohort expanded to 11, fully audited, sync gate fixed → 826/837 (99%) scorable. NEXT = Murphy scoring vs AutoMQ.
+
+**Cohort (11 participants, 826/837 = 99% scorable):** original P07/P08/P15/P17/P19 + added P10/P12/P13/
+P14 + P25(split→P251/P252). Selection = calib RMS<6 AND has AutoMQ OMC (excl P16/18/20/21/22, P24 = no
+OMC). Pulled cam1-5, detected, UETracked with consensus reproject-seed. Full status in docs/DATASET_STATUS.md.
+
+**Scorable-count progression (this session's arc), 680 → 826:**
+  - 680: raw wrist-speed sync gate (`sync_corr>=0.7`).
+  - 745: MULTI-SIGNAL sync gate. `_find_lag_multi` (compare_pose_omc_delta.py) = best of
+    {wrist,elbow,shoulder}×{speed,displacement} + cup; gnn_build stores sync_corr_multi/sync_signal;
+    load_clean gates on max(sync_corr, sync_corr_multi). Rescued P17 (elbow_disp) + P251/P252 (cup/disp).
+  - 786: dropped P17 cam_1 (leave-one-out per-joint reproj = 74px, the COARSE reaudit missed it) →
+    P17 unaffected wrist_valid 0.34→0.83, 42→83. Also fixed a whitelist BUG: P14 cam5 (confirmed
+    miscalib) had been left as a stale "un-audited import default" — now dropped.
+  - 826: P19 cluster-marker OMC fallback. P19's unaffected(L) arm has the wrist as `cluster_wrist_L_*`
+    (4-marker cluster), not the inner/outer pair. Added cluster-centroid fallback to
+    _load_omc_defensive (target_wrist_source='cluster') → P19 unaffected 0→37/45.
+
+**Final per-participant scorable:** P07 83/83, P08 87/88, P15 87/87, P17 83/83, P19 83/92(90%),
+P10 74/74, P12 81/82, P13 80/80, P14 89/89, P251 39/39, P252 40/40.
+
+**The 11 residual non-counting trials — split MMC(our pipeline) vs OMC(ground truth):**
+  - 1 = OMC bad, DON'T care (P12 t55: OMC wrist 49%).
+  - 10 = MMC bad (WE care): 9 are P19's hardest trials + P15 t47. Cause: P19 also has a bad **cam_1
+    (219px on the L-wrist, leave-one-out)** that the coarse audit missed — same pattern as P17 cam_1.
+    Dropping it would leave P19 on only cam_3,4 (thin, 2 cams), so NOT done. These are the genuine
+    ~1% wrist-occlusion / marginal-camera floor on one hard participant (paretic arm at drink apex).
+  - USER CALL: stop here — 99% is the ceiling; likely corrected in AutoMQ anyway.
+
+**⚠ KEY METHOD LESSONS (repeatedly corrected by the user this session):**
+  1. Camera fault classes are 4-way, NOT just "miscalib": FINE / real MISCALIB / SHUFFLED cut /
+     CONST-OFFSET cut. **spatialR2 (spatial_miscalib_check.py) alone mislabels 4/11 cams** — a
+     CONST-OFFSET cut (P10 cam4 +58.5s) makes a smooth error field that mimics miscalib; at low error
+     it can't tell fine from shuffled. **cut_placement_audit.py (pixel-exact NCC in the uncut) is the
+     authoritative label.** Full table in DATASET_STATUS §3.
+  2. The **coarse motion-stratified reaudit_cam_quality UNDER-detects bad cameras** — it passed P17
+     cam_1 (74px) and P19 cam_1 (219px). **Leave-one-out per-JOINT reprojection is stricter** and is
+     the check to trust for whether a wrist triangulates.
+  3. Sync failures were NOT jitter, NOT coverage gap (both retracted): P251/P252 = raw-speed-derivative
+     fragility (displacement-corr 0.90/0.98), P17 = a bad camera, P19 = cluster-marker OMC + bad cam.
+  4. Multi-method: never trust one metric — reproj magnitude can't separate miscalib from shuffled;
+     spatialR2 can't separate miscalib from const-offset; wrist-speed sync fails on good trials.
+
+**OMC PROVENANCE (important for scoring):** everything so far (sync/validity/audits) uses the RAW c3d
+(`cache/delta/<P>/c3d/*.c3d`). **AutoMQ (`~/Documents/AutoMQ/<P>/murphy_measures_df.pkl`, all 11 parts,
+both arms, ~56-84 trials each) = the study's PROCESSED 17 Murphy measures (their MuJoCo-IK fit)** — this
+is the authoritative ground truth for the actual scoring, ESPECIALLY the angle measures (which need the
+IK we don't have). Trial-ID mapping ours↔AutoMQ still needs building (AutoMQ keys by trial_number/side;
+P25 unsplit there vs P251/P252 here).
+
+**NEXT (post-compaction): run the Murphy grid on the 826 scorable trials, validating markerless measures
+vs AutoMQ's official measures.** murphy_grid harness in results_v3_delta.py (fixed-phase mode, per-variant
+Fig.4 + Bland-Altman + rs table). Build the ours↔AutoMQ trial-ID map first. Consolidation pipeline
+recommendation (BA+SmoothNet, p95 peak metric, no flow) is in project_consolidation_pipeline_decision +
+project_peak_metric_mmc_p95 memory notes.

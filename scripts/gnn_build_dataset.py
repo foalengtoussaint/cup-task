@@ -78,6 +78,14 @@ def _load_omc_defensive(part, trial, n_video):
     wrist_src = {}
     for joint, cand in OMC_MARKERS.items():
         present = [m for m in cand if m in lset]
+        # CLUSTER FALLBACK: some sessions (e.g. P19 left arm) have NO inner/outer wrist marker, only
+        # a 4-marker rigid cluster `cluster_wrist_<S>_*`. Its centroid ~= the wrist -> use it so the
+        # arm is not lost. Tagged 'cluster' in wrist_src.
+        if not present and "wrist" in joint:
+            side_c = joint.split("_")[0][0].upper()          # 'L' or 'R'
+            cl = [m for m in L if m.startswith(f"cluster_wrist_{side_c}")]
+            if cl:
+                present = cl
         if not present:
             out[joint] = np.full((n_video, 3), np.nan)
             continue
@@ -91,9 +99,10 @@ def _load_omc_defensive(part, trial, n_video):
     side = _trial_side(trial)
     aff = f"{side}_wrist"
     present = wrist_src.get(aff, [])
-    src = ("midpoint" if len(present) >= 2 else
-           ("outer_only" if present == [f"wrist_outer_{side[0].upper()}"] else
-            ("+".join(present) if present else "MISSING")))
+    src = ("cluster" if present and all("cluster" in m for m in present) else
+           ("midpoint" if len(present) >= 2 else
+            ("outer_only" if present == [f"wrist_outer_{side[0].upper()}"] else
+             ("+".join(present) if present else "MISSING"))))
     return out, src
 
 

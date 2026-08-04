@@ -214,3 +214,16 @@ reprojection is stricter and should be the standard camera check.
 **Scorable now: 680 (raw) → 745 (multi-sync) → 786/837 = 94% (after P17 cam_1 drop).** 10/11 participants
 99–100%; only P19 low (47%) — its unaffected arm has the OMC-marker gap (§C3) AND likely a bad camera
 (pending the same leave-one-out check).
+
+**⚠ UPDATE 2 — P19 also recovered (cluster-marker fallback). Final: 826/837 = 99%.** P19's "unfixable
+OMC gap" was ALSO overturned: its unaffected (L) arm HAS the wrist as a 4-marker rigid cluster
+(`cluster_wrist_L_*`), just not the inner/outer pair `_load_omc` expected. Added a cluster-centroid
+fallback to `_load_omc_defensive` (tagged `target_wrist_source='cluster'`): P19 unaffected wrist_valid
+0.00→0.83, 0→37/45 scorable; P19 total 43→83 (90%).
+
+**FINAL scorable: 680 (raw) → 745 (multi-sync) → 786 (P17 cam1 drop) → 826/837 = 99%.** All 11
+participants 90–100%. The remaining 11 non-counting trials all fail the `wrist_valid_frac ≥ 0.5` gate
+(sync is fine 0.9+), NOT sync: the 3D wrist triangulates <50% of frames — 9 are P19's hardest trials
+(marginal cameras/OMC), the rest (P08 t70, P12 t55, P15 t47) sit at 0.42–0.49, just under threshold, from
+real drink-apex occlusion on the paretic arm. This is the natural task-difficulty floor, not a bug. So
+essentially ALL clean trials are usable; the 1% residual is genuine wrist-occlusion.

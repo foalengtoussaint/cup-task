@@ -199,3 +199,18 @@ participants — even their surviving cameras carry enough residual error that t
 Consequence: P17/P19 unaffected-arm WRIST-based measures (peak velocity, movement units) are compromised;
 angle/elbow measures are fine. P19 is doubly hit (calibration + the OMC-marker gap §C3). NOTE: only 2
 participants are low (P17 51%, P19 47%); the other 9 are 99–100%.
+
+**⚠ UPDATE — P17 recovered by dropping a camera the COARSE audit missed (found via the "why does the
+elbow work?" question).** P17's low unaffected-wrist validity was NOT sparse detection (2D wrist = 100%)
+and NOT vague "wrist amplification". LEAVE-ONE-OUT per-camera reprojection (triangulate from the other
+cams, reproject into the held-out cam) exposed **cam_1 at 74 px on the wrist AND 76 px on the elbow** —
+genuinely miscalibrated, but the coarse still/moving `reaudit_cam_quality` had PASSED it. The elbow still
+triangulated because it had a clean anchor camera (cam_2 @ 7 px on the elbow) to hold consensus; the wrist
+had no clean camera (best 23 px) so cam_1's error tipped it over the 30 px gate on most frames. **Dropping
+cam_1 → P17 unaffected wrist_valid 0.34→0.83, P17 42→83 scorable (100%).** cam_quality P17 = cam2,3,4.
+LESSON: the coarse motion-stratified reaudit UNDER-detects bad cameras; leave-one-out per-joint
+reprojection is stricter and should be the standard camera check.
+
+**Scorable now: 680 (raw) → 745 (multi-sync) → 786/837 = 94% (after P17 cam_1 drop).** 10/11 participants
+99–100%; only P19 low (47%) — its unaffected arm has the OMC-marker gap (§C3) AND likely a bad camera
+(pending the same leave-one-out check).

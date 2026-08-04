@@ -174,3 +174,23 @@ P17c5/P252c5 = miscalib/shuffled" per spatial test (cut-placement overturned the
 `cut_placement_audit.py`, `spatial_miscalib_check.py`, `check_track_quality.py`,
 `cache_uetrack_tracks.py` (reproject-seed), `gnn_build_dataset.py` (lag-sync). Caches:
 `cache/delta/{clip_omc_audit,cam_quality,reaudit_cam_quality}.json`, `cache/delta/gnn_pairs/`.*
+
+---
+
+## 6. RESULT — sync-gate fix applied (2026-08-04)
+
+Multi-signal sync gate (`_find_lag_multi`: best of {wrist,elbow,shoulder}×{speed,displacement} + cup;
+`load_clean` gates on `max(sync_corr, sync_corr_multi)`) rebuilt on all 11 participants.
+**⚠ Also fixed a whitelist bug:** P14 cam5 (confirmed miscalibration §3) had been left in the whitelist
+as a stale "un-audited import default" — now dropped (P14 = cam1-4). All bad cameras now removed:
+P10 −c4, P12 −c4/5, P13 −c2/5, P14 −c5, P17 −c5, P19 −c2/5, P251/P252 −c5; P07/P08/P15 keep all 5.
+
+**Scorable: 680 → 745 of 837 clean trials (89%).** 8/11 participants at 99–100% (P251/P252 62/58% →
+100% via cup/displacement sync; P14 100% after cam5 drop).
+
+**P17/P19 still partial (51% / 47%) — but NOT a sync problem now:** their unaffected-arm trials pass
+sync (0.98 via elbow) but fail the separate **`wrist_valid_frac ≥ 0.5`** gate — P17's unaffected WRIST
+KEYPOINT is only ~37–41% valid (sparse detection in that view; the arm/elbow is fine). Whether those
+trials are usable depends on the measure (wrist-based Murphy measures: marginal; angle/elbow measures:
+fine). P19 unaffected also has the OMC-marker gap (§C3). So the sync fix is complete; the residual P17
+limitation is a wrist-KEYPOINT detection issue, not sync — a smaller, real, separate ceiling.

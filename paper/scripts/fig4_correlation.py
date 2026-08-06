@@ -4,7 +4,7 @@ Mirrors Unger et al. (2411.14992) Fig 4: OMC on x, MMC on y, y=x diagonal refere
 trial, COLOR = participant, MARKER = arm (affected/unaffected). Uses our fast MMC (BA+SmoothNet) vs
 AutoMQ OMC from out/automq/score_vs_automq.csv. Per-panel r + n annotated.
 
-    python scripts/fig4_correlation.py  ->  out/figures/fig4_mmc_vs_omc.png
+    python paper/scripts/fig4_correlation.py  ->  paper/fig4_mmc_vs_omc.png
 """
 from __future__ import annotations
 import sys
@@ -17,8 +17,10 @@ import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
 from scipy.stats import spearmanr
 
-ROOT = Path(__file__).resolve().parents[1]
-CSV = ROOT / "out" / "automq" / "score_vs_automq.csv"
+# paper/scripts/ -> REPO is two up, PAPER (output folder) one up.
+REPO = Path(__file__).resolve().parents[2]
+PAPER = Path(__file__).resolve().parents[1]
+CSV = REPO / "out" / "automq" / "score_vs_automq.csv"
 VARIANT = "BA+smoothnet"
 
 # (measure, pretty label, unit) -- ordered + labelled to mirror Unger et al. Fig 4 (2 rows x 6 cols)
@@ -109,7 +111,7 @@ def main():
                  fontsize=13, y=0.99)
     # NB: no tight_layout -- it would override the gridspec hspace and re-collide the row labels.
     fig.subplots_adjust(left=0.05, right=0.99, top=0.93, bottom=0.15)
-    out = ROOT / "out" / "paper" / "fig4_mmc_vs_omc.png"
+    out = PAPER / "fig4_mmc_vs_omc.png"
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=200)
     print(f"wrote {out}", flush=True)

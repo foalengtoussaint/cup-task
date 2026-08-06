@@ -256,7 +256,12 @@ def angle_measures_automq(pose, ph, side, peak="max"):
         "max_trunk_displacement": trunk_disp,   # robust-ref 3D shoulder-mid excursion (see above)
     }
     if reach and reach[1] - reach[0] >= 10:
-        a1, b1 = flex[reach[0]:reach[1]], elb[reach[0]:reach[1]]
+        # AutoMQ: corr(flexion, elbow) over the INNER 80% of reaching (crop 10% each end -- the
+        # leading/trailing 10% straddle the pre-reach and grasp pauses = zero-variance/opposite-trend
+        # samples). Verified: reproduces AutoMQ's stored interjoint 84% within 0.05. Was full window.
+        rr0, rr1 = reach
+        mg = int(0.1 * (rr1 - rr0))
+        a1, b1 = flex[rr0 + mg:rr1 - mg], elb[rr0 + mg:rr1 - mg]
         m = np.isfinite(a1) & np.isfinite(b1)
         if m.sum() >= 10 and np.std(a1[m]) > 1e-6 and np.std(b1[m]) > 1e-6:
             out["interjoint_coordination"] = float(np.corrcoef(a1[m], b1[m])[0, 1])

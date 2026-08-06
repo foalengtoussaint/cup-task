@@ -310,14 +310,27 @@ def _murphy_signals_right(P):
     down = down / (np.linalg.norm(down, axis=1, keepdims=True) + 1e-9)
     arm = el - sh
     arm = arm / (np.linalg.norm(arm, axis=1, keepdims=True) + 1e-9)
-    # flexion: angle between arm and the DOWN axis -> 0 arm hanging, ~180 raised
-    flex = np.degrees(np.arccos(np.clip((arm * down).sum(1), -1, 1)))
-    # abduction: component of arm along the shoulder-line (right<-left) direction
-    side = (shL - P["right_shoulder"])
+    # flexion: angle between arm and the DOWN axis -> 0 arm hanging, ~180 raised.
+    # The formula is correct (corr +1.00 vs AutoMQ on clean markers), but our participants are
+    # SEATED and the HIPS are occluded, so a PER-FRAME hip-based down axis is pure jitter -> flexion
+    # trial-corr collapses to 0.16. The seated trunk axis is ~static, so use a per-trial CONSTANT
+    # down axis (median over finite frames): trial-corr 0.16 -> 0.44, bias -11.8 -> -9.4. Abduction
+    # (shoulder line) and trunk (needs the per-frame frame) keep the per-frame axis. (2026-08-05)
+    _fin = np.isfinite(down).all(1)
+    down_c = np.nanmedian(down[_fin], axis=0) if _fin.any() else down[0]
+    down_c = down_c / (np.linalg.norm(down_c) + 1e-9)
+    flex = np.degrees(np.arccos(np.clip((arm * down_c[None, :]).sum(1), -1, 1)))
+    # abduction: component of arm along the LATERAL shoulder-line direction (arm's-own shoulder
+    # OUTWARD, i.e. right_shoulder<-left_shoulder). Was medial (shL - right_shoulder), which
+    # sign-FLIPPED abduction: corr with AutoMQ was -0.91 and the max scored -55.6 deg bias. Using
+    # the lateral direction gives corr +0.89 vs AutoMQ's stored shoulder_abduction. (2026-08-05)
+    side = (P["right_shoulder"] - shL)
     side = side / (np.linalg.norm(side, axis=1, keepdims=True) + 1e-9)
     abd = np.degrees(np.arcsin(np.clip((arm * side).sum(1), -1, 1)))
-    # trunk forward lean: shoulder-mid displacement along (down x side) = forward normal
-    fwd = np.cross(down, side)
+    # trunk forward lean: shoulder-mid displacement along the forward normal = side x down.
+    # Was cross(down, side) which pointed BACKWARD (corr -0.99 vs AutoMQ trunk_displacement);
+    # cross(side, down) points forward -> corr +0.99. (2026-08-05)
+    fwd = np.cross(side, down)
     disp = trunk_mid - trunk_mid[np.isfinite(trunk_mid).all(1)][0]
     trunk = (disp * fwd).sum(1)
     return {"shoulder_flexion": flex, "shoulder_abduction": abd, "trunk_y_disp": trunk}

@@ -621,6 +621,14 @@ def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
         if ba_cache is None or f"{part}/{trial}" not in ba_cache:
             return None
         arr = np.asarray(ba_cache[f"{part}/{trial}"], float)      # (T,9,3) BA+guard
+        # PHYSICAL-PLAUSIBILITY GUARD: BA can DIVERGE on some trials (measured: 6/826, P13/P19/P252),
+        # producing |coord| up to 1e21 mm that the in-solve fallback_mm didn't catch. A DELTA lab is a
+        # few metres (~few-thousand mm); anything past 1e5 mm is a solve blow-up, not a pose. Treat a
+        # blown-up trajectory as UNAVAILABLE so those trials fall back to the non-BA variants instead of
+        # poisoning every BA metric with an infinity. (Better here at the single choke-point than in
+        # each caller.)
+        if not np.isfinite(arr).any() or np.nanmax(np.abs(arr)) > 1e5:
+            return None
     else:
         raise ValueError(triangulation)
     pose = {j: arr[:, k] for k, j in enumerate(_GRID_JOINTS)}

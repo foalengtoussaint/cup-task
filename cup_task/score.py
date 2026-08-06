@@ -191,7 +191,12 @@ def compute_position_measures(
         if len(seg):
             peak_velocity = float(np.max(seg))
             pk = int(np.argmax(seg))
-            t_peak = pk / fps
+            # ABSOLUTE time_to_peak is measured from the TRIAL START (frame 0), not the reaching
+            # window start -- verified vs AutoMQ (reproduces their stored scalar to ~0; measuring
+            # from reach start was off by the per-trial-varying ~0.7s pre-reach, which collapsed the
+            # correlation to r=0.21). The PERCENT stays fraction-of-reaching (pk/reach_len), which
+            # DOES match AutoMQ. (2026-08-05)
+            t_peak = (rs + pk) / fps
             t_peak_pct = pk / max(re - rs, 1) * 100.0
             # first peak: the raw derivative still wiggles enough that find_peaks fires
             # on ~50mm/s blips in the first 100ms. Smooth harder and demand prominence.
@@ -208,7 +213,7 @@ def compute_position_measures(
                 # single-peaked profile IS the first peak.
                 idx = int(np.nanargmax(seg_pk)) if np.isfinite(seg_pk).any() else -1
             if idx >= 0:
-                t_first = idx / fps
+                t_first = (rs + idx) / fps          # from frame 0 (see t_peak note)
                 t_first_pct = idx / max(re - rs, 1) * 100.0
 
     # movement units: everything EXCEPT drinking

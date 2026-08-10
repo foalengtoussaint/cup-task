@@ -193,7 +193,14 @@ def robust_triangulate(cams: list[CamCalib], pts: list[np.ndarray]
                      for c, p in zip(cams, pts)])
     keep = [i for i in range(len(cams)) if errs[i] <= REPROJ_PX]  # 2: gate
     if len(keep) < MIN_CAMS:
-        return None, [], float("inf")
+        # RELAXED (2026-08): a MISCALIBRATED camera reprojects >REPROJ_PX even on a GOOD high-conf
+        # detection (P19 right_shoulder: 3 cams at 43/28/46px, 2D conf 0.99). Returning None dropped
+        # the whole joint -> deleted the affected-arm trials of miscalibrated participants wholesale
+        # (P19: 83 trials, incl. every low-coordination reach). Instead FALL BACK to the all-cam DLT
+        # so a miscalibrated frame is FORCED rather than lost. Validated (paper/relax_gate_*): recovers
+        # all 691 trials on all 11 measures (interjoint 0.25->0.51), neutral-to-better on clean data
+        # (the gate fires on 0.05% of P07 frames, so this is a no-op there). Still requires >=2 cams.
+        keep = list(range(len(cams)))                   # X already = all-cam DLT computed above
     if len(keep) < len(cams):                           # 3: refit on inliers
         X = triangulate_dlt([cams[i] for i in keep], [pts[i] for i in keep])
     med = float(np.median([np.linalg.norm(project(cams[i], X)[0] - pts[i])

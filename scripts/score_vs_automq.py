@@ -218,13 +218,37 @@ def _seg_reduce(a, w, how="max"):
     return _reduce(seg, how)
 
 
+def _planar_body_angles(pose, side, other):
+    """DEFAULT (2026-08) shoulder angles = Alt Murphy Table 2 planar decomposition in a 4-point body
+    frame (both shoulders + both hips). flexion = arm in the SAGITTAL plane, abduction = arm in the
+    FRONTAL plane, both measured from the shoulder->hip down axis. The frame is FROZEN per-trial (median
+    over finite frames) for the occluded seated hips. Replaces the old total-angle flexion / lateral-
+    component abduction: abduction rs 0.61->0.80, interjoint 0.25->0.51, matches AutoMQ's planar def.
+    See paper/planar_body_angles.py + measures_methods.md."""
+    def n(x):
+        return x / (np.linalg.norm(x, axis=-1, keepdims=True) + 1e-9)
+    sh, el = pose[f"{side}_shoulder"], pose[f"{side}_elbow"]
+    arm = el - sh
+    down = n((pose["right_hip"] + pose["left_hip"]) / 2.0 - (sh + pose[f"{other}_shoulder"]) / 2.0)
+    sline = n(sh - pose[f"{other}_shoulder"])
+    fwd = n(np.cross(sline, down)); lat = n(np.cross(down, fwd))
+    f = np.isfinite(down).all(1) & np.isfinite(fwd).all(1)
+    if f.any():                                          # freeze the body frame (occluded hips)
+        dc = n(np.nanmedian(down[f], 0)); fc = n(np.nanmedian(fwd[f], 0)); lc = n(np.nanmedian(lat[f], 0))
+        down = np.broadcast_to(dc, arm.shape); fwd = np.broadcast_to(fc, arm.shape); lat = np.broadcast_to(lc, arm.shape)
+    arm_sag = arm - (arm * lat).sum(1, keepdims=True) * lat
+    arm_fro = arm - (arm * fwd).sum(1, keepdims=True) * fwd
+    flex = H._lp(np.degrees(np.arccos(np.clip((n(arm_sag) * down).sum(1), -1, 1))))
+    abd = H._lp(np.degrees(np.arccos(np.clip((n(arm_fro) * down).sum(1), -1, 1))))
+    return flex, abd
+
+
 def angle_measures_automq(pose, ph, side, peak="max"):
     """The 5 comparable angle/trunk measures with AutoMQ's EXACT windows + reductions."""
-    from compare_pose_omc_delta import _murphy_signals
     elb = _elbow_series(pose, side)
+    other = "right" if side == "left" else "left"
     try:
-        sig = _murphy_signals(pose, side=side)          # from OUR pose keypoints, not OMC
-        flex, abd = H._lp(sig["shoulder_flexion"]), H._lp(sig["shoulder_abduction"])
+        flex, abd = _planar_body_angles(pose, side, other)   # planar body-frame (default), from OUR pose
     except Exception:
         flex = abd = np.full(len(elb), np.nan)
     # TRUNK: robust-reference 3D EXCURSION of the shoulder midpoint, NOT the anatomical forward

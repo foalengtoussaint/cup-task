@@ -14,7 +14,8 @@ from scipy.stats import spearmanr
 # paper/scripts/ -> REPO is two up, PAPER (output folder) one up.
 REPO = Path(__file__).resolve().parents[2]
 PAPER = Path(__file__).resolve().parents[1]
-CSV = REPO / "out" / "automq" / "score_vs_automq.csv"
+import os
+CSV = Path(os.environ.get("SCORE_CSV", REPO / "out" / "automq" / "score_vs_automq.csv"))
 VARIANT = "BA+smoothnet"
 
 # (measure key, pretty label) in Unger Table III order; percent + flexion-D excluded (see methods.md)

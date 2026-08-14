@@ -88,9 +88,17 @@ class UETrackBatch:
             "task": self._t.task_index_batch,
         }
 
-    def update(self, rgbs):
+    def update(self, rgbs, bgr=False):
         """One batched step across all seeded cameras. rgbs = list of N RGB frames (None to skip a
-        camera this frame). Returns list of (cx-derived xywh) | None per camera."""
+        camera this frame). Returns list of (cx-derived xywh) | None per camera.
+
+        bgr=True: the frames are BGR and the RGB conversion is done on the CROPS instead of the full
+        frames. sample_target is pure numpy slicing + one resize, i.e. colour-agnostic, so cropping
+        first is IDENTICAL math on ~100x fewer pixels. MEASURED at 5 cams 1080p per rig-frame:
+        full-frame cv2.cvtColor 3.1ms (and the numpy `[:, :, ::-1].copy()` it replaced, 32.5ms) vs
+        ~0.05ms on the crops. Lets the caller skip the colour conversion entirely.
+        """
+        import cv2
         import torch
         from lib.utils.box_ops import clip_box
         active = [c for c in range(self.n) if self.states[c] is not None and rgbs[c] is not None]

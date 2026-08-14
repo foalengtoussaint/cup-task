@@ -37,10 +37,18 @@ def best_subset(obs, calib, gate, minc):
     return best
 
 
-def consensus3(obs, calib, prev=None, gate=GATE, jump=JUMP):
+def consensus3(obs, calib, prev=None, gate=GATE, jump=JUMP, gap=1):
     """One frame -> (X_mm | None, kept_cams:set, None). `prev` = last accepted 3D point (mm).
 
-    size>=3 subset is trusted (real majority); size 2 requires continuity within `jump` mm of prev.
+    size>=3 subset is trusted (real majority); size 2 requires CONTINUITY with prev.
+
+    `gap` = frames elapsed since `prev` was accepted. The continuity budget is a VELOCITY limit,
+    `jump` mm PER FRAME, so the allowed distance is `jump * gap`. Without this, `jump` was compared
+    against the last-ACCEPTED point regardless of how old it was: after a reprojection-gate streak
+    `prev` goes stale (measured: median 96 frames / 1.6 s at the drink apex on weakly-calibrated
+    participants), and the cup's normal ~275 mm/s transport reads as a 441 mm "single-frame jump",
+    rejecting the whole rest of the trajectory in a self-reinforcing cascade. `gap=1` reproduces the
+    original behaviour exactly.
     """
     if len(obs) < 2:
         return None, set(), None
@@ -52,6 +60,6 @@ def consensus3(obs, calib, prev=None, gate=GATE, jump=JUMP):
         return X, sub, None
     if prev is None:
         return X, sub, None
-    if np.linalg.norm(np.asarray(X) - np.asarray(prev)) <= jump:
+    if np.linalg.norm(np.asarray(X) - np.asarray(prev)) <= jump * max(gap, 1):
         return X, sub, None
     return None, set(), None

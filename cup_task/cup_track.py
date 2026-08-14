@@ -145,14 +145,16 @@ def track_cup_3d_from_cache(cache_json: str | Path, calib: dict) -> list[dict]:
     frames = sorted((int(k) for k in rec), )
     n = (max(frames) + 1) if frames else 0
     prev3d = None
+    last_acc = None                    # frame index of the last accepted point (for the velocity gate)
     track = []
     for f in range(n):
         row = rec.get(str(f)) or rec.get(f) or {}
         obs = {c: tuple(v["trk"]) for c, v in row.items()
                if v.get("trk") is not None and c in calib}
-        X, kept, _ = consensus.consensus3(obs, calib, prev=prev3d)
+        gap = 1 if last_acc is None else (f - last_acc)   # frames since last accept -> velocity budget
+        X, kept, _ = consensus.consensus3(obs, calib, prev=prev3d, gap=gap)
         if X is not None:
-            prev3d = X
+            prev3d = X; last_acc = f
         track.append({
             "frame": f,
             "X": None if X is None else [round(float(v), 1) for v in X],

@@ -39,7 +39,9 @@ from cup_task import segment, cup_track, pose_smooth, flow_speed, speed_blend
 from cup_task.score import compute_position_measures
 
 FPS = H.VIDEO_FPS
-TRACKS = ROOT / "cache" / "tracks_uetrack"
+# OT_TRACKS_DIR lets a run read an alternative UETrack cache (e.g. tracks_uetrack_26x, seeded from
+# the stock COCO yolo26x-seg consensus) without touching the default cache.
+TRACKS = ROOT / "cache" / (__import__("os").environ.get("OT_TRACKS_DIR") or "tracks_uetrack")
 FLOWDIR = ROOT / "cache" / "flow_vel"
 
 # COHORT = P07 + P08 only, n=12. P13 is EXCLUDED EVERYWHERE (not just from speed).
@@ -89,7 +91,8 @@ def _omc_cup(part, trial, n):
     if not mk:
         return np.full((n, 3), np.nan)
     raw = np.mean([P[:3, L.index(m), :].T for m in mk], axis=0)
-    grid = H._resample(raw, H.C3D_RATE, FPS)
+    rate = float(c["parameters"]["POINT"]["RATE"]["value"][0]) or H.C3D_RATE   # P13 is 96Hz not 100
+    grid = H._resample(raw, rate, FPS)
     if len(grid) < n:
         grid = np.vstack([grid, np.full((n - len(grid), 3), np.nan)])
     return grid[:n]

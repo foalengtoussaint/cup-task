@@ -41,6 +41,13 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import compare_pose_omc_delta as H  # noqa: E402
 
 OUT = ROOT / "cache" / "tracks_uetrack"
+# --seeds26x: seed from cache/cup_seed26x (stock COCO yolo26x-seg, scanned forward to the FIRST frame
+# that triangulates >=3-cam/30px) instead of each camera's first clean3d_refill box. WORKLOG:927 --
+# the finetune gets 8.2% >=3-cam consensus on P14 vs the COCO teacher's 77%; measured cohort-wide it
+# detects 6-54% of frames and is near-blind in most views, so its per-camera first box can seed
+# different objects in different cameras. Tracks go to a separate dir; the old cache is untouched.
+SEED26X = ROOT / "cache" / "cup_seed26x"
+OUT26X = ROOT / "cache" / "tracks_uetrack_26x"
 DETS = ROOT / "cache" / "delta"          # <part>/dets/<clip>.<cam>.cup.json
 STAGED = ROOT / "cache" / "delta"        # <part>/staged/<clip>.<cam>.mp4
 
@@ -168,7 +175,18 @@ def _reproj_box(X, cam, ref_wh=(46.0, 46.0)):
     return [float(uv[0] - w / 2), float(uv[1] - h / 2), float(w), float(h)]
 
 
-def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
+def _seed26x(part, trial):
+    """(frame, {cam: xywh}, {cam: origin}) from the yolo26x-seg consensus seed, or None."""
+    f = SEED26X / f"{part}__{trial}.json"
+    if not f.exists():
+        return None
+    d = json.loads(f.read_text())
+    if not d.get("boxes"):
+        return None
+    return int(d["frame"]), d["boxes"], d["origin"]
+
+
+def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True, seeds26x=False):
     """Build one trial's per-camera UETrack track file. Returns (path, n_frames, n_cams_used, existed).
 
     reproject=True: seed cameras that have NO direct YOLO detection by reprojecting the CONSENSUS 3D
@@ -176,7 +194,8 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
     Reprojected seeds are tagged `seeded_by:"reproject"` (direct ones `"yolo"`) so a downstream reader
     can drop the reprojected cameras. SKIP rule: if a track already exists and reproject-seed would add
     NO new camera, keep it (don't waste GPU) -- unless overwrite."""
-    cf = OUT / f"{part}__{trial}__uetrack__fs1.json"
+    cf = (OUT26X if seeds26x else OUT) / f"{part}__{trial}__uetrack__fs1.json"
+    cf.parent.mkdir(parents=True, exist_ok=True)
     stem = _clip_stem(part, trial)
     sd = _staged_dir(part)
 
@@ -187,11 +206,20 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
         return cf, 0, len(vids), False
 
     # direct-YOLO per-cam first-detection seeds
-    direct = {c: _seed_box_xywh(part, trial, c) for c in vids}
-    direct = {c: v for c, v in direct.items() if v is not None}       # (frame, xywh)
+    if seeds26x:
+        s26 = _seed26x(part, trial)
+        if s26 is None:
+            return cf, 0, 0, False                                    # no consensus seed -> no track
+        sfr, sboxes, sorig = s26
+        direct = {c: (sfr, b) for c, b in sboxes.items() if c in vids}
+        seed3 = None; reproj_cams = set()
+    else:
+        direct = {c: _seed_box_xywh(part, trial, c) for c in vids}
+        direct = {c: v for c, v in direct.items() if v is not None}   # (frame, xywh)
 
     # consensus seed (for reprojection into non-detecting cams)
-    seed3 = _consensus_seed(part, trial, calib, list(vids)) if reproject else None
+    if not seeds26x:
+        seed3 = _consensus_seed(part, trial, calib, list(vids)) if reproject else None
     reproj_cams = set()
     if seed3 is not None:
         sf, X, cboxes, kept = seed3
@@ -230,7 +258,8 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
     plan = {}
     for c in cams:
         if c in direct:
-            plan[c] = (direct[c][0], direct[c][1], "yolo")
+            plan[c] = (direct[c][0], direct[c][1],
+                       sorig.get(c, "yolo") if seeds26x else "yolo")
         elif c in reproj_cams:
             plan[c] = (seed3[0], _reproj_box(seed3[1], calib[c]), "reproject")
 
@@ -248,15 +277,20 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
         row = {}
         for c in cams:
             if not seeded[c] and c in imgs and plan[c][0] == f:
-                b.init(cam_idx[c], imgs[c][:, :, ::-1].copy(), plan[c][1])
+                b.init(cam_idx[c], cv2.cvtColor(imgs[c], cv2.COLOR_BGR2RGB), plan[c][1])
                 seeded[c] = True
                 row[c] = {"yolo": plan[c][1] if plan[c][2] == "yolo" else None,
                           "trk": _center(plan[c][1]), "seeded": True,
                           "seeded_by": plan[c][2]}
+        # cv2.cvtColor, NOT `[:, :, ::-1].copy()`. The numpy strided flip costs 32.5ms per 5-cam
+        # rig-frame at 1080p vs 6.3ms (1 thread) / 3.1ms (4 threads) for cvtColor -- MEASURED, and
+        # byte-identical output. It was ~25ms of the ~35ms this stage cost, which made UETrack LOOK
+        # like the bottleneck when its own step is 11.3ms (out/speed/, 2026-08-12). Cheaper still:
+        # UETrackBatch.update(..., bgr=True) converts the 224x224 CROPS instead (~0.05ms).
         rgbs = [None] * len(cams)
         for c in cams:
             if seeded[c] and c in imgs and c not in row:
-                rgbs[cam_idx[c]] = imgs[c][:, :, ::-1].copy()
+                rgbs[cam_idx[c]] = cv2.cvtColor(imgs[c], cv2.COLOR_BGR2RGB)
         if any(r is not None for r in rgbs):
             out = b.update(rgbs)
             for c in cams:
@@ -285,7 +319,7 @@ def cache_trial(batch_cls, part, trial, calib, overwrite=False, reproject=True):
         out_rec = rec
         n_out_cams = len(cams)
 
-    OUT.mkdir(parents=True, exist_ok=True)
+    cf.parent.mkdir(parents=True, exist_ok=True)
     cf.write_text(json.dumps(out_rec))
     return cf, nframes, n_out_cams, False
 
@@ -319,6 +353,9 @@ def main(argv=None):
     ap.add_argument("--parts", nargs="+", default=["P15", "P17", "P19"])
     ap.add_argument("--limit", type=int, default=None, help="cap trials/participant (smoke test)")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--seeds26x", action="store_true",
+                    help="seed from cache/cup_seed26x (stock COCO yolo26x-seg consensus seed); "
+                         "tracks are written to cache/tracks_uetrack_26x")
     ap.add_argument("--audit-clean", action="store_true",
                     help="only build trials that PASS the clip/OMC audit (cache/delta/clip_omc_audit.json)"
                          " -- excludes uncut clips + trials whose OMC time-window doesn't map to the video")
@@ -355,7 +392,7 @@ def main(argv=None):
             calib = {c: v for c, v in calib.items() if c in H.GOOD_CAMS[part]}
         t0 = time.perf_counter()
         cf, nfr, ncam, existed = cache_trial(UETrackBatch, part, trial, calib,
-                                              overwrite=a.overwrite)
+                                              overwrite=a.overwrite, seeds26x=a.seeds26x)
         dt = time.perf_counter() - t0
         if existed:
             skipped += 1

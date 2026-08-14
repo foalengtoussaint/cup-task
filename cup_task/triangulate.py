@@ -110,6 +110,89 @@ def kf_rts_smooth(cons: np.ndarray, fps: float = 60.0,
     return np.array([s[:3] for s in xs])
 
 
+def kf_fill_gaps(cons: np.ndarray, fps: float = 60.0, max_gap_s: float = 0.75,
+                 min_coverage: float = 0.30, **kw) -> np.ndarray:
+    """kf_rts_smooth, but ONLY where filling is defensible. Returns NaN elsewhere.
+
+    A constant-velocity coast across a 0.5s occlusion is a fill; the same coast across most of a
+    trial is invention -- and it does not look broken, it produces a smooth curve that simply never
+    goes where the cup went (measured: a trial 87% without consensus coasts 300-600mm from the mouth
+    through the entire drink). Three guards:
+      * coverage: if fewer than `min_coverage` of frames have a real observation, fill nothing.
+      * gap length: interior gaps longer than `max_gap_s` stay NaN.
+      * no extrapolation: nothing before the first or after the last real observation is filled.
+    Observed frames keep the smoother's output (that is the denoising half of the job).
+    """
+    cons = np.asarray(cons, float)
+    T = len(cons)
+    valid = np.isfinite(cons).all(1)
+    if valid.sum() < 2 or valid.mean() < min_coverage:
+        return np.full((T, 3), np.nan)
+    out = kf_rts_smooth(cons, fps=fps, **kw)
+    keep = valid.copy()
+    idx = np.flatnonzero(valid)
+    lo, hi = idx[0], idx[-1]
+    max_gap = int(round(max_gap_s * fps))
+    g0 = None
+    for t in range(lo, hi + 1):
+        if not valid[t]:
+            if g0 is None:
+                g0 = t
+        elif g0 is not None:
+            if t - g0 <= max_gap:
+                keep[g0:t] = True                      # short interior gap -> fill
+            g0 = None
+    res = np.full((T, 3), np.nan)
+    res[keep] = out[keep]
+    return res
+
+
+def fill_cup_from_wrist(cup: np.ndarray, wrist: np.ndarray, min_pairs: int = 20,
+                        fallback_offset: np.ndarray | None = None, hold_tol_mm: float = 60.0) -> tuple[np.ndarray, dict]:
+    """Fill frames with NO cup consensus from the WRIST, which is what still carries the cup.
+
+    While the cup is held, cup and wrist translate together, so cup ~= wrist + d with d roughly
+    constant over the hold. d is estimated per trial as the median (cup - wrist) over the frames where
+    the cup DOES have consensus, so nothing outside the trial is assumed; with fewer than `min_pairs`
+    such frames a caller-supplied `fallback_offset` (e.g. the participant median) is used, and failing
+    that the frames stay NaN. This is the position-level version of the cup/wrist fusion already used
+    for phases (drink_study/analysis/fuse_phases.py, log-odds of cup->head and wrist->head distance):
+    the hand's distance to the mouth stands in for the cup's when the cup is unobserved.
+
+    Returns (filled, info) where info records the offset, how many frames were filled and from what.
+    """
+    cup = np.asarray(cup, float).copy()
+    wrist = np.asarray(wrist, float)
+    T = min(len(cup), len(wrist))
+    cup, wrist = cup[:T], wrist[:T]
+    have = np.isfinite(cup).all(1) & np.isfinite(wrist).all(1)
+    need = (~np.isfinite(cup).all(1)) & np.isfinite(wrist).all(1)
+    # Estimate d ONLY over frames where the hand actually HAS the cup. Over the whole trial the
+    # average is a blend of holding and not-holding: before grasp and after release the cup sits on
+    # the table while the hand is elsewhere, contributing offsets of several hundred mm in an
+    # arbitrary direction. The hold is identified from the OBSERVED frames alone (wrist->cup within
+    # `hold_tol_mm` of its own minimum), so this never depends on the segmentation it feeds.
+    hold = np.zeros(len(cup), bool)
+    if have.any():
+        d_wc = np.linalg.norm(cup[have] - wrist[have], axis=1)
+        thr = float(np.min(d_wc)) + hold_tol_mm
+        hold[np.flatnonzero(have)[d_wc <= thr]] = True
+    info = {"n_pairs": int(have.sum()), "n_hold": int(hold.sum()), "n_filled": 0,
+            "offset_mm": None, "source": "none"}
+    if hold.sum() >= min_pairs:
+        d = np.median(cup[hold] - wrist[hold], axis=0)
+        info["source"] = "per-trial-hold"
+    elif fallback_offset is not None:
+        d = np.asarray(fallback_offset, float)
+        info["source"] = "fallback"
+    else:
+        return cup, info
+    cup[need] = wrist[need] + d
+    info["offset_mm"] = [float(v) for v in d]
+    info["n_filled"] = int(need.sum())
+    return cup, info
+
+
 def camera_jitter(per_cam: dict[str, list], point_fn, n_frames: int) -> dict[str, float]:
     """Per-camera 2D jitter (median |3rd difference|, px) of one target's keypoint.
 

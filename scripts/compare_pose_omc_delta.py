@@ -186,6 +186,9 @@ def _load_omc(part, trial, n_video):
     c = ezc3d.c3d(str(DELTA / part / "c3d" / f"{trial}.c3d"))
     L = c["parameters"]["POINT"]["LABELS"]["value"]
     P = c["data"]["points"]   # (4, m, T) mm
+    # USE THE FILE'S OWN RATE, not the hardcoded 100: P13's C3Ds are 96Hz. Resampling 96Hz mocap as
+    # 100Hz gave a 4.17% progressive within-trial desync (~10fr half-to-half) on every P13 trial.
+    rate = float(c["parameters"]["POINT"]["RATE"]["value"][0]) or C3D_RATE
 
     T = P.shape[2]
 
@@ -205,7 +208,7 @@ def _load_omc(part, trial, n_video):
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", category=RuntimeWarning)
                 raw = np.nanmean([marker(m) for m in mks], axis=0)
-        grid = _despike(_resample(raw, C3D_RATE, VIDEO_FPS))
+        grid = _despike(_resample(raw, rate, VIDEO_FPS))
         # pad/trim to video length
         if len(grid) < n_video:
             grid = np.vstack([grid, np.full((n_video - len(grid), 3), np.nan)])

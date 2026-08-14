@@ -1,0 +1,47 @@
+836 trials; levels [(1, 10), (2, 20), (4, 40), (8, 80), (16, 150), (30, 300)]
+[40]    56s rows=3640
+[80]   117s rows=7280
+[120]   174s rows=10920
+[160]   217s rows=13840
+[200]   248s rows=16280
+[240]   265s rows=17976
+[280]   280s rows=19456
+[320]   294s rows=20936
+[360]   308s rows=22416
+[400]   340s rows=24832
+[440]   373s rows=27272
+[480]   414s rows=30792
+[520]   444s rows=33352
+[560]   459s rows=34832
+[600]   475s rows=36312
+[640]   500s rows=38272
+[680]   534s rows=40712
+
+PROCESSING CHECK: rows 41871, trials 699, baseline wrist 35.1mm
+
+== SINGLE-camera miscalibration: degradation vs INDUCED reproj px ==
+induced px      n  wrist mm  elbow mm  |pv err|   ij r_s
+       <10   1550      30.3      54.4        83     0.61
+     10-15   3040      32.4      56.6        89     0.40
+     15-20   1794      33.8      56.4        93     0.30
+     20-30   1667      35.2      59.1        96     0.29
+     30-45   2057      38.2      54.7       102     0.61
+     45-70   2013      37.5      60.4       119     0.40
+    70-120   1775      36.9      66.1       128     0.40
+      >120   2400      47.9      80.2       141     0.37
+
+== PAIR-camera miscalibration: degradation vs INDUCED reproj px ==
+induced px      n  wrist mm  elbow mm  |pv err|   ij r_s
+       <10   1216      29.9      54.5        83     0.61
+     10-15   3930      30.8      55.0        90     0.42
+     15-20   2643      31.3      55.1        94     0.49
+     20-30   2459      31.4      56.6        97     0.39
+     30-45   2768      31.2      55.0       102     0.51
+     45-70   3191      34.1      57.4       109     0.52
+    70-120   3532      38.7      64.2       120     0.48
+      >120   5137      49.8      76.9       119     0.54
+
+real observed in-task reproj for reference: median ~9px, P19 ~31px, cohort max ~93px
+
+wrote /home/imove/Documents/cup-task/paper/augment_miscal2.csv
+DONE

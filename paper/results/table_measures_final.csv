@@ -1,0 +1,12 @@
+measure,rs_omc_seg,rs_mmc_seg,delta,r_mmc_seg,med_abs_err_mmc_seg,n
+max_trunk_displacement,0.933,0.927,-0.005,0.91,12.242,595
+total_movement_time,0.942,0.91,-0.033,0.779,0.68,577
+time_to_peak_velocity,0.938,0.897,-0.04,0.683,0.063,577
+time_to_first_peak_velocity,0.902,0.89,-0.012,0.87,0.063,577
+max_elbow_angle,0.862,0.866,0.004,0.891,10.462,595
+peak_velocity,0.858,0.814,-0.043,0.824,49.043,597
+max_shoulder_abduction,0.795,0.799,0.003,0.811,5.096,595
+peak_elbow_angular_velocity,0.783,0.708,-0.075,0.643,12.643,595
+max_shoulder_flexion,0.634,0.626,-0.008,0.678,4.323,595
+interjoint_coordination,0.449,0.444,-0.005,0.256,0.013,575
+number_of_movement_units,0.426,0.433,0.007,0.55,1.0,577

@@ -15,7 +15,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.lines import Line2D
-from scipy.stats import spearmanr
+from scipy.stats import pearsonr, spearmanr
 
 # paper/scripts/ -> REPO is two up, PAPER (output folder) one up.
 REPO = Path(__file__).resolve().parents[2]
@@ -79,9 +79,11 @@ def main():
             sl, ic = np.polyfit(a, m, 1)
             ax.plot(xs, sl * xs + ic, "k--", lw=1.1, zorder=1)
         ax.set_xlim(lo - pad, hi + pad); ax.set_ylim(lo - pad, hi + pad)
-        rs = spearmanr(a, m).correlation
+        # CORR=pearson switches the annotation to Pearson r (linear); default stays Spearman.
+        pear = os.environ.get("CORR", "spearman").lower().startswith("p")
+        rs = (pearsonr(a, m)[0] if pear else spearmanr(a, m).correlation)
         ax.set_title(f"{label} [{unit}]", fontsize=10, pad=3)
-        ax.text(0.95, 0.06, f"$r_s$ = {rs:.2f}", transform=ax.transAxes,
+        ax.text(0.95, 0.06, f"${'r' if pear else 'r_s'}$ = {rs:.2f}", transform=ax.transAxes,
                 fontsize=9.5, va="bottom", ha="right")
         ax.set_xlabel("OMC", fontsize=8.5)
         ax.set_ylabel("MMC", fontsize=8.5)
@@ -108,11 +110,12 @@ def main():
              "omitted (no AutoMQ ground-truth column); percent-timing variants omitted as in Unger.",
              ha="center", fontsize=7.5, color="0.35")
 
-    fig.suptitle("Fast MMC (BA + SmoothNet) vs OMC — Murphy movement-quality measures",
+    fig.suptitle(os.environ.get("FIG_TITLE",
+                 "Fast MMC (BA + SmoothNet) vs OMC — Murphy movement-quality measures"),
                  fontsize=13, y=0.99)
     # NB: no tight_layout -- it would override the gridspec hspace and re-collide the row labels.
     fig.subplots_adjust(left=0.05, right=0.99, top=0.93, bottom=0.15)
-    out = PAPER / "fig4_mmc_vs_omc.png"
+    out = Path(os.environ.get("FIG_OUT", PAPER / "fig4_mmc_vs_omc.png"))
     out.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out, dpi=200)
     print(f"wrote {out}", flush=True)

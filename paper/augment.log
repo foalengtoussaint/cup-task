@@ -1,0 +1,56 @@
+842 trials; stride 4; rot sweep [0.5, 1.0, 2.0, 4.0, 8.0]deg x3 axes
+[40/842]    11s  cam_rows=1040 mis_rows=3000  wrist_err 2cam~27.9 full~21.6mm
+[80/842]    24s  cam_rows=2080 mis_rows=6000  wrist_err 2cam~28.7 full~22.3mm
+[120/842]    36s  cam_rows=3120 mis_rows=9000  wrist_err 2cam~30.6 full~23.6mm
+[160/842]    48s  cam_rows=4160 mis_rows=12000  wrist_err 2cam~31.7 full~24.5mm
+[200/842]    57s  cam_rows=4765 mis_rows=14565  wrist_err 2cam~32.5 full~24.6mm
+[240/842]    64s  cam_rows=5205 mis_rows=16965  wrist_err 2cam~33.2 full~24.6mm
+[280/842]    68s  cam_rows=5400 mis_rows=18840  wrist_err 2cam~33.7 full~24.6mm
+[320/842]    72s  cam_rows=5560 mis_rows=20640  wrist_err 2cam~33.9 full~24.6mm
+[360/842]    76s  cam_rows=5720 mis_rows=22440  wrist_err 2cam~34.5 full~24.6mm
+[400/842]    80s  cam_rows=5880 mis_rows=24240  wrist_err 2cam~34.9 full~24.6mm
+[440/842]    86s  cam_rows=6271 mis_rows=26535  wrist_err 2cam~35.3 full~24.6mm
+[480/842]    94s  cam_rows=6711 mis_rows=28935  wrist_err 2cam~36.0 full~24.6mm
+[520/842]   102s  cam_rows=7511 mis_rows=31695  wrist_err 2cam~37.0 full~25.3mm
+/home/imove/Documents/cup-task/paper/scripts/augment.py:50: RuntimeWarning: divide by zero encountered in divide
+  X = h[:, :3] / h[:, 3:4]
+[560/842]   112s  cam_rows=8551 mis_rows=34695  wrist_err 2cam~37.5 full~26.6mm
+[600/842]   119s  cam_rows=9283 mis_rows=37275  wrist_err 2cam~37.6 full~27.8mm
+[640/842]   123s  cam_rows=9443 mis_rows=39075  wrist_err 2cam~37.8 full~27.8mm
+[680/842]   127s  cam_rows=9603 mis_rows=40875  wrist_err 2cam~38.0 full~27.8mm
+[720/842]   131s  cam_rows=9763 mis_rows=42675  wrist_err 2cam~38.3 full~27.8mm
+[760/842]   135s  cam_rows=9923 mis_rows=44475  wrist_err 2cam~38.4 full~27.8mm
+[800/842]   143s  cam_rows=10342 mis_rows=46830  wrist_err 2cam~38.8 full~27.8mm
+[840/842]   150s  cam_rows=10782 mis_rows=49230  wrist_err 2cam~38.7 full~27.8mm
+
+PROCESSING CHECK: trials 842, camdrop rows 10804, miscal rows 49350, nonfinite camdrop_wr 26
+
+== CAMERA DROP: median wrist / elbow / shoulder error (mm) vs #cameras kept ==
+part                 k=2               k=3               k=4               k=5
+P07           29/ 52/ 43        24/ 51/ 39        23/ 50/ 38        22/ 50/ 38
+P08           35/ 56/ 45        30/ 52/ 40        28/ 53/ 38        28/ 53/ 39
+P10           54/ 74/ 47        48/ 67/ 38        35/ 61/ 33                  
+P12           41/ 56/ 45        33/ 53/ 43                                    
+P13           41/ 66/ 46        37/ 64/ 40                                    
+P14           41/ 82/ 54        39/ 81/ 53        37/ 80/ 54                  
+P15           41/ 56/ 57        36/ 53/ 55        35/ 53/ 54        34/ 52/ 52
+P17           62/ 55/ 56        47/ 50/ 55                                    
+P19           54/ 62/ 42        42/ 43/ 38                                    
+P251          50/ 78/ 56        47/ 77/ 54        47/ 76/ 56                  
+P252          32/ 59/ 39        29/ 58/ 36        31/ 55/ 35                  
+pooled median wrist err by k: {2: 38.7, 3: 32.8, 4: 29.6, 5: 27.8}
+
+== MISCALIBRATION: wrist error (mm) vs INDUCED reprojection (px), pooled ==
+baseline (unperturbed full set) wrist err = 34.0 mm
+induced px       n  wrist mm  elbow mm shoulder mm
+       <10   12381      30.5      53.6        40.0
+     10-15   12657      33.7      55.1        45.1
+     15-20    6074      33.7      54.8        45.0
+     20-30    7088      35.3      54.3        40.8
+     30-45    5789      37.4      54.1        41.2
+     45-70    3373      37.4      54.4        40.1
+       >70    1913      54.3      63.4        42.5
+
+wrote /home/imove/Documents/cup-task/paper/augment_camdrop.csv
+wrote /home/imove/Documents/cup-task/paper/augment_miscal.csv
+DONE

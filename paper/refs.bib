@@ -1,58 +1,178 @@
+% ---------------------------------------------------------------------------
+% Every entry below was checked against a publisher record on 2026-08-24.
+% Provenance for each is in the VERIFICATION block at the end of this file.
+% Do NOT hand-edit a field without re-checking it there.
+% ---------------------------------------------------------------------------
+
 @article{unger2024,
   title   = {Differentiable Biomechanics for Markerless Motion Capture in
-             Upper Limb Stroke Rehabilitation: A Comparison with Optical
+             Upper Limb Stroke Rehabilitation: A Comparison With Optical
              Motion Capture},
   author  = {Unger, Tim and Sal Moslehian, Arash and Peiffer, J. D. and
              Ullrich, Johann and Gassert, Roger and Lambercy, Olivier and
              Cotton, R. James and Awai Easthope, Chris},
-  journal = {arXiv preprint arXiv:2411.14992},
-  year    = {2024},
-  url     = {https://arxiv.org/abs/2411.14992}
+  journal = {IEEE Transactions on Medical Robotics and Bionics},
+  volume  = {8},
+  number  = {1},
+  pages   = {90--97},
+  year    = {2026},
+  doi     = {10.1109/TMRB.2025.3605962},
+  note    = {Preprint: arXiv:2411.14992}
+}
+
+@article{altmurphy2018,
+  title   = {Kinematic Analysis Using {3D} Motion Capture of Drinking Task in
+             People With and Without Upper-extremity Impairments},
+  author  = {Alt Murphy, Margit and Murphy, Steve and Persson, Hanna C. and
+             Bergstr{\"o}m, Ulla-Britt and Sunnerhagen, Katharina Stibrant},
+  journal = {Journal of Visualized Experiments},
+  number  = {133},
+  pages   = {e57228},
+  year    = {2018},
+  doi     = {10.3791/57228}
 }
 
 @article{murphy2011,
-  title   = {Kinematic variables quantifying upper-extremity performance after
-             stroke during reaching and drinking from a glass},
-  author  = {Murphy, Margit Alt and H{\"a}ger-Ross, Charlotte and
-             Murphy, Michael A. and Persson, Hanna C. and
+  title   = {Kinematic Variables Quantifying Upper-Extremity Performance After
+             Stroke During Reaching and Drinking From a Glass},
+  author  = {Alt Murphy, Margit and Will{\'e}n, Carin and
              Sunnerhagen, Katharina S.},
   journal = {Neurorehabilitation and Neural Repair},
   volume  = {25},
   number  = {1},
   pages   = {71--80},
-  year    = {2011}
+  year    = {2011},
+  doi     = {10.1177/1545968310370748}
 }
-
-% TODO: verify every field above against the publisher record before
-% submission -- these were entered by hand.
-%
-% Still to add:
-%   - the pose estimator you actually use
-%   - triangulation / bundle adjustment reference
-%   - SmoothNet or whichever smoother
-%   - OpenSim / MuJoCo, Rajagopal model
-%   - prior real-time markerless work
 
 @book{hartley2004,
   title     = {Multiple View Geometry in Computer Vision},
   author    = {Hartley, Richard and Zisserman, Andrew},
   edition   = {2nd},
   publisher = {Cambridge University Press},
-  year      = {2004}
+  year      = {2004},
+  isbn      = {9780521540513}
 }
 
-% ---------------------------------------------------------------------------
-% TODO -- CITATIONS STILL MISSING. Every component named in Methods needs one:
-%   - YOLO / yolo26 pose + segmentation (Sec. pipeline, stages 1 and 2)
-%   - UETrack-B, the transformer visual-object tracker (stage 2)
-%   - SmoothNet, the temporal smoother (stage 4)
-%   - Alt Murphy planar angle definitions, Table 2 (PMC5933268) -- cited in
-%     Sec. measures, currently leaning on murphy2011 as a placeholder
-%   - Kalman/RTS smoother for the cup gap fill (Sec. phases), if a reference
-%     is wanted for a standard method
-%   - prior real-time / low-latency markerless work (Sec. related, Sec. latency)
-%   - OpenSim + Rajagopal 2016 and MuJoCo/Hamner, to describe what unger2024
-%     does that we do not
-% Verify EVERY field against the publisher record -- the three entries above
-% were entered by hand and none has been checked.
-% ---------------------------------------------------------------------------
+@article{yolo26,
+  title   = {Ultralytics {YOLO26}: Unified Real-Time End-to-End Vision Models},
+  author  = {Jocher, Glenn and Qiu, Jing and Liu, Mengyu and Lyu, Shuai and
+             Akyon, Fatih Cagatay and Kalfaoglu, Muhammet Esat},
+  journal = {arXiv preprint arXiv:2606.03748},
+  year    = {2026},
+  url     = {https://arxiv.org/abs/2606.03748}
+}
+
+@inproceedings{uetrack,
+  title     = {{UETrack}: A Unified and Efficient Framework for Single Object
+               Tracking},
+  author    = {Kang, Ben and Zhao, Jie and Chen, Xin and Geng, Wanting and
+               Zhang, Bin and Zhang, Lu and Wang, Dong and Lu, Huchuan},
+  booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and
+               Pattern Recognition (CVPR)},
+  year      = {2026}
+}
+
+@inproceedings{smoothnet,
+  title     = {{SmoothNet}: A Plug-and-Play Network for Refining Human Poses
+               in Videos},
+  author    = {Zeng, Ailing and Yang, Lei and Ju, Xuan and Li, Jiefeng and
+               Wang, Jianyi and Xu, Qiang},
+  booktitle = {European Conference on Computer Vision (ECCV)},
+  year      = {2022},
+  note      = {arXiv:2112.13715}
+}
+
+@article{lam2023,
+  title   = {A systematic review of the applications of markerless motion
+             capture ({MMC}) technology for clinical measurement in
+             rehabilitation},
+  author  = {Lam, Winnie W. T. and Tang, Yuk Ming and Fong, Kenneth N. K.},
+  journal = {Journal of NeuroEngineering and Rehabilitation},
+  volume  = {20},
+  number  = {1},
+  pages   = {57},
+  year    = {2023},
+  doi     = {10.1186/s12984-023-01186-9}
+}
+
+@article{rajagopal2016,
+  title   = {Full-Body Musculoskeletal Model for Muscle-Driven Simulation of
+             Human Gait},
+  author  = {Rajagopal, Apoorva and Dembia, Christopher L. and
+             DeMers, Matthew S. and Delp, Denny D. and Hicks, Jennifer L. and
+             Delp, Scott L.},
+  journal = {IEEE Transactions on Biomedical Engineering},
+  volume  = {63},
+  number  = {10},
+  pages   = {2068--2079},
+  year    = {2016},
+  doi     = {10.1109/TBME.2016.2586891}
+}
+
+@inproceedings{todorov2012,
+  title     = {{MuJoCo}: A physics engine for model-based control},
+  author    = {Todorov, Emanuel and Erez, Tom and Tassa, Yuval},
+  booktitle = {2012 IEEE/RSJ International Conference on Intelligent Robots
+               and Systems (IROS)},
+  pages     = {5026--5033},
+  year      = {2012},
+  doi       = {10.1109/IROS.2012.6386109}
+}
+
+% ===========================================================================
+% VERIFICATION, 2026-08-24.  Ten entries. EVERY ONE is either backed by a PDF
+% in paper/refs/ that was opened and read, or by an authoritative machine
+% record. Nothing here is from memory.
+%
+% DOWNLOADED -- fields checked against the PDF's own title page:
+%   unger2024     refs/unger2024_arxiv2411.14992.pdf   (arXiv v1 -- see WARNING)
+%   yolo26        refs/yolo26_arxiv2606.03748.pdf
+%   smoothnet     refs/smoothnet_arxiv2112.13715.pdf
+%   uetrack       refs/uetrack_cvpr2026.pdf
+%   lam2023       refs/lam2023_jner.pdf         (title page: "(2023) 20:57")
+%   rajagopal2016 refs/rajagopal2016_tbme.pdf   (PMC author manuscript; its
+%                 header gives "IEEE Trans Biomed Eng. 2016 October;
+%                 63(10): 2068-2079. doi:10.1109/TBME.2016.2586891")
+%   todorov2012   refs/mujoco_iros2012.pdf
+%
+% RECORD-VERIFIED, no PDF obtainable -- fields from an authoritative API:
+%   murphy2011     Crossref 10.1177/1545968310370748 (paywalled, no OA copy)
+%   altmurphy2018  Crossref 10.3791/57228 + PMC5933268 landing page (JoVE,
+%                  Unpaywall says OA but jove.com is unreachable here)
+%   hartley2004    Cambridge University Press catalogue (a book, nothing to fetch)
+%
+% TWO ERRORS THIS PASS CAUGHT:
+%   1. murphy2011 had FIVE authors and the right list is THREE. It read
+%      "Murphy, Margit Alt and Haeger-Ross, Charlotte and Murphy, Michael A.
+%      and Persson, Hanna C. and Sunnerhagen, Katharina S."; Crossref gives
+%      Alt Murphy, Willen, Sunnerhagen. The bad list is the one printed in
+%      unger2024's own bibliography as their [1], so it was inherited, not
+%      invented here -- but it was wrong in both places. THE LESSON: copying a
+%      reference out of a paper that cites it is not verification.
+%   2. unger2024 IS NO LONGER A PREPRINT. Published as IEEE Trans. Medical
+%      Robotics and Bionics 8(1):90-97, Feb 2026, doi 10.1109/TMRB.2025.3605962.
+%      It was cited here as "arXiv preprint arXiv:2411.14992".
+%
+% WARNING attached to error 2, STILL OPEN: every number quoted from unger2024
+% in this paper (their Table III, the 12-day/1160-trial figure, the ~30 CPU-hour
+% IK figure, and both Sec. III-D2 / Limitations quotations) was read off the
+% arXiv v1 PDF, which is what is in refs/. The published version is behind IEEE
+% and could not be fetched. RE-CHECK those against 10.1109/TMRB.2025.3605962
+% before submission.
+%
+% WHERE THE HARD ONES CAME FROM, so nobody repeats the dead ends: publisher
+% hosts (Springer/BMC, JoVE, IEEE, PMC's own PDF path) are unreachable from
+% this machine, and homes.cs.washington.edu now 301s to a dead page. What DID
+% work: arxiv.org and openaccess.thecvf.com directly; Europe PMC's render
+% endpoint (europepmc.org/articles/<PMCID>?pdf=render) for lam2023; and
+% web.archive.org for todorov2012 and rajagopal2016, both of which are dead or
+% paywalled at their original URLs. Read-only APIs all work and are what
+% verified the rest: api.crossref.org, api.unpaywall.org, export.arxiv.org,
+% ebi.ac.uk/europepmc/webservices/rest.
+%
+% NOT NEEDED after checking: the "Alt Murphy planar angle definitions
+% (PMC5933268)" the old TODO asked for is altmurphy2018 itself -- PMC5933268
+% IS that JoVE article, and its Table 2 carries the planar definitions. Sec.
+% measures now cites altmurphy2018 and the TODO is gone.
+% ===========================================================================

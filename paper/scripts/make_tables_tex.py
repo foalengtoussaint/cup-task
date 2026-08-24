@@ -22,8 +22,8 @@ OUT = PAPER / "tables"
 
 # Row order and unit label per trajectory, matching Table I of Unger et al.
 TRAJ_ORDER = [
-    ("eev", "End-effector velocity", "mm/s"),
-    ("eav", "Elbow angular velocity", "deg/s"),
+    ("eev", "End-effector vel.", "mm/s"),
+    ("eav", "Elbow ang.\\ vel.", "deg/s"),
     ("elbow", "Elbow extension", "deg"),
     ("flex", "Shoulder flexion", "deg"),
     ("abd", "Shoulder abduction", "deg"),
@@ -46,15 +46,16 @@ def _med_iqr(s: pd.Series, dec: int) -> str:
 
 
 def table1(df: pd.DataFrame) -> str:
-    # Spans both columns: the median[IQR] cells are too wide for one IEEEtran column.
+    # Single IEEEtran column: fits at \scriptsize with tight column separation.
     L = [
-        r"\begin{table*}[t]",
-        r"\caption{Medians and [IQRs] for RMSE, $r$, bias, and time lag of kinematic",
-        r"trajectories, calculated across all participants and differentiating between",
-        r"the affected and unaffected arms.}",
+        r"\begin{table}[t]",
+        r"\caption{Medians and [IQRs] across trials for the six kinematic trajectories, by arm.",
+        r"Bias is markerless minus optical and is removed before RMSE; the Bias IQR row is the",
+        r"mean across participants of each participant's own IQR of it.}",
         r"\label{tab:trajectories}",
         r"\centering",
-        r"\footnotesize",
+        r"\scriptsize",
+        r"\setlength{\tabcolsep}{3pt}",
         r"\begin{tabular}{llcc}",
         r"\toprule",
         r"Kinematic & Value & Unaffected arm & Affected arm \\",
@@ -69,16 +70,22 @@ def table1(df: pd.DataFrame) -> str:
             ("$r$", "r", 2),
             (f"RMSE ({unit})", "rmse", 2),
             (f"Bias ({unit})", "bias", 2),
-            ("Time lag (s)", "lag_s", 2),
-        ]
+        ]   # the lag is one value per TRIAL, identical across trajectories -- stated once in prose
         for j, (rowlabel, col, dec) in enumerate(rows):
             first = rowlabel if j == 0 else rowlabel
             cells = [_med_iqr(sub[sub.arm == a][col], dec) for a in ARMS]
             name = label if j == 0 else ""
             L.append(f"{name} & {first} & {cells[0]} & {cells[1]} \\\\")
+        # former Table II, folded in as a fifth row: the within-participant variability of the
+        # bias above. One table instead of two, and it sits next to the bias it qualifies.
+        cells = []
+        for a in ARMS:
+            per_part = sub[sub.arm == a].groupby("part")["bias"].apply(_iqr)
+            cells.append(f"{per_part.mean():.2f}" if len(per_part) else "--")
+        L.append(f" & Bias IQR ({unit}) & {cells[0]} & {cells[1]} \\\\")
         if i != len(TRAJ_ORDER) - 1:
             L.append(r"\midrule")
-    L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}", ""]
+    L += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
     return "\n".join(L)
 
 
@@ -108,24 +115,51 @@ def table2(df: pd.DataFrame) -> str:
     return "\n".join(L)
 
 
+# Shortened row labels for the seven-column version of this table; the full names are in the
+# text. Only the rows that set the table width need one.
+_SHORT = {
+    "Number of movement units [n]": "Movement units [n]",
+    "Shoulder flexion, drinking [deg]": "Shoulder flexion, drink [deg]",
+}
+
+
 def table3(df: pd.DataFrame) -> str:
     L = [
         r"\begin{table}[t]",
-        r"\caption{Movement-quality measures: Spearman correlation between MMC and OMC",
-        r"across all trials ($r_s$) and on per-participant, per-arm averaged trials ($r_{av}$).}",
+        r"\caption{Movement-quality measures, MMC versus OMC: $r_s$ over single trials and",
+        r"$r_{av}$ over per-participant, per-arm averages, with the phase windows taken from the",
+        r"optical and from the markerless recording in turn, and the markerless condition",
+        r"repeated at $30$\,Hz. $n$ is the $60$\,Hz pair count.}",
         r"\label{tab:measures}",
         r"\centering",
-        r"\footnotesize",
-        r"\begin{tabular}{lccc}",
+        # six columns do not fit an IEEE column at \footnotesize (overfull 32.5pt); the smaller
+        # font plus tightened intercolumn padding brings it inside without \resizebox, which would
+        # make this table's type a different size from every other table's.
+        r"\scriptsize",
+        r"\setlength{\tabcolsep}{1.5pt}",
+        r"\begin{tabular}{lccccccc}",
         r"\toprule",
-        r"Movement quality measure & $r_s$ & $r_{av}$ & $n$ \\",
+        r" & \multicolumn{2}{c}{Optical win.} & \multicolumn{2}{c}{Markerless win.} & \multicolumn{2}{c}{Markerless, 30\,Hz} & \\",
+        r"\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}",
+        r"Measure & $r_s$ & $r_{av}$ & $r_s$ & $r_{av}$ & $r_s$ & $r_{av}$ & $n$ \\",
         r"\midrule",
     ]
+    # the 30 Hz column is the same end-to-end condition at half the capture rate; it is the
+    # configuration whose front end fits a live budget, so it belongs beside the 60 Hz result
+    f30 = PAPER / "table3_fps30.csv"
+    if f30.exists():
+        _d30 = pd.read_csv(f30).set_index("measure")
+        hz30 = _d30["r_s_30"].to_dict()
+        hz30av = _d30["r_av_30"].to_dict()
+    else:
+        hz30 = hz30av = {}
     for _, r in df.iterrows():
-        measure = (
-            str(r["measure"]).replace("[", r"[").replace("_", r"\_")
-        )
-        L.append(f"{measure} & {r['r_s']:.2f} & {r['r_av']:.2f} & {int(r['n'])} \\\\")
+        measure = _SHORT.get(str(r["measure"]), str(r["measure"])).replace("_", r"\_")
+        v30, v30a = hz30.get(str(r["measure"])), hz30av.get(str(r["measure"]))
+        c30 = f"{v30:.2f}" if v30 is not None else "---"
+        c30a = f"{v30a:.2f}" if v30a is not None else "---"
+        L.append(f"{measure} & {r['r_s']:.2f} & {r['r_av']:.2f} & "
+                 f"{r['r_s_mmcwin']:.2f} & {r['r_av_mmcwin']:.2f} & {c30} & {c30a} & {int(r['n'])} \\\\")
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
     return "\n".join(L)
 
@@ -134,7 +168,9 @@ def main() -> None:
     OUT.mkdir(exist_ok=True)
 
     traj_csv = PAPER / "trajectory_agreement.csv"
-    m_csv = PAPER / "table3_measures.csv"
+    # M3_CSV selects the measures table. Default is the landmark-matched one, which is what Fig 4
+    # plots; table3_measures.csv (no suffix) is the uncorrected version.
+    m_csv = PAPER / __import__("os").environ.get("M3_CSV", "table3_measures_anat12.csv")
 
     traj = pd.read_csv(traj_csv)
     meas = pd.read_csv(m_csv)
@@ -156,7 +192,6 @@ def main() -> None:
 
     for name, text in [
         ("table1_trajectories.tex", table1(traj)),
-        ("table2_bias_iqr.tex", table2(traj)),
         ("table3_measures.tex", table3(meas)),
     ]:
         (OUT / name).write_text(text)

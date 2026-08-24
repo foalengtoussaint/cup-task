@@ -344,10 +344,11 @@ channel's own range within the trial; boundary agreement is unchanged for
 fractions anywhere between $0.2$ and $0.45$. Boundaries are found in one forward pass,
 each taken as the first qualifying run after the previous boundary. Two
 properties distinguish this from the reference protocol~\cite{altmurphy2018}:
-the cup is followed visually rather than instrumented with markers, and every
-threshold is relative to that channel's own range within the trial, with no
-absolute velocity and no floor anywhere, so the rule is invariant to the scale of
-the reconstruction. Where no
+the cup is followed visually rather than instrumented with markers, and the
+grasp, release and drink boundaries are thresholded on a fraction of their own
+channel's range rather than on an absolute velocity. Reach onset and the settle
+are the exception, taking the hand a fixed distance from its resting and final
+positions. Where no
 usable cup track exists the segmenter declines rather than returning a boundary,
 which is reported in Sec.~\ref{sec:results-seg}.
 
@@ -603,8 +604,10 @@ more than $0.04$: number of movement units loses $0.036$, time to peak velocity
 $0.033$ and peak elbow angular velocity $0.013$. Interjoint coordination moves
 most of all and in the helpful direction, improving by $0.088$ to $0.57$ --- not
 what a window explanation predicts, and further evidence that the statistic is
-dominated by noise rather than by the quantity it names. Elbow extension and trunk displacement are unchanged by construction,
-being reduced over the whole trial rather than over a phase.
+dominated by noise rather than by the quantity it names. Elbow extension is unchanged by construction, being
+reduced over the whole movement rather than over a phase; trunk displacement is
+reduced over the same span and is likewise unchanged here, both boundaries of it
+being shared.
 
 The pattern follows the windows rather than the boundary errors. Peak velocity,
 peak elbow angular velocity, both time-to-peak measures, movement units and

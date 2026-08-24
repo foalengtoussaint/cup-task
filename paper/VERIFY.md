@@ -1353,3 +1353,354 @@ interjoint's weakness is a property of its statistic and its sample count, not o
 earlier note in this file implied. And `time_to_peak_velocity` is measured from **frame 0**, not from
 reach onset (`score.py:198`), so the +200 ms onset offset does not shift it; only which peak falls
 inside the reaching window can.
+
+### Swept three rule families for reach onset and settle (2026-08-24)
+
+Cached channels only, 88 trials over 11 participants, shipped HOLD = 0.15 s. Columns: MMC-vs-OMC
+median |diff| (Table IV's quantity, reference-free), signed offset against `unger2024`'s boundaries,
+and wrist speed at the boundary as % of trial peak — the defect being chased.
+
+**Reach onset**
+
+| rule | MMCvOMC | vs amq | spd@bd |
+|---|---|---|---|
+| SHIPPED (pos-abs 30 mm) | 17 ms | +183 ms | 47% |
+| pos-abs 10 mm | **17 ms** | +100 ms | 23.5% |
+| pos-frac 0.02 | 33 ms | +67 ms | 17.2% |
+| speed 0.02 (AutoMQ's value) | **67 ms** | −17 ms | 2.8% |
+| **speed 0.10** | **17 ms** | +33 ms | **11.7%** |
+| proj 0.02 / 0.05 / 0.10 | 50 / 33 / 33 ms | | |
+
+**Settle**
+
+| rule | MMCvOMC | vs amq | spd@bd |
+|---|---|---|---|
+| SHIPPED (pos-abs 40 mm) | 17 ms | −350 ms | 52% |
+| pos-abs 15 mm | **17 ms** | −217 ms | 26.3% |
+| pos-frac 0.02 | 33 ms | −142 ms | 10.3% |
+| speed 0.10 | 33 ms | −117 ms | 8.3% |
+| proj 0.05 / 0.10 / 0.20 | 67 / 33 / 33 ms | | |
+
+**Projected speed (wrist velocity along the wrist->cup direction) is the WORST family** on both
+boundaries — 33–50 ms onset, 33–67 ms settle, plus undefined cases. Structural reason: projecting
+onto the cup direction imports the cup track's noise into a channel that was wrist-only. Do not
+retry it.
+
+**The positional rule is not broken, it is loosely tuned.** MMC-vs-OMC is flat at 17 ms across
+10–50 mm, so tightening costs nothing and buys most of the defect back: onset 30 -> 10 mm takes the
+boundary from 47% to 23.5% of peak and halves the reference offset; settle 40 -> 15 mm from 52% to
+26.3%. **This is the cheap fix and it needs no new rule.**
+
+**[!] RETRACTED from the earlier smoke test: "f=5% keeps MMC-vs-OMC at 17 ms".** That run used
+AutoMQ's 0.30 s hold; this one used the shipped 0.15 s, and on the speed family the result flips
+(onset f=5%: 17 ms at 0.30 s, 33 ms at 0.15 s). **HOLD is a second axis, not a constant**, and the two
+runs were compared across an uncontrolled factor. Any decision needs the (threshold x hold) grid.
+
+Best single cell at the shipped hold is onset `speed 0.10` — 17 ms AND 11.7%, beating every
+positional variant on both. Settle has no cell that is simultaneously 17 ms and low-speed; the
+longer hold is where that looked achievable.
+
+**[!] And the sweep confirmed a false claim in §III-C**, which this session had made *worse*. The text
+said "every threshold is relative to that channel's own range within the trial, with no absolute
+velocity and no floor anywhere, so the rule is invariant to the scale of the reconstruction".
+`seg_sequential.py:35,37` sets `LEAVE_REST = 30.0` **mm** and `ARRIVE_REST = 40.0` **mm** — absolute
+distances, so neither the range-relative claim nor scale invariance holds for reach onset or settle.
+§III-C now says the grasp, release and drink boundaries are range-relative and names onset/settle as
+the exception. Scale invariance is no longer claimed.
+
+Worth noting what that leaves: the two rules are nearly **complementary**, not one relative and one
+absolute. Theirs is relative at onset/settle (2% of peak) and absolute at grasp/release (50 mm/s);
+ours is the reverse. **The clean distinction is the visual cup, not the threshold form** — which is
+where the argument was already placed. Making onset/settle range- or speed-relative would let the
+uniform claim be reclaimed honestly, and is an argument in favour of the re-score rather than against.
+
+### Reach onset and settle: full sweep, and what it settles (2026-08-24)
+
+Four rule families for the two weak boundaries, on cached channels. Metrics: |diff| and residual IQR
+against `unger2024`'s boundaries (absolute comparability, and what survives a constant offset),
+MMC-vs-OMC (Table III's quantity, reference-free), speed at the boundary as % of trial peak.
+
+**REACH ONSET -- `speed 0.10` is adopted-worthy. Full cohort, Table III's own 750 trials:**
+
+| | median | p90 | >0.25 s | spd@bd | \|diff\| vs amq | resid IQR |
+|---|---|---|---|---|---|---|
+| SHIPPED (pos-abs 30 mm) | 17 ms | 67 ms | 0.8% | **47%** | **200 ms** | 50 ms |
+| **speed 0.10** | 17 ms | 67 ms | 1.3% | **11.7%** | **33 ms** | 33 ms |
+
+Table III's printed row would not move. What improves is that the boundary marks movement onset
+instead of firing mid-reach, and agreement with the protocol goes 6x. Costs: 1 trial of 750 does not
+fire, and the >0.25 s tail goes 0.8 -> 1.3%. Pushing to `speed 0.03` gets |diff| to 17 ms and IQR to
+17 ms but costs MMC-vs-OMC (50 ms), so 0.10 is the knee.
+
+**SETTLE -- keep the shipped rule. The trade is real and the current choice is the right side of it.**
+498 observed trials (censored excluded -- and excluding them makes the shipped rule look *worse*,
+|diff| 433 -> 450 ms, so it is not being flattered by them):
+
+| | \|diff\| | resid IQR | MMC-vs-OMC | no-fire |
+|---|---|---|---|---|
+| SHIPPED | 450 ms | 250 ms | **17 ms** | -- |
+| rel-pos 0.03 | 283 ms | 200 ms | 33 ms | 0% |
+| proj-fix 0.02 | 67 ms | 100 ms | 100 ms | 4% |
+| speed 0.03 | **50 ms** | **83 ms** | 83 ms | 6% |
+
+Nine times better agreement with the protocol costs five times worse agreement between systems. **A
+constant offset from the reference cancels in every correlation; disagreement between the two
+systems' boundaries does not** -- it feeds straight into Table II's measures, total movement time
+worst. So the shipped rule optimises what the paper reports. This supersedes the earlier framing of
+the settle as a defect: it is a deliberate trade, now with numbers under it. The disclosure that
+absolute values are not on the protocol's scale is the correct one and is already in §V-E.
+
+**Three of my own claims retracted in the course of this:**
+1. ~~"HOLD is a second axis"~~ -- swept explicitly, 0.15 s and 0.30 s are near-identical on every row.
+   The two smoke tests differed by trial subset (44 vs 88) and NaN handling in the sustained test.
+2. ~~"projected speed is the worst family"~~ -- true for the PER-FRAME direction I first coded, which
+   imports cup-track noise every frame. With the direction fixed once at rest (the intended design)
+   onset improves 50 -> 33 ms, and `proj-fix 0.02` hits the settle dead-on (signed +0 ms). Still not
+   competitive on MMC-vs-OMC, but for a different reason than I first gave.
+3. ~~"`speed 0.1` halves MMC-vs-OMC (33 -> 17 ms)"~~ -- subset artefact. On the 631 trials with an amq
+   row the shipped rule reads 33 ms; on all 750 it reads 17 ms, which is what Table III prints
+   (p90 67 ms both, so it is a median on a frame boundary). `speed 0.10` MATCHES, it does not beat.
+
+**`rel-pos` is the scale-free form of the shipped rule and performs identically** (onset `rel-pos
+0.02` = `pos-abs 10 mm` at 17 ms / +100 ms), since 2% of a ~500 mm reach is 10 mm. Adopting it would
+let §III-C's uniform range-relative claim be made honestly instead of carrying the exception now
+written in. Free, but it does not fix the mid-motion firing -- `speed 0.10` does.
+
+**Nothing is changed in the pipeline yet.** All of the above is measurement on cached channels;
+adopting either rule is a full re-score of every table, both figures and the 30 Hz run.
+
+### WHY no velocity threshold works at the settle (2026-08-24) — diagnosed, not asserted
+
+Measured three candidate mechanisms on 585--604 observed trials rather than reasoning about them.
+MMC wrist noise floor confirmed at 13.4 mm/s.
+
+| | onset (f=0.10) | settle (f=0.05) |
+|---|---|---|
+| threshold value | 66 mm/s | 33 mm/s |
+| H2 threshold / noise floor | 5.3x | 2.6x |
+| H1 \|dv/dt\| at the crossing | 1453 mm/s^2 | **601 mm/s^2** |
+| H3 threshold crossings in the search window | 2 | 3 |
+| observed mean \|MMC−OMC\| | 36 ms | 95 ms |
+
+**Two mechanisms compound, and together they close the arithmetic.**
+
+**H1, conditioning, sets the floor.** A crossing converts a speed disagreement into a frame
+disagreement by dividing by the slope. The slope ratio is 1453/601 = **2.42x**, so onset's 36 ms mean
+should become ~87 ms at the settle; measured on trials with a single clean crossing it is **78 ms**,
+within 12%. The naive `dv/slope` estimate (15 / 21 ms) badly undershoots both in absolute terms, so
+use the RATIO, not the absolute prediction.
+
+**H3, non-monotonic tails, add the spread.** **71% of trials cross the threshold more than once**
+after the return peak, and disagreement scales with the count: mean 78 ms at 1 crossing, 161 ms at
+5+, with the >4-frame rate going 37.9% -> 58.7%. Distribution is heavy-tailed overall — median 67 ms,
+p90 200 ms, p99 469 ms, only 23% inside one frame.
+
+**H2 contributes but is not decisive** — the settle threshold sits 2.6x above the markerless noise
+floor against 5.3x at onset, so there is less headroom, but that alone would not produce the gap.
+
+**The physical cause of both is the same and it is not a rule defect: after setting the cup down the
+hand does not stop.** It drifts, adjusts and comes to rest in stages, so "end of movement" has no
+well-defined instant in the velocity signal — 71% of the time there genuinely is not one crossing to
+find. This is a property of the task, not of the estimator.
+
+**Which retroactively justifies the shipped rule.** A positional criterion never reads the velocity
+profile's shape; it asks only whether the hand is near where it ends up, which is monotone and
+immune to the dithering. So position at the settle and velocity at the onset is not an inconsistency
+to be tidied up — it is each boundary using the signal that is well-conditioned there. **Do not
+"unify" the two rules on aesthetic grounds.**
+
+### The settle's real constraint: "near rest" and "well-conditioned" are the same trade-off (2026-08-24)
+
+Refines the entry above, which attributed the settle's noise to a rise/fall kinematic asymmetry. That
+was measured at DIFFERENT thresholds (66 mm/s onset vs 33 mm/s settle), so it confounded edge with
+speed level. Controlled by measuring |dv/dt| at the SAME absolute speed on both edges, 603 trials:
+
+| speed level | rising (reach) | falling (return) | ratio |
+|---|---|---|---|
+| 400 mm/s | 1588 mm/s^2 | 1630 mm/s^2 | **0.97x** |
+| 200 mm/s | 1905 | 1712 | 1.11x |
+| 100 mm/s | 1617 | 1376 | 1.17x |
+| 50 mm/s | 1264 | 872 | 1.45x |
+| 25 mm/s | 1015 | 485 | **2.09x** |
+
+**At high speed the two edges are identical.** The asymmetry is real but confined below ~100 mm/s.
+The dominant effect is that **the slope collapses near zero speed on BOTH edges** — 1600--1900 mm/s^2
+at 200--400 mm/s falling to 485--1015 at 25 mm/s — so any threshold near zero is ill-conditioned
+whichever edge it is on.
+
+What separates the two boundaries is the QUESTION, not the kinematics:
+- onset asks "has motion started", and may answer once motion is underway — threshold at 66 mm/s,
+  slope ~1450, well conditioned.
+- settle asks "has motion stopped", which FORCES the threshold into the collapsed-slope region —
+  33 mm/s, slope ~600.
+
+Cross-check, and it holds: raising the settle threshold to f=0.10 (~66 mm/s, falling slope ~1100)
+improved cross-system agreement to mean 73 ms from 129 ms at f=0.03, at the price of firing at 8.6%
+of peak — far from rest. That is the same compromise the shipped positional rule makes, reached by
+another route. Both the positional and velocity families obey it because the frame error is
+(inter-system signal disagreement) / (derivative at threshold) and the denominator is what vanishes.
+
+**So the 52%-of-peak firing speed of the shipped settle is not a defect; it is the price of a
+reproducible boundary,** and any rule that fires closer to true rest pays for it in frames at a rate
+set by the deceleration curve. Positional precision is NOT the limit: the two systems agree on
+`d_end` to 2.2 mm (p90 5.5) and the hand's residual jitter at rest is under 1 mm.
+
+For the record, the tightening curve (positional shell, 604 observed trials): 40 mm -> mean 41 ms,
+>4fr 11.8%, spd 55%; 15 mm -> 68 ms, 27.7%, 26%; 7 mm -> 103 ms, 40.3%, 11%; 5 mm -> 133 ms, 48.8%,
+8.2%. `d_end` closes at 309 mm/s at the 40 mm shell and 43 mm/s at 5 mm, a 7.2x fall against a 3.2x
+rise in disagreement. **15 mm is the reasonable middle if a settle nearer rest is ever wanted.**
+
+### Is the settle the time-reverse of the onset? Architecturally no, practically yes (2026-08-24)
+
+Raised in review: the onset searches FORWARD for the first exit from the rest shell, and the settle
+also searches forward — for the first ENTRY into the end shell. The true time-reverse would search
+backward, taking the frame after the LAST exit. The code is asymmetric. Tested whether it matters.
+
+**It does not. First-entry and last-exit pick the SAME frame on 99% of trials at the 40 mm shell
+(97% at 15 mm).** Mirrored vs shipped, 604 observed trials, every shell: mean 40 vs 41 ms at 40 mm,
+50 vs 52 at 25, 76 vs 68 at 15 — and identical |diff|, IQR and boundary speed throughout. The
+shipped rule is already effectively the mirrored one.
+
+**Why: position is far more monotone than speed after release.**
+
+| channel after release | median crossings | >1 crossing |
+|---|---|---|
+| position, 40 mm shell | 1 | 35% |
+| position, 15 mm shell | 1 | 40% |
+| **speed, 5% of peak** | **3** | **72%** |
+
+Once the hand is inside a 40 mm shell it stays; its small residual movements cross a 5%-of-peak speed
+line repeatedly without leaving the shell.
+
+**[!] This corrects the H3 attribution above.** The multiple-crossing mechanism (disagreement rising
+78 -> 161 ms with crossing count) is a property of the **velocity** rule, NOT of the shipped
+positional one. For the shipped settle the noise is H1 conditioning alone. H3 is the reason velocity
+rules lose at the settle, not a defect of the rule in use.
+
+**A failed first attempt worth recording**, because the failure mode is easy to repeat: mirroring by
+requiring the final INSIDE run to last >= HOLD gives a **33% no-fire rate** at every shell, since any
+clip ending within 150 ms of the hand arriving fails the test. The onset's hold applies to the
+OUTSIDE run; the mirror must too. Fixed version has 0.2--2% no-fire.
+
+**Net: the three settle findings compose.** Not an algorithmic asymmetry (there effectively is none);
+not crossing ambiguity (that is the velocity channel's problem); it is conditioning, which is
+geometric. Position wins at the settle and velocity at the onset because each is the channel that
+stays well-conditioned where its own question is asked.
+
+### Does the settle's 52%-of-peak firing bias the measures? Yes, modestly — and I had the constraint wrong (2026-08-24)
+
+Raised in review: firing mid-motion should truncate the movement, and if the truncation scales with
+speed it would bias affected vs unaffected differentially. Measured against a 2.5 mm "at rest" shell,
+604 observed trials.
+
+**The truncation is real: median 450 ms, 7.5% of total movement time.**
+
+**But it is NOT speed-dependent** — r = +0.074 with return peak speed, r = -0.077 with TMT. The
+predicted mechanism (fast movers cut off earlier) is false: the last 40 mm takes a roughly fixed time
+because the hand is decelerating into rest either way.
+
+**Differential bias exists but is small, and runs opposite to the guess:** affected 333 ms vs
+unaffected 283 ms (+50 ms, +67 against the 2.5 mm reference), and affected arms have the SLOWER
+return. Affected TMT is therefore under-measured slightly more, which compresses the
+affected-vs-unaffected difference by ~50 ms on a difference of order a second. The larger effect is
+per-participant: 183--417 ms, a 292 ms spread. Both are shared between MMC and OMC, so no reported
+correlation moves; both sit in the absolute TMT.
+
+**Tightening the shell buys most of it back:**
+
+| shell | truncation | % TMT | arm diff | participant spread | spd@bd | MMCvOMC mean | >4fr |
+|---|---|---|---|---|---|---|---|
+| 40 mm (shipped) | 450 ms | 7.5% | +67 ms | 292 ms | 55% | 41 ms | 11.8% |
+| 15 mm | 283 ms | 4.7% | **+33 ms** | 200 ms | 26% | 68 ms | 27.7% |
+| 7 mm | 167 ms | 2.8% | **+17 ms** | 167 ms | 11% | 103 ms | 40.3% |
+
+**[!] And here is where I had the constraint wrong.** I had been treating MMC-vs-OMC settle agreement
+as the binding limit on Table II, and it is not close to binding. **TMT's own SD is 1282 ms**, so
+boundary noise of 41--103 ms is 3--8% of it. The classic attenuation ceiling `1/sqrt(1+e^2/sd^2)`:
+
+| shell | boundary noise | ceiling on r |
+|---|---|---|
+| 40 mm | 41 ms | 0.99949 |
+| 15 mm | 68 ms | 0.99860 |
+| 7 mm | 103 ms | 0.99679 |
+
+All far above the **reported 0.994**, so the boundary is not what limits TMT's correlation and
+tightening the shell would not move it. **Do not defend the 40 mm shell on the grounds that it
+protects Table II — it does not.**
+
+**The real cost of tightening is Table III, not Table II:** the settle row would go from 17 ms median
+/ 83 ms p90 / 2.0% beyond 0.25 s to roughly 33 / 183 / 28%. A presentational cost for a substantive
+gain in definition and bias.
+
+**OPEN, and required before adopting anything:** the settle also bounds **number of movement units**,
+which sum over `returning`. MU has almost no dynamic range (median 1, 74% exactly 1), so the
+attenuation argument above does NOT transfer — proportionally, boundary noise could cost far more
+there than for TMT. Measure MU under the 15 mm shell before changing the rule.
+
+### RESULT: adopted nothing, learned two things (2026-08-24) — the boundary metrics were a bad proxy
+
+`scripts/seg_sequential.py` now carries switchable onset/settle rules
+(`OT_SEG_ONSET`, `OT_SEG_SETTLE`, `OT_SEG_PEAK_FRAC`), **defaulting to the shipped `pos`/`end`, so
+the pipeline and every published number are unchanged.** `speed` puts the boundary at a fraction of
+the trial's own peak hand speed. Verified the patch reproduces the standalone sweep (onset fires at
+10.9% of peak, settle 8.7%, against 11.7% / 8.6% predicted).
+
+Then ran the REAL scorer (`score_own_phases.py --anat12`) for all three variants, which is what
+should have been done six turns earlier.
+
+**[!] ONSET = speed 0.10: REJECTED. It destroys interjoint coordination.**
+
+| measure (markerless windows) | shipped | onset=speed | delta |
+|---|---|---|---|
+| **interjoint** | 0.571 / 0.876 | **0.333 / 0.544** | **−0.238** |
+| trunk displacement | 0.952 / 0.986 | 0.934 / 0.959 | −0.018 |
+| the other ten | — | — | <= 0.004 |
+
+And it looked **strictly better on every boundary metric**: |diff| vs the reference 200 -> 33 ms,
+firing speed 47% -> 11.7%, cross-system agreement unchanged, 0% no-fire. The 167 ms it gains is the
+START of the reach, where shoulder and elbow angles are both nearly flat, so it appends a
+noise-dominated near-constant segment to a correlation and dilutes it. **Boundary-agreement metrics
+do not predict measure quality. Do not optimise a boundary without re-scoring the measures.**
+
+**SETTLE = speed 0.10: viable, not free.** Interjoint untouched (0.571), movement units −0.004, TMT
+−0.002, eight others exactly 0 — but **trunk displacement −0.018** (r_av −0.026). Buys TMT mean
+6.22 -> 6.48 s against the reference protocol's 6.67 s, i.e. about half the 450 ms truncation bias.
+Not adopted: trunk is a reported correlation and TMT's absolute scale is already disclosed.
+
+**[!] Paper correction that fell out of it.** §V-E said "elbow extension and trunk displacement are
+unchanged by construction, being reduced over the whole trial rather than over a phase". Trunk MOVED
+when the settle moved, so it is reduced over onset->settle — the whole **movement**, not the whole
+clip. Elbow extension genuinely did not move. Corrected.
+
+**The finding worth keeping is the robustness, not the rule.** Swapping the settle from a positional
+to a velocity criterion — a different definition, shifting TMT's absolute value 260 ms — moves **ten
+of twelve measures by <= 0.004**. The measure agreement is not an artefact of the particular boundary
+definitions. And interjoint now has a THIRD independent demonstration of the same fragility: range
+restriction (18 trials carry 92% of the variance), sample count (0.57 -> 0.30 at 30 Hz), and now
+window composition (−0.238 while nothing else exceeds 0.018). Three unrelated perturbations, one
+measure responding to all three — a stronger case for "limited by its summary statistic rather than
+by the reconstruction" than any single one. **Candidate for one sentence in §VI if the page budget
+ever allows.**
+
+### DECISION: boundary rules NOT changed (2026-08-24)
+
+Reviewed and settled: adopting `speed 0.10` for both boundaries is acceptable in principle — the
+interjoint collapse is tolerable because interjoint is not a robust measure and the paper already says
+so — but it is not worth the re-score, and the effect on everything else is small either way. **The
+shipped `pos` / `end` rules stand.** `scripts/seg_sequential.py` keeps the switchable
+`OT_SEG_ONSET` / `OT_SEG_SETTLE` / `OT_SEG_PEAK_FRAC`, defaulting to shipped, so the finding is
+reproducible without being live.
+
+**Preserved in the repo** (the anat12 scripts were once lost to a session `/tmp`; not repeating that):
+
+- `paper/scripts/seg_rules/` — `README.md`, `sweep_boundary_rules.py`, `compare_measures.py`
+- `paper/seg_rule_sweep.csv` — 66 rows, four rule families x thresholds x hold, both boundaries
+- `paper/seg_rule_measures.csv` — 48 rows, all twelve measures x four variants, r_s and r_av under
+  both window conditions
+
+The scored inputs live under `out/scoring/` (gitignored, regenerable — see the README's loop).
+
+**The one-line summary of the whole investigation**, from `seg_rule_measures.csv`: every measure is
+within 0.004 of the shipped rule under a changed settle criterion except trunk displacement (−0.018),
+and within 0.004 under a changed onset except interjoint (−0.238) and trunk (−0.018). **A boundary
+rule that is strictly better on every boundary statistic can still destroy a measure.**

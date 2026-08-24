@@ -32,6 +32,17 @@ from pipeline.segment import (_butter_lp, _interp_nan_xyz, _median_smooth, _runs
 from score_vs_automq import (load_automq, automq_phases_to_video, automq_part, automq_key, _win, COHORT_PARTS)
 GRID = R._GRID_JOINTS
 PHASES = ["reaching", "forward_transport", "drinking", "back_transport", "returning"]
+import os
+# Reach onset and settle rule. "pos" / "end" are the shipped distance-referenced rules; "speed" puts
+# each boundary at a fraction of the trial's own peak hand speed. Measured 2026-08-24: the shipped
+# onset fires at 47% of peak and the settle at 52%, i.e. mid-motion, which costs 200 ms and 450 ms of
+# agreement with the reference protocol and truncates total movement time by 7.5%. "speed" at 0.10
+# fires at 11.7% / 8.6% and recovers both. Defaults keep the published numbers reproducible; set
+# OT_SEG_ONSET=speed OT_SEG_SETTLE=speed to switch.
+ONSET_RULE = os.environ.get("OT_SEG_ONSET", "pos")
+SETTLE_RULE = os.environ.get("OT_SEG_SETTLE", "end")
+PEAK_FRAC = float(os.environ.get("OT_SEG_PEAK_FRAC", "0.10"))
+
 LEAVE_REST = 30.0     # mm: hand has left its rest position
 STILL_MMPS = 30.0     # mm/s: hand is "at rest" by the STILLNESS rule (see _tail)
 ARRIVE_REST = 40.0    # mm: hand is back home
@@ -52,7 +63,7 @@ def _sustained(mask, start, hold, want=True):
 
 
 def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None,
-                       settle_rule="end", return_flags=False, cm_source="wrist"):
+                       settle_rule=None, return_flags=False, cm_source="wrist"):
     """One forward pass -> list of (name, s, e) intervals, ordering guaranteed.
 
     cm_source: what drives the cup->MOUTH channel. "wrist" (DEFAULT since 2026-08-20) uses the hand
@@ -104,9 +115,16 @@ def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None
     v_cm = np.r_[0.0, np.diff(_median_smooth(d_cm, 11))] * fps    # cup->mouth distance rate
     v_hand = np.r_[0.0, np.linalg.norm(np.diff(hand, axis=0), axis=1) * fps]   # hand SPEED, mm/s
 
+    settle_rule = SETTLE_RULE if settle_rule is None else settle_rule
     bounds = {}
-    # 1) reach onset = hand leaves rest
-    r0 = _sustained(d_rest > LEAVE_REST, 0, HOLD)
+    # 1) reach onset = hand leaves rest (distance), or crosses a fraction of its own peak speed
+    if ONSET_RULE == "speed":
+        pk_h = float(np.nanmax(v_hand)) if np.isfinite(v_hand).any() else 0.0
+        r0 = _sustained(v_hand > PEAK_FRAC * pk_h, 1, HOLD) if pk_h > 0 else None
+        if r0 is None:                              # fall back rather than drop the trial
+            r0 = _sustained(d_rest > LEAVE_REST, 0, HOLD)
+    else:
+        r0 = _sustained(d_rest > LEAVE_REST, 0, HOLD)
     if r0 is None:
         return []
     bounds["rest_pre"] = (0, r0)
@@ -179,7 +197,20 @@ def _tail(bounds, d_rest, rel, T, v_hand=None, rule="end", hand=None):
     tuning failure: on 45% of those trials AutoMQ's own settle lies past the last recorded frame, so
     the movement end is simply not in the video. Callers must treat those trials as censored.
     """
-    if rule == "still":
+    if rule == "speed":
+        # After the return peak, the first sustained fall below a fraction of the trial's own peak.
+        # Scale-free, and it places the boundary near rest instead of mid-motion.
+        if v_hand is None:
+            raise ValueError('settle_rule="speed" needs the hand speed series')
+        seg = v_hand[rel:T]
+        settle = None
+        if len(seg) > 2 and np.isfinite(seg).any():
+            pk_h = float(np.nanmax(v_hand[:T]))
+            k = int(np.nanargmax(seg))
+            r2 = _sustained(seg[k:] < PEAK_FRAC * pk_h, 0, HOLD) if pk_h > 0 else None
+            if r2 is not None:
+                settle = rel + k + r2
+    elif rule == "still":
         if v_hand is None:
             raise ValueError('settle_rule="still" needs the hand speed series')
         settle = _sustained(v_hand < STILL_MMPS, rel, HOLD)

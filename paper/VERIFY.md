@@ -1704,3 +1704,33 @@ The scored inputs live under `out/scoring/` (gitignored, regenerable — see the
 within 0.004 of the shipped rule under a changed settle criterion except trunk displacement (−0.018),
 and within 0.004 under a changed onset except interjoint (−0.238) and trunk (−0.018). **A boundary
 rule that is strictly better on every boundary statistic can still destroy a measure.**
+
+### §III-C's threshold claim, third and final correction (2026-08-24)
+
+The claim about how our thresholds differ from the reference protocol's has now been wrong three
+times, each time because another absolute constant turned up one level down:
+
+1. Original: "every threshold is relative to that channel's own range within the trial, with no
+   absolute velocity and no floor anywhere, so the rule is invariant to the scale of the
+   reconstruction." **False** — `seg_sequential.py:35,37` set `LEAVE_REST = 30.0` mm and
+   `ARRIVE_REST = 40.0` mm.
+2. Second attempt: "the grasp, release and drink boundaries are thresholded on a fraction of their
+   own channel's range rather than on an absolute velocity; reach onset and the settle are the
+   exception." **Also false** — `GRASP_FLAT_MMPS = 40.0` **mm/s** (`pipeline/segment.py:139`) is what
+   DETECTS the closing/opening runs for all four of those boundaries
+   (`_runs(v_wc < -GRASP_FLAT_MMPS)`). The 30%-of-range test only QUALIFIES a run once detected, so
+   the rule is a conjunction of an absolute rate and a relative magnitude, not a replacement of one
+   by the other.
+3. **Now: no boundary in this segmenter is purely relative.** Reach onset 30 mm, settle 40 mm, and
+   the other four a 40 mm/s rate — every one carries an absolute constant somewhere. §III-C now
+   claims only the distinction that survives: **the cup is followed visually rather than instrumented
+   with markers**, and states plainly that both rules mix absolute and relative thresholds.
+
+Consistent with the earlier finding that the two rules are nearly complementary rather than one
+relative and one absolute. **The visual cup was always the real distinction** — as was said several
+rounds before this claim was finally pinned down. The run-magnitude fraction (0.3, insensitive over
+0.2--0.45) is still a genuine design property and is still stated; it is simply not a replacement for
+an absolute threshold.
+
+LESSON: a claim of the form "we use no absolute constants" needs every constant in the call path
+checked, not just the ones in the function being read. Three passes here, three different constants.

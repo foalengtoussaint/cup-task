@@ -1,0 +1,557 @@
+kind	from	to
+script	scripts/apply_guard_variants.py	scripts/archive_20260820/apply_guard_variants.py
+script	scripts/apply_smoothnet_variants.py	scripts/archive_20260820/apply_smoothnet_variants.py
+script	scripts/ba_bone_resweep.py	scripts/archive_20260820/ba_bone_resweep.py
+script	scripts/ba_free_bone.py	scripts/archive_20260820/ba_free_bone.py
+script	scripts/ba_guard_rate.py	scripts/archive_20260820/ba_guard_rate.py
+script	scripts/ba_mm_objective.py	scripts/archive_20260820/ba_mm_objective.py
+script	scripts/ba_per_joint.py	scripts/archive_20260820/ba_per_joint.py
+script	scripts/ba_prior_tests.py	scripts/archive_20260820/ba_prior_tests.py
+script	scripts/ba_revert_runlengths.py	scripts/archive_20260820/ba_revert_runlengths.py
+script	scripts/cache_ba_variants.py	scripts/archive_20260820/cache_ba_variants.py
+script	scripts/compare_ba_variants.py	scripts/archive_20260820/compare_ba_variants.py
+script	scripts/cup_ba.py	scripts/archive_20260820/cup_ba.py
+script	scripts/displacement_compare.py	scripts/archive_20260820/displacement_compare.py
+script	scripts/dlt_gate_audit.py	scripts/archive_20260820/dlt_gate_audit.py
+script	scripts/lag_loso.py	scripts/archive_20260820/lag_loso.py
+script	scripts/lag_stacked.py	scripts/archive_20260820/lag_stacked.py
+script	scripts/omc_rigid_ik.py	scripts/archive_20260820/omc_rigid_ik.py
+script	scripts/render_gate_trial.py	scripts/archive_20260820/render_gate_trial.py
+script	scripts/repair_trial_pairing.py	scripts/archive_20260820/repair_trial_pairing.py
+script	scripts/score_pv_variants.py	scripts/archive_20260820/score_pv_variants.py
+script	scripts/score_variant_measures.py	scripts/archive_20260820/score_variant_measures.py
+script	scripts/seg_inputs_cupba.py	scripts/archive_20260820/seg_inputs_cupba.py
+script	scripts/rerun_chain.sh	scripts/archive_20260820/rerun_chain.sh
+script	scripts/rerun_freebone.sh	scripts/archive_20260820/rerun_freebone.sh
+script	scripts/run_anat12_fits.sh	scripts/archive_20260820/run_anat12_fits.sh
+script	scripts/run_anat12_variants.sh	scripts/archive_20260820/run_anat12_variants.sh
+script	scripts/run_anat12_w.sh	scripts/archive_20260820/run_anat12_w.sh
+script	scripts/ship_freebone.sh	scripts/archive_20260820/ship_freebone.sh
+script	scripts/run_finetune_variants.sh	scripts/archive_20260820/run_finetune_variants.sh
+script	scripts/run_full_cdrnet.sh	scripts/archive_20260820/run_full_cdrnet.sh
+cache	cache/seg_inputs_26x	cache/_archive/experiments_20260820/seg_inputs_26x
+cache	cache/seg_inputs_stacked	cache/_archive/experiments_20260820/seg_inputs_stacked
+cache	cache/seg_inputs_amqkey	cache/_archive/experiments_20260820/seg_inputs_amqkey
+cache	cache/seg_inputs_final	cache/_archive/experiments_20260820/seg_inputs_final
+cache	cache/seg_inputs_final2	cache/_archive/experiments_20260820/seg_inputs_final2
+cache	cache/_variant_sm	cache/_archive/experiments_20260820/_variant_sm
+cache	cache/cup_ba	cache/_archive/experiments_20260820/cup_ba
+cache	cache/ba_variants	cache/_archive/experiments_20260820/ba_variants
+paper/augment.log	paper/archive_20260820/augment.log
+paper/augment.npz	paper/archive_20260820/augment.npz
+paper/augment_camdrop.csv	paper/archive_20260820/augment_camdrop.csv
+paper/augment_measures.csv	paper/archive_20260820/augment_measures.csv
+paper/augment_measures.log	paper/archive_20260820/augment_measures.log
+paper/augment_miscal.csv	paper/archive_20260820/augment_miscal.csv
+paper/augment_miscal2.csv	paper/archive_20260820/augment_miscal2.csv
+paper/augment_miscal2.log	paper/archive_20260820/augment_miscal2.log
+paper/automq_abduction_ref_test.csv	paper/archive_20260820/automq_abduction_ref_test.csv
+paper/automq_abduction_ref_test.png	paper/archive_20260820/automq_abduction_ref_test.png
+paper/automq_flexion_is_trunk.csv	paper/archive_20260820/automq_flexion_is_trunk.csv
+paper/automq_flexion_ref_test.csv	paper/archive_20260820/automq_flexion_ref_test.csv
+paper/automq_flexion_ref_test.png	paper/archive_20260820/automq_flexion_ref_test.png
+paper/disagree_P07_61.png	paper/archive_20260820/disagree_P07_61.png
+paper/downaxis_omc_vs_mmc.csv	paper/archive_20260820/downaxis_omc_vs_mmc.csv
+paper/downaxis_omc_vs_mmc.png	paper/archive_20260820/downaxis_omc_vs_mmc.png
+paper/fig4_anat12w0.png	paper/archive_20260820/fig4_anat12w0.png
+paper/fig4_anat12w0_pearson.png	paper/archive_20260820/fig4_anat12w0_pearson.png
+paper/fig4_final.png	paper/archive_20260820/fig4_final.png
+paper/fig4_full_e2e.png	paper/archive_20260820/fig4_full_e2e.png
+paper/fig4_mmc_vs_omc_automq.png	paper/archive_20260820/fig4_mmc_vs_omc_automq.png
+paper/fig4_mmc_vs_omc_seqmmc_phases.png	paper/archive_20260820/fig4_mmc_vs_omc_seqmmc_phases.png
+paper/fig4_seqmmc_26x.png	paper/archive_20260820/fig4_seqmmc_26x.png
+paper/fig4_seqmmc_26x_anat12.png	paper/archive_20260820/fig4_seqmmc_26x_anat12.png
+paper/fig4_seqmmc_26x_matched.png	paper/archive_20260820/fig4_seqmmc_26x_matched.png
+paper/fig4_seqmmc_anat12w0.png	paper/archive_20260820/fig4_seqmmc_anat12w0.png
+paper/fig4_seqmmc_anat12w0_pearson.png	paper/archive_20260820/fig4_seqmmc_anat12w0_pearson.png
+paper/figures	paper/archive_20260820/figures
+paper/force_ba_p19.csv	paper/archive_20260820/force_ba_p19.csv
+paper/force_triangulate_p19.csv	paper/archive_20260820/force_triangulate_p19.csv
+paper/grasp_blowup.png	paper/archive_20260820/grasp_blowup.png
+paper/interjoint_mmc_vs_ourOMC.csv	paper/archive_20260820/interjoint_mmc_vs_ourOMC.csv
+paper/interjoint_mmc_vs_ourOMC.png	paper/archive_20260820/interjoint_mmc_vs_ourOMC.png
+paper/interjoint_omc_only.csv	paper/archive_20260820/interjoint_omc_only.csv
+paper/interjoint_perturbation.csv	paper/archive_20260820/interjoint_perturbation.csv
+paper/low_coord_faithful_P19_78_R.png	paper/archive_20260820/low_coord_faithful_P19_78_R.png
+paper/low_coord_trial_P19_48_R.png	paper/archive_20260820/low_coord_trial_P19_48_R.png
+paper/measures_methods.md	paper/archive_20260820/measures_methods.md
+paper/mmc_vs_abduction_defs.csv	paper/archive_20260820/mmc_vs_abduction_defs.csv
+paper/mmc_vs_abduction_defs.png	paper/archive_20260820/mmc_vs_abduction_defs.png
+paper/mmc_vs_flexion_defs.csv	paper/archive_20260820/mmc_vs_flexion_defs.csv
+paper/mmc_vs_flexion_defs.png	paper/archive_20260820/mmc_vs_flexion_defs.png
+paper/planar_body_angles.csv	paper/archive_20260820/planar_body_angles.csv
+paper/relax_gate_all.csv	paper/archive_20260820/relax_gate_all.csv
+paper/relax_gate_ba.csv	paper/archive_20260820/relax_gate_ba.csv
+paper/sagittal_flexion_paper.csv	paper/archive_20260820/sagittal_flexion_paper.csv
+paper/seg_coverage.csv	paper/archive_20260820/seg_coverage.csv
+paper/seg_factors.csv	paper/archive_20260820/seg_factors.csv
+paper/seg_factors.html	paper/archive_20260820/seg_factors.html
+paper/seg_factors.npz	paper/archive_20260820/seg_factors.npz
+paper/seg_factors_heatmap.png	paper/archive_20260820/seg_factors_heatmap.png
+paper/seg_mmc_vs_omc.png	paper/archive_20260820/seg_mmc_vs_omc.png
+paper/seg_mmc_vs_omc_kf.png	paper/archive_20260820/seg_mmc_vs_omc_kf.png
+paper/seq_outliers.png	paper/archive_20260820/seq_outliers.png
+paper/table3_measures_automq.csv	paper/archive_20260820/table3_measures_automq.csv
+out/gate_videos	out/archive_20260820/gate_videos
+out/gnn	out/archive_20260820/gnn
+out/murphy_all_3hz_p95	out/archive_20260820/murphy_all_3hz_p95
+out/murphy_all_max	out/archive_20260820/murphy_all_max
+out/murphy_all_p95	out/archive_20260820/murphy_all_p95
+out/murphy_clean_3hz_p95	out/archive_20260820/murphy_clean_3hz_p95
+out/murphy_clean_max	out/archive_20260820/murphy_clean_max
+out/murphy_clean_p95	out/archive_20260820/murphy_clean_p95
+out/murphy_miscal_3hz_p95	out/archive_20260820/murphy_miscal_3hz_p95
+out/murphy_miscal_max	out/archive_20260820/murphy_miscal_max
+out/murphy_miscal_p95	out/archive_20260820/murphy_miscal_p95
+out/mvgformer	out/archive_20260820/mvgformer
+out/recut	out/archive_20260820/recut
+out/sigma	out/archive_20260820/sigma
+out/speed	out/archive_20260820/speed
+out/viz	out/archive_20260820/viz
+out/figures	out/archive_20260820/figures
+out/paper	out/archive_20260820/paper
+out/scoring/P12_cam5.npz	out/archive_20260820/automq/P12_cam5.npz
+out/scoring/_archive_score_c3donly.csv	out/archive_20260820/automq/_archive_score_c3donly.csv
+out/scoring/_archive_score_vs_automq_buggyBA.csv	out/archive_20260820/automq/_archive_score_vs_automq_buggyBA.csv
+out/scoring/_archive_score_vs_automq_buggyBA.npz	out/archive_20260820/automq/_archive_score_vs_automq_buggyBA.npz
+out/scoring/_archive_seg_boundaries_prelag.csv	out/archive_20260820/automq/_archive_seg_boundaries_prelag.csv
+out/scoring/_seg_bounds_bacup.csv	out/archive_20260820/automq/_seg_bounds_bacup.csv
+out/scoring/_seg_bounds_consensuscup.csv	out/archive_20260820/automq/_seg_bounds_consensuscup.csv
+out/scoring/all_measures_w.csv	out/archive_20260820/automq/all_measures_w.csv
+out/scoring/all_measures_w.log	out/archive_20260820/automq/all_measures_w.log
+out/scoring/anat12_fits.log	out/archive_20260820/automq/anat12_fits.log
+out/scoring/anat12_sweep.log	out/archive_20260820/automq/anat12_sweep.log
+out/scoring/anat12_variants.log	out/archive_20260820/automq/anat12_variants.log
+out/scoring/anat12_w0.log	out/archive_20260820/automq/anat12_w0.log
+out/scoring/anat12_w02.log	out/archive_20260820/automq/anat12_w02.log
+out/scoring/anat12w0_omc_values.csv	out/archive_20260820/automq/anat12w0_omc_values.csv
+out/scoring/anat_evel.csv	out/archive_20260820/automq/anat_evel.csv
+out/scoring/anat_evel.log	out/archive_20260820/automq/anat_evel.log
+out/scoring/anat_evel_mags.csv	out/archive_20260820/automq/anat_evel_mags.csv
+out/scoring/anat_frame.csv	out/archive_20260820/automq/anat_frame.csv
+out/scoring/anat_frame.log	out/archive_20260820/automq/anat_frame.log
+out/scoring/anat_sang.csv	out/archive_20260820/automq/anat_sang.csv
+out/scoring/anat_sang.log	out/archive_20260820/automq/anat_sang.log
+out/scoring/anat_sang_mags.csv	out/archive_20260820/automq/anat_sang_mags.csv
+out/scoring/apply_guard_fix_hardened.log	out/archive_20260820/automq/apply_guard_fix_hardened.log
+out/scoring/ba_guard_rate.csv	out/archive_20260820/automq/ba_guard_rate.csv
+out/scoring/ba_guard_rate.npz	out/archive_20260820/automq/ba_guard_rate.npz
+out/scoring/block_repair_p10.log	out/archive_20260820/automq/block_repair_p10.log
+out/scoring/cache_cup_ncams.log	out/archive_20260820/automq/cache_cup_ncams.log
+out/scoring/cache_cup_ncams_26x.log	out/archive_20260820/automq/cache_cup_ncams_26x.log
+out/scoring/cache_seg_inputs.log	out/archive_20260820/automq/cache_seg_inputs.log
+out/scoring/cache_seg_inputs_26x.log	out/archive_20260820/automq/cache_seg_inputs_26x.log
+out/scoring/cache_smoothed.log	out/archive_20260820/automq/cache_smoothed.log
+out/scoring/cache_smoothed_noguard.log	out/archive_20260820/automq/cache_smoothed_noguard.log
+out/scoring/cache_smoothed_pose_fixedba.log	out/archive_20260820/automq/cache_smoothed_pose_fixedba.log
+out/scoring/cup_ba.log	out/archive_20260820/automq/cup_ba.log
+out/scoring/cup_seed26x.log	out/archive_20260820/automq/cup_seed26x.log
+out/scoring/depth_cond.csv	out/archive_20260820/automq/depth_cond.csv
+out/scoring/desync_classify.csv	out/archive_20260820/automq/desync_classify.csv
+out/scoring/desync_classify.log	out/archive_20260820/automq/desync_classify.log
+out/scoring/desync_correct.csv	out/archive_20260820/automq/desync_correct.csv
+out/scoring/desync_correct.log	out/archive_20260820/automq/desync_correct.log
+out/scoring/desync_correct2.csv	out/archive_20260820/automq/desync_correct2.csv
+out/scoring/desync_correct2.log	out/archive_20260820/automq/desync_correct2.log
+out/scoring/desync_drift.csv	out/archive_20260820/automq/desync_drift.csv
+out/scoring/desync_drift.log	out/archive_20260820/automq/desync_drift.log
+out/scoring/desync_v2.csv	out/archive_20260820/automq/desync_v2.csv
+out/scoring/desync_v2.log	out/archive_20260820/automq/desync_v2.log
+out/scoring/desync_v3.csv	out/archive_20260820/automq/desync_v3.csv
+out/scoring/desync_v3.log	out/archive_20260820/automq/desync_v3.log
+out/scoring/displacement_compare.csv	out/archive_20260820/automq/displacement_compare.csv
+out/scoring/dlt_gate_audit.csv	out/archive_20260820/automq/dlt_gate_audit.csv
+out/scoring/drink_approach.csv	out/archive_20260820/automq/drink_approach.csv
+out/scoring/fig4_anat12.log	out/archive_20260820/automq/fig4_anat12.log
+out/scoring/fit_d3d.csv	out/archive_20260820/automq/fit_d3d.csv
+out/scoring/fit_d3d.log	out/archive_20260820/automq/fit_d3d.log
+out/scoring/fit_d3d_bias.csv	out/archive_20260820/automq/fit_d3d_bias.csv
+out/scoring/fit_d3d_bias.log	out/archive_20260820/automq/fit_d3d_bias.log
+out/scoring/fit_landmark_offset.csv	out/archive_20260820/automq/fit_landmark_offset.csv
+out/scoring/fit_landmark_offset.log	out/archive_20260820/automq/fit_landmark_offset.log
+out/scoring/fix_test.csv	out/archive_20260820/automq/fix_test.csv
+out/scoring/flex_series_bias.csv	out/archive_20260820/automq/flex_series_bias.csv
+out/scoring/flex_series_bias.log	out/archive_20260820/automq/flex_series_bias.log
+out/scoring/flexion_bakeoff.log	out/archive_20260820/automq/flexion_bakeoff.log
+out/scoring/flexion_ceiling.log	out/archive_20260820/automq/flexion_ceiling.log
+out/scoring/frame_axes.log	out/archive_20260820/automq/frame_axes.log
+out/scoring/frame_variants.csv	out/archive_20260820/automq/frame_variants.csv
+out/scoring/frame_variants.log	out/archive_20260820/automq/frame_variants.log
+out/scoring/grad_flatness.csv	out/archive_20260820/automq/grad_flatness.csv
+out/scoring/hold_corr.csv	out/archive_20260820/automq/hold_corr.csv
+out/scoring/hybrid_frame.csv	out/archive_20260820/automq/hybrid_frame.csv
+out/scoring/hybrid_frame.log	out/archive_20260820/automq/hybrid_frame.log
+out/scoring/hybrid_frame_mags.csv	out/archive_20260820/automq/hybrid_frame_mags.csv
+out/scoring/interjoint_filter_sweep.csv	out/archive_20260820/automq/interjoint_filter_sweep.csv
+out/scoring/interjoint_lowpass_sweep.csv	out/archive_20260820/automq/interjoint_lowpass_sweep.csv
+out/scoring/interjoint_lp.log	out/archive_20260820/automq/interjoint_lp.log
+out/scoring/interjoint_sweep.log	out/archive_20260820/automq/interjoint_sweep.log
+out/scoring/jac_snr.npz	out/archive_20260820/automq/jac_snr.npz
+out/scoring/jac_svd.csv	out/archive_20260820/automq/jac_svd.csv
+out/scoring/jac_svd.log	out/archive_20260820/automq/jac_svd.log
+out/scoring/jac_svd_dirs.npz	out/archive_20260820/automq/jac_svd_dirs.npz
+out/scoring/joint_err_by_side.log	out/archive_20260820/automq/joint_err_by_side.log
+out/scoring/joint_fit.log	out/archive_20260820/automq/joint_fit.log
+out/scoring/joint_fit2.log	out/archive_20260820/automq/joint_fit2.log
+out/scoring/joint_fit3.log	out/archive_20260820/automq/joint_fit3.log
+out/scoring/joint_fit_pareto.csv	out/archive_20260820/automq/joint_fit_pareto.csv
+out/scoring/lag_loso.csv	out/archive_20260820/automq/lag_loso.csv
+out/scoring/lag_loso.log	out/archive_20260820/automq/lag_loso.log
+out/scoring/lag_loso.npz	out/archive_20260820/automq/lag_loso.npz
+out/scoring/lag_stacked_compare.csv	out/archive_20260820/automq/lag_stacked_compare.csv
+out/scoring/measures_after_d.csv	out/archive_20260820/automq/measures_after_d.csv
+out/scoring/measures_after_d.log	out/archive_20260820/automq/measures_after_d.log
+out/scoring/mmc_vs_omc_phase_effect.csv	out/archive_20260820/automq/mmc_vs_omc_phase_effect.csv
+out/scoring/multi_joint_d.log	out/archive_20260820/automq/multi_joint_d.log
+out/scoring/multi_joint_d_9p.csv	out/archive_20260820/automq/multi_joint_d_9p.csv
+out/scoring/multi_joint_d_raw.csv	out/archive_20260820/automq/multi_joint_d_raw.csv
+out/scoring/omc_ik_subset.npz	out/archive_20260820/automq/omc_ik_subset.npz
+out/scoring/omc_matched_angles.log	out/archive_20260820/automq/omc_matched_angles.log
+out/scoring/other_measures_after_d.csv	out/archive_20260820/automq/other_measures_after_d.csv
+out/scoring/other_measures_after_d.log	out/archive_20260820/automq/other_measures_after_d.log
+out/scoring/p13_ratefix.log	out/archive_20260820/automq/p13_ratefix.log
+out/scoring/p19_truth.csv	out/archive_20260820/automq/p19_truth.csv
+out/scoring/p251_warp_rows.csv	out/archive_20260820/automq/p251_warp_rows.csv
+out/scoring/peakvel_sweep.log	out/archive_20260820/automq/peakvel_sweep.log
+out/scoring/prep_cache.log	out/archive_20260820/automq/prep_cache.log
+out/scoring/prep_cache2.log	out/archive_20260820/automq/prep_cache2.log
+out/scoring/pv_variants.csv	out/archive_20260820/automq/pv_variants.csv
+out/scoring/qc_kept_trials.csv	out/archive_20260820/automq/qc_kept_trials.csv
+out/scoring/rebuild_ba.log	out/archive_20260820/automq/rebuild_ba.log
+out/scoring/rebuild_matched.log	out/archive_20260820/automq/rebuild_matched.log
+out/scoring/rebuild_p10.log	out/archive_20260820/automq/rebuild_p10.log
+out/scoring/rebuild_pairs.log	out/archive_20260820/automq/rebuild_pairs.log
+out/scoring/rebuild_score.log	out/archive_20260820/automq/rebuild_score.log
+out/scoring/rebuild_sn.log	out/archive_20260820/automq/rebuild_sn.log
+out/scoring/rebuild_tables1.log	out/archive_20260820/automq/rebuild_tables1.log
+out/scoring/recompute_p251.log	out/archive_20260820/automq/recompute_p251.log
+out/scoring/recon_offsets.csv	out/archive_20260820/automq/recon_offsets.csv
+out/scoring/recon_offsets_r4.csv	out/archive_20260820/automq/recon_offsets_r4.csv
+out/scoring/render_cupdiag.log	out/archive_20260820/automq/render_cupdiag.log
+out/scoring/render_cupdiag2d.log	out/archive_20260820/automq/render_cupdiag2d.log
+out/scoring/rerun_chain.log	out/archive_20260820/automq/rerun_chain.log
+out/scoring/rerun_freebone.log	out/archive_20260820/automq/rerun_freebone.log
+out/scoring/rescore_amqkey.log	out/archive_20260820/automq/rescore_amqkey.log
+out/scoring/rescore_final.log	out/archive_20260820/automq/rescore_final.log
+out/scoring/rescore_flexionfix.log	out/archive_20260820/automq/rescore_flexionfix.log
+out/scoring/rescore_interjoint.log	out/archive_20260820/automq/rescore_interjoint.log
+out/scoring/rescore_mu.log	out/archive_20260820/automq/rescore_mu.log
+out/scoring/rescore_peakvelfix.log	out/archive_20260820/automq/rescore_peakvelfix.log
+out/scoring/rescore_revertmu.log	out/archive_20260820/automq/rescore_revertmu.log
+out/scoring/rescore_shoulderfix.log	out/archive_20260820/automq/rescore_shoulderfix.log
+out/scoring/rescore_trunk3d.log	out/archive_20260820/automq/rescore_trunk3d.log
+out/scoring/rescore_trunkfix.log	out/archive_20260820/automq/rescore_trunkfix.log
+out/scoring/rescore_ttpfix.log	out/archive_20260820/automq/rescore_ttpfix.log
+out/scoring/rest_and_segments.csv	out/archive_20260820/automq/rest_and_segments.csv
+out/scoring/rest_and_segments.log	out/archive_20260820/automq/rest_and_segments.log
+out/scoring/retrack26x.log	out/archive_20260820/automq/retrack26x.log
+out/scoring/revert_runlengths.npz	out/archive_20260820/automq/revert_runlengths.npz
+out/scoring/rs_by_model.log	out/archive_20260820/automq/rs_by_model.log
+out/scoring/score_e2e.log	out/archive_20260820/automq/score_e2e.log
+out/scoring/score_e2e_final.csv	out/archive_20260820/automq/score_e2e_final.csv
+out/scoring/score_e2e_final.log	out/archive_20260820/automq/score_e2e_final.log
+out/scoring/score_e2e_seq.csv	out/archive_20260820/automq/score_e2e_seq.csv
+out/scoring/score_e2e_seq.log	out/archive_20260820/automq/score_e2e_seq.log
+out/scoring/score_e2e_seq2.log	out/archive_20260820/automq/score_e2e_seq2.log
+out/scoring/score_e2e_seq_26x.csv	out/archive_20260820/automq/score_e2e_seq_26x.csv
+out/scoring/score_e2e_seq_26x.log	out/archive_20260820/automq/score_e2e_seq_26x.log
+out/scoring/score_e2e_seq_BUG.csv	out/archive_20260820/automq/score_e2e_seq_BUG.csv
+out/scoring/score_e2e_seq_fixed.log	out/archive_20260820/automq/score_e2e_seq_fixed.log
+out/scoring/score_e2e_seq_guard.csv	out/archive_20260820/automq/score_e2e_seq_guard.csv
+out/scoring/score_e2e_seq_guard.log	out/archive_20260820/automq/score_e2e_seq_guard.log
+out/scoring/score_e2e_seq_preP251warp.csv	out/archive_20260820/automq/score_e2e_seq_preP251warp.csv
+out/scoring/score_e2e_seq_wr.csv	out/archive_20260820/automq/score_e2e_seq_wr.csv
+out/scoring/score_e2e_seq_wr.log	out/archive_20260820/automq/score_e2e_seq_wr.log
+out/scoring/score_final_fig4.csv	out/archive_20260820/automq/score_final_fig4.csv
+out/scoring/score_full_e2e_fig4.csv	out/archive_20260820/automq/score_full_e2e_fig4.csv
+out/scoring/score_own_phases.log	out/archive_20260820/automq/score_own_phases.log
+out/scoring/score_seqmmc26x_anat12_fig4.csv	out/archive_20260820/automq/score_seqmmc26x_anat12_fig4.csv
+out/scoring/score_seqmmc26x_fig4.csv	out/archive_20260820/automq/score_seqmmc26x_fig4.csv
+out/scoring/score_seqmmc26x_matched_fig4.csv	out/archive_20260820/automq/score_seqmmc26x_matched_fig4.csv
+out/scoring/score_seqmmc_anat12w0.csv	out/archive_20260820/automq/score_seqmmc_anat12w0.csv
+out/scoring/score_seqmmc_fig4.csv	out/archive_20260820/automq/score_seqmmc_fig4.csv
+out/scoring/score_shipdefault.csv	out/archive_20260820/automq/score_shipdefault.csv
+out/scoring/score_vs_automq.log	out/archive_20260820/automq/score_vs_automq.log
+out/scoring/score_vs_automq_anat12w0.csv	out/archive_20260820/automq/score_vs_automq_anat12w0.csv
+out/scoring/score_vs_automq_e2e.csv	out/archive_20260820/automq/score_vs_automq_e2e.csv
+out/scoring/score_vs_automq_fixedba.log	out/archive_20260820/automq/score_vs_automq_fixedba.log
+out/scoring/score_vs_automq_rebuild.log	out/archive_20260820/automq/score_vs_automq_rebuild.log
+out/scoring/score_vs_automq_wrist.csv	out/archive_20260820/automq/score_vs_automq_wrist.csv
+out/scoring/score_vs_automq_wrist.log	out/archive_20260820/automq/score_vs_automq_wrist.log
+out/scoring/score_vs_automq_wrist.npz	out/archive_20260820/automq/score_vs_automq_wrist.npz
+out/scoring/seg_boundaries.log	out/archive_20260820/automq/seg_boundaries.log
+out/scoring/seg_boundaries_26x.log	out/archive_20260820/automq/seg_boundaries_26x.log
+out/scoring/seg_boundaries_c3.log	out/archive_20260820/automq/seg_boundaries_c3.log
+out/scoring/seg_boundaries_guard.log	out/archive_20260820/automq/seg_boundaries_guard.log
+out/scoring/seg_boundaries_kf.log	out/archive_20260820/automq/seg_boundaries_kf.log
+out/scoring/seg_boundaries_min.log	out/archive_20260820/automq/seg_boundaries_min.log
+out/scoring/seg_boundaries_stacked.log	out/archive_20260820/automq/seg_boundaries_stacked.log
+out/scoring/seg_boundaries_wr.log	out/archive_20260820/automq/seg_boundaries_wr.log
+out/scoring/seg_boundaries_wr2.log	out/archive_20260820/automq/seg_boundaries_wr2.log
+out/scoring/seg_boundaries_wr3.log	out/archive_20260820/automq/seg_boundaries_wr3.log
+out/scoring/seg_bounds_amqkey.log	out/archive_20260820/automq/seg_bounds_amqkey.log
+out/scoring/seg_bounds_cupba.log	out/archive_20260820/automq/seg_bounds_cupba.log
+out/scoring/seg_bounds_cupba_kept.log	out/archive_20260820/automq/seg_bounds_cupba_kept.log
+out/scoring/seg_bounds_final2.log	out/archive_20260820/automq/seg_bounds_final2.log
+out/scoring/seg_input_diag.csv	out/archive_20260820/automq/seg_input_diag.csv
+out/scoring/seg_inputs_amqkey.log	out/archive_20260820/automq/seg_inputs_amqkey.log
+out/scoring/seg_inputs_cupba.log	out/archive_20260820/automq/seg_inputs_cupba.log
+out/scoring/seg_inputs_cupba_kept.log	out/archive_20260820/automq/seg_inputs_cupba_kept.log
+out/scoring/seg_inputs_final2.log	out/archive_20260820/automq/seg_inputs_final2.log
+out/scoring/seg_inputs_stacked.log	out/archive_20260820/automq/seg_inputs_stacked.log
+out/scoring/seg_len_vs_angle.csv	out/archive_20260820/automq/seg_len_vs_angle.csv
+out/scoring/seg_len_vs_angle.log	out/archive_20260820/automq/seg_len_vs_angle.log
+out/scoring/seg_score.log	out/archive_20260820/automq/seg_score.log
+out/scoring/seg_sequential.log	out/archive_20260820/automq/seg_sequential.log
+out/scoring/seg_sequential2.log	out/archive_20260820/automq/seg_sequential2.log
+out/scoring/seg_sequential_mmc.log	out/archive_20260820/automq/seg_sequential_mmc.log
+out/scoring/seg_sequential_mmc_velgate.log	out/archive_20260820/automq/seg_sequential_mmc_velgate.log
+out/scoring/seg_sequential_mmc_vs_automq.csv	out/archive_20260820/automq/seg_sequential_mmc_vs_automq.csv
+out/scoring/seg_sequential_same.log	out/archive_20260820/automq/seg_sequential_same.log
+out/scoring/seg_sequential_same_cup.csv	out/archive_20260820/automq/seg_sequential_same_cup.csv
+out/scoring/seg_sequential_same_velgate.log	out/archive_20260820/automq/seg_sequential_same_velgate.log
+out/scoring/seg_sequential_vs_automq.csv	out/archive_20260820/automq/seg_sequential_vs_automq.csv
+out/scoring/segframe_d.csv	out/archive_20260820/automq/segframe_d.csv
+out/scoring/segframe_d.log	out/archive_20260820/automq/segframe_d.log
+out/scoring/segment_rigidity.csv	out/archive_20260820/automq/segment_rigidity.csv
+out/scoring/segment_rigidity.log	out/archive_20260820/automq/segment_rigidity.log
+out/scoring/segmentation_same.log	out/archive_20260820/automq/segmentation_same.log
+out/scoring/segmentation_same_cup.csv	out/archive_20260820/automq/segmentation_same_cup.csv
+out/scoring/segmentation_v2.log	out/archive_20260820/automq/segmentation_v2.log
+out/scoring/segmentation_v2_BEFORE_clamp.csv	out/archive_20260820/automq/segmentation_v2_BEFORE_clamp.csv
+out/scoring/segmentation_v2_clamp.log	out/archive_20260820/automq/segmentation_v2_clamp.log
+out/scoring/segmentation_v2_vs_automq.csv	out/archive_20260820/automq/segmentation_v2_vs_automq.csv
+out/scoring/segmentation_vs_automq.csv	out/archive_20260820/automq/segmentation_vs_automq.csv
+out/scoring/ship_freebone.log	out/archive_20260820/automq/ship_freebone.log
+out/scoring/shoulder_migration.csv	out/archive_20260820/automq/shoulder_migration.csv
+out/scoring/shoulder_migration.log	out/archive_20260820/automq/shoulder_migration.log
+out/scoring/smoke_P07.csv	out/archive_20260820/automq/smoke_P07.csv
+out/scoring/smoke_P07.npz	out/archive_20260820/automq/smoke_P07.npz
+out/scoring/sn_bone_variants.log	out/archive_20260820/automq/sn_bone_variants.log
+out/scoring/trial_pairing_all.log	out/archive_20260820/automq/trial_pairing_all.log
+out/scoring/trial_pairing_p07p25.csv.bak	out/archive_20260820/automq/trial_pairing_p07p25.csv.bak
+out/scoring/trial_repair_map.csv	out/archive_20260820/automq/trial_repair_map.csv
+out/scoring/trunk_bakeoff.log	out/archive_20260820/automq/trunk_bakeoff.log
+out/scoring/trunk_bakeoff2.log	out/archive_20260820/automq/trunk_bakeoff2.log
+out/scoring/trunk_geometry.csv	out/archive_20260820/automq/trunk_geometry.csv
+out/scoring/trunk_geometry.log	out/archive_20260820/automq/trunk_geometry.log
+out/scoring/trunk_plane_motion.csv	out/archive_20260820/automq/trunk_plane_motion.csv
+out/scoring/trunk_plane_motion.log	out/archive_20260820/automq/trunk_plane_motion.log
+out/scoring/variant_measures	out/archive_20260820/automq/variant_measures
+out/scoring/variant_measures.log	out/archive_20260820/automq/variant_measures.log
+out/scoring/vector_coding.csv	out/archive_20260820/automq/vector_coding.csv
+out/scoring/vector_coding.log	out/archive_20260820/automq/vector_coding.log
+out/scoring/vel_v2.log	out/archive_20260820/automq/vel_v2.log
+out/scoring/vel_v2_corr.csv	out/archive_20260820/automq/vel_v2_corr.csv
+out/scoring/vel_v2_raw.csv	out/archive_20260820/automq/vel_v2_raw.csv
+out/scoring/velocity_after_d.log	out/archive_20260820/automq/velocity_after_d.log
+out/scoring/velocity_after_d_corr.csv	out/archive_20260820/automq/velocity_after_d_corr.csv
+out/scoring/velocity_after_d_raw.csv	out/archive_20260820/automq/velocity_after_d_raw.csv
+out/scoring/verify_blocks.log	out/archive_20260820/automq/verify_blocks.log
+SESSION_2026-08-19.md	docs/SESSION_2026-08-19.md
+out/ab_overlap.log	out/archive_20260820/loose/ab_overlap.log
+out/apply_sn.log	out/archive_20260820/loose/apply_sn.log
+out/ba_bone_resweep.log	out/archive_20260820/loose/ba_bone_resweep.log
+out/ba_bone_sub.log	out/archive_20260820/loose/ba_bone_sub.log
+out/ba_chunk.log	out/archive_20260820/loose/ba_chunk.log
+out/ba_combo.log	out/archive_20260820/loose/ba_combo.log
+out/ba_free_bone.log	out/archive_20260820/loose/ba_free_bone.log
+out/ba_free_s03.log	out/archive_20260820/loose/ba_free_s03.log
+out/ba_free_smooth.log	out/archive_20260820/loose/ba_free_smooth.log
+out/ba_guard_rate.log	out/archive_20260820/loose/ba_guard_rate.log
+out/ba_mm.log	out/archive_20260820/loose/ba_mm.log
+out/ba_per_joint.log	out/archive_20260820/loose/ba_per_joint.log
+out/ba_prior_tests.log	out/archive_20260820/loose/ba_prior_tests.log
+out/ba_trace.log	out/archive_20260820/loose/ba_trace.log
+out/block_repair.log	out/archive_20260820/loose/block_repair.log
+out/boxes_APEX.png	out/archive_20260820/loose/boxes_APEX.png
+out/boxes_REST.png	out/archive_20260820/loose/boxes_REST.png
+out/boxes_all.png	out/archive_20260820/loose/boxes_all.png
+out/cache_ba_fix.log	out/archive_20260820/loose/cache_ba_fix.log
+out/carve_by_resid.png	out/archive_20260820/loose/carve_by_resid.png
+out/carve_by_tracker.png	out/archive_20260820/loose/carve_by_tracker.png
+out/carve_overlay_P07_cam_3.mp4	out/archive_20260820/loose/carve_overlay_P07_cam_3.mp4
+out/carve_oversized_grid.png	out/archive_20260820/loose/carve_oversized_grid.png
+out/carve_shape_grid.png	out/archive_20260820/loose/carve_shape_grid.png
+out/cdrnet_delta_render.mp4	out/archive_20260820/loose/cdrnet_delta_render.mp4
+out/cdrnet_delta_wrist.png	out/archive_20260820/loose/cdrnet_delta_wrist.png
+out/cloud_track_P07_trial_11_L_unaffected_cam_3.mp4	out/archive_20260820/loose/cloud_track_P07_trial_11_L_unaffected_cam_3.mp4
+out/cohort_seed_analysis.png	out/archive_20260820/loose/cohort_seed_analysis.png
+out/cup3d_agree_P07_trial_11_L_unaffected.png	out/archive_20260820/loose/cup3d_agree_P07_trial_11_L_unaffected.png
+out/cup_mask.png	out/archive_20260820/loose/cup_mask.png
+out/cup_vs_heatmap.png	out/archive_20260820/loose/cup_vs_heatmap.png
+out/delta_fed_frame.png	out/archive_20260820/loose/delta_fed_frame.png
+out/depth_cond.log	out/archive_20260820/loose/depth_cond.log
+out/dlt_gate_audit.log	out/archive_20260820/loose/dlt_gate_audit.log
+out/fix_test.log	out/archive_20260820/loose/fix_test.log
+out/found_cylinder.png	out/archive_20260820/loose/found_cylinder.png
+out/freebone_full.log	out/archive_20260820/loose/freebone_full.log
+out/gap_census.png	out/archive_20260820/loose/gap_census.png
+out/gate_diag.log	out/archive_20260820/loose/gate_diag.log
+out/gate_margin.log	out/archive_20260820/loose/gate_margin.log
+out/gate_residual.log	out/archive_20260820/loose/gate_residual.log
+out/gate_struct.log	out/archive_20260820/loose/gate_struct.log
+out/grad_flat.log	out/archive_20260820/loose/grad_flat.log
+out/ik_subset.log	out/archive_20260820/loose/ik_subset.log
+out/implied_shape.png	out/archive_20260820/loose/implied_shape.png
+out/implied_shape_perframe.png	out/archive_20260820/loose/implied_shape_perframe.png
+out/implied_shape_window.png	out/archive_20260820/loose/implied_shape_window.png
+out/loftr_badframes.png	out/archive_20260820/loose/loftr_badframes.png
+out/loftr_curves.png	out/archive_20260820/loose/loftr_curves.png
+out/loftr_lowconf_slow.png	out/archive_20260820/loose/loftr_lowconf_slow.png
+out/loftr_matches.png	out/archive_20260820/loose/loftr_matches.png
+out/loftr_verify_227.png	out/archive_20260820/loose/loftr_verify_227.png
+out/loftr_verify_241.png	out/archive_20260820/loose/loftr_verify_241.png
+out/miscalib_check.log	out/archive_20260820/loose/miscalib_check.log
+out/moves_as_one.png	out/archive_20260820/loose/moves_as_one.png
+out/murphy_cut0.5.csv	out/archive_20260820/loose/murphy_cut0.5.csv
+out/murphy_cut0.75.csv	out/archive_20260820/loose/murphy_cut0.75.csv
+out/murphy_cut1.0.csv	out/archive_20260820/loose/murphy_cut1.0.csv
+out/murphy_cut1.5.csv	out/archive_20260820/loose/murphy_cut1.5.csv
+out/murphy_cut2.0.csv	out/archive_20260820/loose/murphy_cut2.0.csv
+out/murphy_cut3.0.csv	out/archive_20260820/loose/murphy_cut3.0.csv
+out/murphy_cut4.0.csv	out/archive_20260820/loose/murphy_cut4.0.csv
+out/murphy_grid.csv	out/archive_20260820/loose/murphy_grid.csv
+out/murphy_grid_p95.csv	out/archive_20260820/loose/murphy_grid_p95.csv
+out/murphy_max_cut1.5.csv	out/archive_20260820/loose/murphy_max_cut1.5.csv
+out/murphy_max_cut2.0.csv	out/archive_20260820/loose/murphy_max_cut2.0.csv
+out/murphy_max_cut3.0.csv	out/archive_20260820/loose/murphy_max_cut3.0.csv
+out/murphy_max_cut4.0.csv	out/archive_20260820/loose/murphy_max_cut4.0.csv
+out/offcup_normal_P07_cam_3.mp4	out/archive_20260820/loose/offcup_normal_P07_cam_3.mp4
+out/offcup_oversized_P07_cam_3.mp4	out/archive_20260820/loose/offcup_oversized_P07_cam_3.mp4
+out/omc_ik.log	out/archive_20260820/loose/omc_ik.log
+out/omc_rigid.log	out/archive_20260820/loose/omc_rigid.log
+out/p19_truth.log	out/archive_20260820/loose/p19_truth.log
+out/panoptic_views.html	out/archive_20260820/loose/panoptic_views.html
+out/panoptic_views.jpg	out/archive_20260820/loose/panoptic_views.jpg
+out/panoptic_views.png	out/archive_20260820/loose/panoptic_views.png
+out/paper_traj_rerun.log	out/archive_20260820/loose/paper_traj_rerun.log
+out/peak_filter_sweep.npz	out/archive_20260820/loose/peak_filter_sweep.npz
+out/pipeline_v3_P07_trial_11_L_unaffected_cam_3.mp4	out/archive_20260820/loose/pipeline_v3_P07_trial_11_L_unaffected_cam_3.mp4
+out/pose_signals_P17_trial_10_L_unaffected.png	out/archive_20260820/loose/pose_signals_P17_trial_10_L_unaffected.png
+out/proj_check.jpg	out/archive_20260820/loose/proj_check.jpg
+out/proj_check_00_03.jpg	out/archive_20260820/loose/proj_check_00_03.jpg
+out/proj_check_00_23.jpg	out/archive_20260820/loose/proj_check_00_23.jpg
+out/pv_variants.log	out/archive_20260820/loose/pv_variants.log
+out/radius_over_trial.png	out/archive_20260820/loose/radius_over_trial.png
+out/real_template.png	out/archive_20260820/loose/real_template.png
+out/regen_matched.log	out/archive_20260820/loose/regen_matched.log
+out/regen_score.log	out/archive_20260820/loose/regen_score.log
+out/regen_seg.log	out/archive_20260820/loose/regen_seg.log
+out/render_apex.png	out/archive_20260820/loose/render_apex.png
+out/render_gate.log	out/archive_20260820/loose/render_gate.log
+out/render_rest.png	out/archive_20260820/loose/render_rest.png
+out/revert_runlengths.log	out/archive_20260820/loose/revert_runlengths.log
+out/sift_look.png	out/archive_20260820/loose/sift_look.png
+out/sift_matches.png	out/archive_20260820/loose/sift_matches.png
+out/sift_tight_matches.png	out/archive_20260820/loose/sift_tight_matches.png
+out/speed_stick_vs_body.png	out/archive_20260820/loose/speed_stick_vs_body.png
+out/stick_vs_body.png	out/archive_20260820/loose/stick_vs_body.png
+out/synbody_raw.png	out/archive_20260820/loose/synbody_raw.png
+out/templates.png	out/archive_20260820/loose/templates.png
+out/trial_pairing.log	out/archive_20260820/loose/trial_pairing.log
+out/trial_repair.log	out/archive_20260820/loose/trial_repair.log
+out/trunk_compare.png	out/archive_20260820/loose/trunk_compare.png
+out/trunk_final.png	out/archive_20260820/loose/trunk_final.png
+out/uetrack_grid.png	out/archive_20260820/loose/uetrack_grid.png
+out/uetrack_heads.png	out/archive_20260820/loose/uetrack_heads.png
+out/uetrack_heatmap.png	out/archive_20260820/loose/uetrack_heatmap.png
+out/uetrack_heatmap_real.png	out/archive_20260820/loose/uetrack_heatmap_real.png
+out/volume_seed_P07_cam_3.mp4	out/archive_20260820/loose/volume_seed_P07_cam_3.mp4
+out/volume_shape.png	out/archive_20260820/loose/volume_shape.png
+out/wrist_disp.png	out/archive_20260820/loose/wrist_disp.png
+pipeline/cloud_track.py	pipeline/_archive_20260820/cloud_track.py
+pipeline/cloud_velocity.py	pipeline/_archive_20260820/cloud_velocity.py
+pipeline/cup_detect.py	pipeline/_archive_20260820/cup_detect.py
+pipeline/dual_head.py	pipeline/_archive_20260820/dual_head.py
+pipeline/pipeline.py	pipeline/_archive_20260820/pipeline.py
+pipeline/pose_keypoints.py	pipeline/_archive_20260820/pose_keypoints.py
+pipeline/speed_fuse.py	pipeline/_archive_20260820/speed_fuse.py
+tests/test_cloud_track.py	tests/archive_20260820/test_cloud_track.py
+tests/test_cloud_velocity.py	tests/archive_20260820/test_cloud_velocity.py
+tests/test_speed_fuse.py	tests/archive_20260820/test_speed_fuse.py
+docs/CDRNET_RESULTS.md	docs/archive_20260820/CDRNET_RESULTS.md
+docs/CLOUD_TRACKER.md	docs/archive_20260820/CLOUD_TRACKER.md
+docs/MVGFORMER_SETUP.md	docs/archive_20260820/MVGFORMER_SETUP.md
+docs/object_tracking.code-workspace	docs/archive_20260820/object_tracking.code-workspace
+external/DeciWatch	external/_archive_20260820/DeciWatch
+external/GCN-Pose-Refinement	external/_archive_20260820/GCN-Pose-Refinement
+external/MotionAGFormer	external/_archive_20260820/MotionAGFormer
+external/VideoPose3D	external/_archive_20260820/VideoPose3D
+external/tapnet	external/_archive_20260820/tapnet
+external/LiteTrack	external/_archive_20260820/LiteTrack
+models/cdrnet_delta_finetuned_frozen.pt	models/_archive_20260820/cdrnet_delta_finetuned_frozen.pt
+models/cdrnet_synbody_pretrained.pt	models/_archive_20260820/cdrnet_synbody_pretrained.pt
+models/cdrnet_synbody_pretrained_ep0.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep0.pt
+models/cdrnet_synbody_pretrained_ep1.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep1.pt
+models/cdrnet_synbody_pretrained_ep2.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep2.pt
+models/cdrnet_synbody_pretrained_ep3.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep3.pt
+models/cdrnet_synbody_pretrained_ep4.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep4.pt
+models/cdrnet_synbody_pretrained_ep5.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep5.pt
+models/cdrnet_synbody_pretrained_ep6.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep6.pt
+models/cdrnet_synbody_pretrained_ep7.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep7.pt
+models/cdrnet_synbody_pretrained_ep8.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep8.pt
+models/cdrnet_synbody_pretrained_ep9.pt	models/_archive_20260820/cdrnet_synbody_pretrained_ep9.pt
+models/yolo26m-pose.pt	models/_archive_20260820/yolo26m-pose.pt
+models/yolo26n-pose.pt	models/_archive_20260820/yolo26n-pose.pt
+models/yolo26x-pose.pt	models/_archive_20260820/yolo26x-pose.pt
+out/scoring/anat_frame_a12w0.csv	out/archive_20260820/automq/anat_frame_a12w0.csv
+out/scoring/anat_frame_mags.csv	out/archive_20260820/automq/anat_frame_mags.csv
+out/scoring/anat_frame_mags_a12w0.csv	out/archive_20260820/automq/anat_frame_mags_a12w0.csv
+out/scoring/cup_ba.csv	out/archive_20260820/automq/cup_ba.csv
+script	paper/scripts/anat12/anat_sang.py	paper/scripts/anat12/archive_20260820/anat_sang.py
+script	paper/scripts/anat12/fit_d3d.py	paper/scripts/anat12/archive_20260820/fit_d3d.py
+script	paper/scripts/anat12/flex_series_bias.py	paper/scripts/anat12/archive_20260820/flex_series_bias.py
+script	paper/scripts/anat12/frame_axes.py	paper/scripts/anat12/archive_20260820/frame_axes.py
+script	paper/scripts/anat12/frame_variants.py	paper/scripts/anat12/archive_20260820/frame_variants.py
+script	paper/scripts/anat12/hybrid_frame.py	paper/scripts/anat12/archive_20260820/hybrid_frame.py
+script	paper/scripts/anat12/joint_err_by_side.py	paper/scripts/anat12/archive_20260820/joint_err_by_side.py
+script	paper/scripts/anat12/multi_joint_d.py	paper/scripts/anat12/archive_20260820/multi_joint_d.py
+script	paper/scripts/anat12/other_measures_after_d.py	paper/scripts/anat12/archive_20260820/other_measures_after_d.py
+script	paper/scripts/anat12/render_cup_vs_wrist.py	paper/scripts/anat12/archive_20260820/render_cup_vs_wrist.py
+script	paper/scripts/anat12/rs_by_model.py	paper/scripts/anat12/archive_20260820/rs_by_model.py
+script	paper/scripts/anat12/seg_len_vs_angle.py	paper/scripts/anat12/archive_20260820/seg_len_vs_angle.py
+script	paper/scripts/anat12/segframe_d.py	paper/scripts/anat12/archive_20260820/segframe_d.py
+script	paper/scripts/anat12/segment_rigidity.py	paper/scripts/anat12/archive_20260820/segment_rigidity.py
+script	paper/scripts/anat12/shoulder_migration.py	paper/scripts/anat12/archive_20260820/shoulder_migration.py
+script	paper/scripts/anat12/trunk_geometry.py	paper/scripts/anat12/archive_20260820/trunk_geometry.py
+script	paper/scripts/anat12/trunk_plane_motion.py	paper/scripts/anat12/archive_20260820/trunk_plane_motion.py
+script	paper/scripts/anat12/velocity_after_d.py	paper/scripts/anat12/archive_20260820/velocity_after_d.py
+backup	paper/main.tex.bak-20260820	paper/archive_20260820/main.tex.bak-20260820
+test	tests/archive_20260820/test_cloud_track.py	archive/tests_20260820/test_cloud_track.py
+test	tests/archive_20260820/test_cloud_velocity.py	archive/tests_20260820/test_cloud_velocity.py
+test	tests/archive_20260820/test_speed_fuse.py	archive/tests_20260820/test_speed_fuse.py
+dir	data	archive/data_20260820
+dir	runs	archive/runs_20260820
+module	pipeline/speed_blend.py	pipeline/_archive_20260820/speed_blend.py
+module	pipeline/flow_speed.py	pipeline/_archive_20260820/flow_speed.py
+script	scripts/flow_velocity_probe.py	scripts/archive_20260820/flow_velocity_probe.py
+doc	docs/SPEC.md	docs/archive_20260820/SPEC.md
+doc	docs/RESULTS.md	docs/archive_20260820/RESULTS.md
+doc	docs/SPEED_METRICS.md	docs/archive_20260820/SPEED_METRICS.md
+doc	docs/WORKLOG.md	docs/archive_20260820/WORKLOG.md
+doc	docs/DATASET_STATUS.md	docs/archive_20260820/DATASET_STATUS.md
+doc	docs/context/MEMORY.md	docs/archive_20260820/context/MEMORY.md
+doc	docs/context/project_mv3d_lifter_plan.md	docs/archive_20260820/context/project_mv3d_lifter_plan.md
+doc	docs/context/project_repo.md	docs/archive_20260820/context/project_repo.md
+doc	docs/context/realtime_proof.md	docs/archive_20260820/context/realtime_proof.md
+model	models/cup_clean3d_refill.pt	models/_archive_20260820/cup_clean3d_refill.pt
+doc	docs/SESSION_2026-08-19.md	paper/SESSION_2026-08-19.md
+doc	docs/archive_20260820/CDRNET_RESULTS.md	archive/docs_20260820/CDRNET_RESULTS.md
+doc	docs/archive_20260820/CLOUD_TRACKER.md	archive/docs_20260820/CLOUD_TRACKER.md
+doc	docs/archive_20260820/DATASET_STATUS.md	archive/docs_20260820/DATASET_STATUS.md
+doc	docs/archive_20260820/MVGFORMER_SETUP.md	archive/docs_20260820/MVGFORMER_SETUP.md
+doc	docs/archive_20260820/object_tracking.code-workspace	archive/docs_20260820/object_tracking.code-workspace
+doc	docs/archive_20260820/RESULTS.md	archive/docs_20260820/RESULTS.md
+doc	docs/archive_20260820/SPEC.md	archive/docs_20260820/SPEC.md
+doc	docs/archive_20260820/SPEED_METRICS.md	archive/docs_20260820/SPEED_METRICS.md
+doc	docs/archive_20260820/WORKLOG.md	archive/docs_20260820/WORKLOG.md
+doc	docs/archive_20260820/context/MEMORY.md	archive/docs_20260820/context/MEMORY.md
+doc	docs/archive_20260820/context/project_mv3d_lifter_plan.md	archive/docs_20260820/context/project_mv3d_lifter_plan.md
+doc	docs/archive_20260820/context/project_repo.md	archive/docs_20260820/context/project_repo.md
+doc	docs/archive_20260820/context/realtime_proof.md	archive/docs_20260820/context/realtime_proof.md
+doc	docs/archive/PIPELINE_V2_PLAN.md	archive/docs_20260820/older/PIPELINE_V2_PLAN.md
+doc	docs/archive/PIPELINE_V3.md	archive/docs_20260820/older/PIPELINE_V3.md
+doc	docs/archive/PIPELINE_V3_PLAN.md	archive/docs_20260820/older/PIPELINE_V3_PLAN.md
+doc	docs/archive/realtime_and_segmentation.md	archive/docs_20260820/older/realtime_and_segmentation.md
+doc	docs/archive/realtime.md	archive/docs_20260820/older/realtime.md

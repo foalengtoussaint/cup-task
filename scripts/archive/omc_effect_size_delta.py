@@ -23,8 +23,8 @@ import ezc3d
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import segment
-from cup_task.score import compute_position_measures
+from pipeline import segment
+from pipeline.score import compute_position_measures
 from scripts.compare_pose_omc_delta import _despike, _resample, _lp, VIDEO_FPS, C3D_RATE
 
 C3D_DIR = Path(__file__).resolve().parents[1] / "cache" / "delta" / "P14" / "c3d_all"

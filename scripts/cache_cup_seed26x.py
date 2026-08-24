@@ -32,7 +32,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
-from cup_task.kalman_3d import project, triangulate_dlt          # noqa: E402
+from pipeline.kalman_3d import project, triangulate_dlt          # noqa: E402
 
 TEACHER = "/home/imove/Documents/object_tracking/data/pretrained/yolo26x-seg.pt"
 CUP_LIKE = [39, 40, 41, 45, 75]      # bottle, wine glass, cup, bowl, vase
@@ -80,11 +80,18 @@ def main():
     from ultralytics import YOLO
     import compare_pose_omc_delta as H
     H.use_good_cams()
-    import cache_seg_inputs as CSI
+    import gnn_train as GT
     import results_v3_delta as R
+    from score_vs_automq import COHORT_PARTS
     OUT.mkdir(parents=True, exist_ok=True)
 
-    recs = CSI.load_all()
+    # The ADMITTED trials, not the seg-inputs cache. Seeding used to read cache_seg_inputs, which
+    # cannot be built until the cup track exists, which needs this seed -- a cycle that quietly
+    # pinned the cup caches to whatever seg_inputs happened to hold. load_clean is the same source
+    # cache_seg_inputs itself iterates, and is a superset of it, so nothing previously seeded stops
+    # being seeded.
+    recs = [{"part": t["part"], "trial": t["trial"]}
+            for t in GT.load_clean(need_reproj=False) if t["part"] in COHORT_PARTS]
     if a.part:
         recs = [r for r in recs if r["part"] == a.part]
     if a.limit:

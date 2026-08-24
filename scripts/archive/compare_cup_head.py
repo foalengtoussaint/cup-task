@@ -36,8 +36,8 @@ import numpy as np
 from scipy.signal import butter, filtfilt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import segment, triangulate
-from cup_task.kalman_3d import load_calibration
+from pipeline import segment, triangulate
+from pipeline.kalman_3d import load_calibration
 
 ROOT = Path(__file__).resolve().parents[1]
 POSE = ROOT / "cache" / "pose_models"

@@ -19,7 +19,7 @@ default one:
 ## Stage 1 — the cup detector (this is what was wrong)
 
 `cache/delta/*/dets/*.cup.json` records the model that produced it. For this cohort it said
-`models/cup_clean3d_refill.pt` — the BRIO fine-tune that `docs/WORKLOG.md:927` had **already**
+`models/cup_clean3d_refill.pt` — the BRIO fine-tune that `archive/docs_20260820/WORKLOG.md:927` had **already**
 recorded as the wrong model here: *"COCO teacher yolo26x-seg gets 77% >=3-cam consensus on P14, our
 BRIO finetune 8.2%"*. Measured cohort-wide, that fine-tune detects the cup on 6–54 % of frames and is
 near-blind in most views (P08 cam4 0.02, P10 cam5 0.00) while a single camera carries 0.85–0.98 —
@@ -68,7 +68,7 @@ applicable after the fact.
 
 ## Stage 4 — the cup the measures actually use
 
-Three steps, in this order, all in `cup_task/triangulate.py`:
+Three steps, in this order, all in `pipeline/triangulate.py`:
 
 1. **Strict ≥3 floor.** Frames where fewer than 3 cameras agree are set to NaN. A 2-camera cup is not
    weak evidence — the robustness study puts 2-camera triangulation in the >1 m error regime. On the

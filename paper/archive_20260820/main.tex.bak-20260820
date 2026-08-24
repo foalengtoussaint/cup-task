@@ -1,0 +1,613 @@
+%% Fast markerless drink-task scoring -- IEEEtran conference format
+%% Modeled on Unger et al., ICORR 2025 (arXiv:2411.14992).
+%%
+%% Build:   make            (tectonic, env object_tracking)
+%% Tables:  python paper/scripts/make_tables_tex.py   -> tables/*.tex
+%% Figures: python paper/scripts/paper_trajectories.py, fig4_correlation.py
+%% ============================================================
+%% PLAN (agreed 2026-08-18) -- do these IN ORDER:
+%%   1. Finish Methods.  Left: Latency Model (definition only, the
+%%      measurement is separate), Validation Protocol.
+%%   2. Verify the CODE matches what Methods now claims, stage by
+%%      stage, before generating anything. Three numbers already
+%%      turned out to describe an older pipeline (a 10-camera gate
+%%      measurement, a 328-trial guard rate, a pre-matched-definition
+%%      Table III), so Methods is the spec and the code is what gets
+%%      checked against it.
+%%      While there: the code is being released, so strip the remaining
+%%      tuning constants from Methods the way Sec. measures now does --
+%%      30 px gate, 0.75 s KF gap, 30%% run threshold -- keeping only the
+%%      structural ones (nine joints, three-camera floor, non-causal
+%%      window). Unger's Methods carries no constants at all; theirs live
+%%      in their repo.
+%%      Keep the RULE, drop the VALUE where the value was not really
+%%      chosen -- several segmentation constants are inherited rather than
+%%      tuned. Thresholds being RELATIVE to each channel's own range is a
+%%      genuine design property (it makes the segmenter scale-free); 30%%
+%%      is not. Same for the 0.75 s KF gap and its 30%% coverage floor,
+%%      which is a third guard the paper does not currently mention.
+%%   3. Re-run the measures. They must be regenerated anyway: the
+%%      degenerate-segmentation trials (37/636, Sec. results-seg) are
+%%      currently inside the measure tables too, and the four-variant
+%%      ablation grid needs out/automq/score_vs_automq.csv.
+%%   4. Then write Results prose against the regenerated numbers.
+%%
+%% anat12 offset fit -- IS PART OF THE VALIDATION PROTOCOL (Sec.
+%%   validation). Consequence: Table III's angle numbers must be
+%%   REGENERATED. Landmark-matched values are flexion ~0.96 (from 0.63),
+%%   abduction ~0.96 (0.79), elbow ~0.94 (0.86), interjoint ~0.59 (0.54).
+%%   Validated on held-out TRIALS within a participant (within 0.007 of
+%%   in-sample); ACROSS participants untested -- do not claim transfer.
+%%   The generating script is NOT in the repo and must be, since the code
+%%   is being released. A deployed version would fit against a biomechanical
+%%   model rather than optical keypoints -- data exists but not here.
+%%   UNRESOLVED -- which measures the fit actually touches. The committed
+%%   anat12w0 file covers four (flexion, abduction, elbow, interjoint). A
+%%   constant offset cancels under differentiation and under
+%%   excursion-from-rest, so the speed, timing, smoothness and trunk
+%%   measures cannot move -- but peak ELBOW ANGULAR VELOCITY is the
+%%   derivative of an angle whose shape does change, so it ought to be
+%%   affected and is absent from that file. Determine the true scope from
+%%   the script before Sec. validation states one.
+%%   Also reconcile with results/PIPELINE.md, which still files this under
+%%   'did not work' on the basis of an interjoint drop that does not
+%%   reproduce on the w0 artifacts.
+%%
+%% WORDING CONSTRAINT -- what the offset fit does and does not prove.
+%%   Held-out-trial generalisation shows the correction captures a stable,
+%%   participant-specific, body-frame-constant discrepancy. It does NOT
+%%   show that discrepancy is marker placement: detector bias for that
+%%   individual, residual session calibration error, and error in the
+%%   per-trial frozen body frame all reproduce identically, and each
+%%   participant is one session so they are confounded. With 24 free
+%%   parameters the fit absorbs any of them. Claim 'consistent with
+%%   landmark correspondence', not 'is landmark error' -- the weaker claim
+%%   still carries the argument, since it rules out per-frame pose error.
+%%   DISCRIMINATOR available in this data: P25 is one person over two
+%%   sessions with different calibrations (P251/P252). Fit the offsets
+%%   separately -- agreement implicates anatomy/protocol, disagreement
+%%   implicates calibration or marker re-placement. P25 is not in
+%%   recon_offsets_r4.csv, so this is an addition, not a re-analysis.
+%%
+%% TABLE CHANGES at regeneration, following from landmark matching:
+%%   Table I  -- add r and RMSE after landmark matching alongside the
+%%     static-offset columns, for the three angle trajectories (the other
+%%     three are offset-invariant). Static-offset columns stay as the
+%%     like-for-like against unger2024; matched columns are ours and are
+%%     the honest per-frame agreement, since a per-trial constant leaves
+%%     the pose-dependent discrepancy in the residual. Watch the page
+%%     budget -- Table I already spans both columns.
+%%   Table II -- bias IQR before and after matching. The three angle rows
+%%     should collapse and the other three should not; that asymmetry is
+%%     the sanity check and the argument at once.
+%%   Table III -- landmark-matched (angles ~0.94-0.96).
+%%
+%% CONFIRMATION (not an open question) -- recompute the per-trial static
+%%   offset and its IQR (Tables I, II) AFTER landmark matching. Spearman is
+%%   invariant to a constant, so flexion 0.63 -> 0.96 proves the fit removed
+%%   TRIAL-VARYING error, which is precisely what Table II's IQR measures --
+%%   the collapse is the same fact in another statistic. PREDICTION: only
+%%   the three angle rows move (flexion, abduction, elbow extension).
+%%   End-effector velocity and trunk are offset-invariant and elbow angular
+%%   velocity barely moves, so if THOSE shift, the application is wrong.
+%%   Caveat: r_s is on per-trial scalars, Table II's bias on per-frame
+%%   means, so the magnitude of the collapse is not predictable from the
+%%   r_s gain. Writing this up reframes unger2024's Table II: what they
+%%   read as inter-system bias variability is a landmark correspondence
+%%   error with a fitted, generalizing explanation.
+%%
+%% Blocked on the compute box: BA guard rate (n_fallback/n_guarded
+%% over 826 trials); score_vs_automq.csv for the ablation grid;
+%% gated-vs-ungated wrists with p90/p95/p99 on the 5-camera cohort.
+%% Also pending: give segment_anchor_min the cup_mouth_xyz argument
+%% so the argmin-vs-first-run comparison is finally apples-to-apples,
+%% and correct the stale 'do not re-try' entry in results/PIPELINE.md.
+%% ============================================================
+
+\documentclass[conference]{IEEEtran}
+\IEEEoverridecommandlockouts
+
+% T1 encoding is required here: without it IEEEtran's Times request falls
+% through to Latin Modern, and italic/bold silently render as roman.
+\usepackage[T1]{fontenc}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+
+\graphicspath{{./}{figures/}}
+
+% Drafting helpers -- delete before submission.
+% \todo = prose still to write. \val = a number NOT yet measured (nothing
+% wrapped in \val may survive into a submitted draft).
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\val}[1]{\textcolor{blue}{#1}}
+
+\begin{document}
+
+\title{\todo{title} --- Near Real-Time Markerless Scoring of the\\
+Standardized Drinking Task}
+
+\author{\IEEEauthorblockN{Toussaint Foaleng}
+\IEEEauthorblockA{\textit{\todo{lab}} \\
+\textit{\todo{institution}}\\
+\todo{city, country} \\
+foaleng@gmail.com}
+\and
+\IEEEauthorblockN{\todo{co-authors}}
+\IEEEauthorblockA{\todo{affiliation}}
+}
+
+\maketitle
+
+\begin{abstract}
+\todo{Write last, $\sim$200 words. Structure: (1) OMC plus biomechanical
+modeling is the reference standard for upper-limb movement quality but is
+lab-bound and slow; (2) markerless pipelines have closed much of the accuracy
+gap, but the differentiable-biomechanics approach needs days of GPU
+optimization per cohort, so results never reach the clinician during the
+visit; (3) we present a markerless pipeline --- multi-camera 2D pose, robust
+bundle adjustment, temporal smoothing, geometric measure extraction --- that
+scores the standardized drinking task within \val{X} of the end of recording
+on a single consumer GPU; (4) validated on ten participants and 697 trials
+against synchronized optical mocap, we reach $r_s \ge 0.86$ on six of eleven
+Murphy measures and $r \ge 0.96$ on elbow-extension trajectories, without
+inverse kinematics; (5) accuracy is comparable to offline markerless work
+while running \val{X}$\times$ faster, making same-session feedback feasible.}
+\end{abstract}
+
+\begin{IEEEkeywords}
+markerless motion capture, optical motion capture, drinking task, movement
+quality, stroke rehabilitation, real-time
+\end{IEEEkeywords}
+
+\section{Introduction}
+\label{sec:intro}
+
+\todo{P1 --- clinical need: stroke prevalence, upper-limb impairment, the case
+for frequent objective assessment of movement quality.}
+
+\todo{P2 --- the standardized drinking task and the Murphy measures as the
+established instrument~\cite{murphy2011}; OMC plus biomechanical modeling as
+the reference standard.}
+
+\todo{P3 --- markerless MMC now approaches OMC accuracy~\cite{unger2024},
+removing markers and specialist labor. State the remaining obstacle plainly:
+latency. Give the concrete figure --- the end-to-end differentiable pipeline
+of~\cite{unger2024} required roughly 12 days of GPU processing for 1160
+trials, dominated by 2D keypoint extraction over 5800 videos, plus 30 CPU
+hours of OpenSim IK on the OMC side. A result that arrives days later cannot
+inform the session that produced it.}
+
+\todo{P4 --- our position. Same task, same measures, same validation protocol,
+but every stage chosen so per-trial compute is bounded and overlaps with
+recording. Note the deliberate trade: we compute measures geometrically from
+3D keypoints rather than fitting a biomechanical model, which costs some
+trajectory agreement and buys the latency.}
+
+\paragraph*{Contributions}
+\begin{itemize}
+  \item A markerless pipeline that produces the Murphy drinking-task
+        movement-quality measures in near real time on a single consumer GPU,
+        with \todo{a measured per-stage latency budget}.
+  \item A validation against synchronized optical mocap on ten participants and
+        697 trials, reporting per-trajectory and per-measure agreement
+        (Tables~\ref{tab:trajectories}--\ref{tab:measures}).
+  \item \todo{An account of which measures survive the no-IK, geometric
+        construction and which do not --- and why the failures are anatomical
+        (occluded seated hips) rather than algorithmic.}
+\end{itemize}
+
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Movement quality assessment in the drinking task}
+\todo{Murphy et al.\ measures, clinical use, what each is meant to capture.}
+
+\subsection{Markerless motion capture for clinical kinematics}
+\todo{Multi-view pose estimation, triangulation, biomechanical fitting.
+Position \cite{unger2024} as the closest comparison: same task, same measures,
+OMC-validated --- but offline, and IK-based.}
+
+\subsection{Latency in clinical measurement pipelines}
+\todo{Little prior work reports latency at all. Argue that time-to-result is a
+first-class metric for clinical adoption, and that reporting accuracy alone
+has hidden this axis.}
+
+\section{Methods}
+\label{sec:methods}
+
+\subsection{Dataset}
+\label{sec:dataset}
+We use the DELTA dataset of~\cite{unger2024} unchanged --- 40 repetitions of
+the standardized drinking task~\cite{murphy2011} per arm, recorded
+simultaneously by optical mocap at $100$\,Hz and by five synchronized webcams
+at 1080p and $60$\,Hz --- and report here only the selection applied on top of
+it. That selection is stricter about camera quality than an IK-based method
+needs to be: with no model prior to absorb it, a miscalibrated view
+propagates straight into the 3D point.
+
+\emph{Participants.} Ten participants from the same pool as~\cite{unger2024}.
+One was recorded in two sessions under different calibrations, which we treat
+separately, giving eleven recording units. Recruitment, inclusion criteria and
+ethics approval are as reported in~\cite{unger2024}.
+
+\emph{Cameras.} Cameras were excluded in two passes: first for mis-cut clips,
+detected by normalized cross-correlation of each cut clip within its uncut
+session recording, and then for miscalibration, decided by leave-one-out
+per-joint reprojection. The order is necessary, as a mis-cut clip produces a
+smooth, position-dependent reprojection error indistinguishable from a moved
+camera --- both land at $25$--$30$\,px. Five cameras were dropped as mis-cut
+and seven as miscalibrated, leaving three of the eleven units on all five
+cameras and the rest on three or four.
+
+\emph{Trials.} $837$ clips pass an integrity check that the video, its
+detections and the resampled mocap span the same window. A trial is then
+admitted by a temporal gate --- cross-correlation $\ge 0.7$, best of
+$\{$wrist, elbow, shoulder$\} \times \{$speed, displacement$\}$ and the cup,
+since raw wrist speed alone rejects sound trials --- and a wrist-validity gate
+of $\ge 50\%$ of frames, together admitting $826$ ($99\%$). Of these, $697$
+carry a ground-truth row with phase windows and enter the measure comparison
+(per-measure $n$ in Table~\ref{tab:measures}), and $687$ the trajectory
+comparison. The remainder are absent from the reference processing rather
+than failed by ours: the ceiling here is ground-truth coverage.
+
+\subsection{Pipeline}
+\label{sec:pipeline}
+The pipeline runs in six stages.
+\begin{enumerate}
+  \item \emph{2D body pose.} Stock \texttt{yolo26s-pose}, run per frame on
+        every camera.
+  \item \emph{Cup localization.} Stock \texttt{yolo26x-seg} locates the cup
+        \emph{once}, at the first frame whose detections agree across at least
+        three cameras; a transformer visual-object tracker (UETrack-B) then
+        follows it through the remaining frames in each camera. It is never
+        re-anchored: re-seeding from a shared consensus couples the cameras,
+        and can cascade all of them onto the same wrong object, destroying the
+        independence that multi-view voting relies on. The cup trajectory is
+        used \emph{only} to segment the movement into phases
+        (Sec.~\ref{sec:phases}); no movement-quality measure is computed from
+        it.
+  \item \emph{3D reconstruction.} A multi-view DLT initialises a bundle
+        adjustment that minimises geometric reprojection error over all nine
+        upper-body joints, weighted by detector confidence and robustified by
+        a Huber kernel. The DLT minimises an algebraic residual, which carries
+        no statistical interpretation and exists because it is closed-form;
+        minimising reprojection error is the maximum-likelihood estimate of
+        the joint under Gaussian image noise, and the Huber kernel exchanges
+        that for a heavy-tailed model, so a single grossly wrong detection
+        cannot dominate the fit~\cite{hartley2004}. Cameras reprojecting
+        beyond $30$\,px are excluded and the joint refitted on the rest; where
+        too few remain, it is triangulated from all cameras rather than
+        dropped, so a degraded view costs accuracy on a frame instead of
+        removing the trial. No bone-length prior is used: it holds bone
+        lengths constant but slides joints along the unobservable depth ray,
+        so reprojection error falls while agreement with OMC worsens.
+        \todo{BLOCKED, needs the compute box: log \texttt{n\_fallback} /
+        \texttt{n\_guarded} from \texttt{refine\_trial\_ba} over all 826
+        trials. The BA solve occasionally diverges and currently reverts that
+        joint-frame to the DLT point; the only rate ever measured ($\sim$0.05\%
+        of frames, 1 trial in 328) predates the cohort expansion and the
+        miscalibrated participants that cause divergence. Decide then whether
+        to keep the revert or exclude the trial and report the rate, as
+        in~\cite{unger2024}.}
+  \item \emph{Temporal smoothing.} SmoothNet, applied to the 3D joint
+        trajectories. Its $\pm 16$-frame window is non-causal, which is what
+        places this stage after the trial rather than alongside it
+        (Sec.~\ref{sec:latency}).
+  \item \emph{Phase segmentation.} From the cup trajectory; see
+        Sec.~\ref{sec:phases}.
+  \item \emph{Measure extraction.} Geometric, from 3D body keypoints only; see
+        Sec.~\ref{sec:measures}.
+\end{enumerate}
+
+\subsection{Phase Segmentation}
+\label{sec:phases}
+The cup is used here and nowhere else. Segmentation reduces to a single
+primitive applied to two distance channels: a distance closes, holds flat,
+then opens again. On the wrist-to-cup distance that pattern is grasp and
+release --- the hand arrives, the distance is flat while the cup is carried,
+and opens when it is set down. On the cup-to-mouth distance it is the drinking
+phase, as the cup rises, is held, and is lowered. A plateau describes the
+relation between two points rather than the motion of either, so the drink
+boundaries survive the participant moving the head to the cup instead of the
+cup to the head. Reach onset and the final settle come from the hand leaving
+and regaining its rest position.
+
+Thresholds are relative: a closing or opening run counts only if it traverses
+at least $30\%$ of that channel's own range within the trial, so nothing
+depends on the size of the workspace or on an absolute distance to the mouth.
+Boundaries are found in one forward pass, each taken as the first qualifying
+run after the previous boundary, which makes the phases ordered and
+non-overlapping by construction.
+
+The cup is reconstructed under a stricter rule than the body. Frames with
+fewer than three agreeing cameras are discarded rather than forced, because a
+cup outlier is a different object --- another vessel in the room --- rather
+than a displaced joint, and averages to nothing useful. Interior gaps shorter
+than $0.75$\,s are filled by a Kalman smoother, never extrapolating beyond the
+first or last observation; what remains is filled from the wrist, which
+carries the cup, as a constant offset estimated over the frames where the cup
+is held. That proxy is applied to the cup-to-mouth channel alone: it makes the
+wrist-to-cup distance constant by construction, and grasp and release are read
+from exactly that channel.
+
+Two roles for the cup must be kept apart. The deployed pipeline segments from
+the cup, but the measure comparison in Sec.~\ref{sec:results} gives both
+systems the same optical phase windows, so that those numbers isolate pose
+error from phase-classification error. Segmentation is therefore validated
+separately, as boundary error against the optical phases
+(Sec.~\ref{sec:results}).
+
+\subsection{Movement Quality Measures}
+\label{sec:measures}
+Measures are computed geometrically from the 3D keypoints; no biomechanical model
+is fitted and no inverse kinematics is solved. Throughout, position is smoothed
+and then differentiated, never the reverse, since filtering a raw derivative
+smears a spike without removing its influence. One threshold is deliberately not
+inherited from marker-based practice: movement units are counted against a
+$60$\,mm/s amplitude rather than the usual $20$\,mm/s, because the jitter floor of
+video sits at $30$--$50$\,mm/s and the lower value manufactures units. The
+remaining constants are in the released code.\footnote{\todo{repository URL}}
+
+The eleven measures are those of the drinking-task protocol~\cite{murphy2011};
+only the shoulder angles need defining here, since they are computed
+geometrically rather than read off a fitted model. An orthonormal body frame is
+built from four torso points --- both shoulders and both hips --- giving a down
+axis from the shoulder midpoint to the hip midpoint, a frontal-plane normal, and
+a lateral axis. Shoulder flexion is the angle of the upper arm from the down axis
+within the sagittal plane, abduction the angle within the frontal plane.
+\todo{add the Alt Murphy planar-definition reference (Table 2) to refs.bib and
+cite it here rather than leaning on~\cite{murphy2011}.}
+
+Three further departures from~\cite{unger2024} are forced rather than chosen.
+Their trunk displacement follows a sternum marker, a landmark the COCO keypoint
+set does not contain, so ours is the excursion of the shoulder midpoint from its
+resting position --- and a three-dimensional excursion rather than an anatomical
+forward projection, because that projection needs a forward normal defined by the
+hips, which are occluded in a seated participant. The same occlusion is why the
+body frame is frozen per trial rather than recomputed per frame: an axis that
+jitters dominates the quantity it is meant to reference. Interjoint coordination
+changes indirectly, being a correlation involving shoulder flexion. Elbow
+extension is unchanged.
+
+Peak velocity is the one departure from the smoothing rule above: it differentiates
+the pose without the additional position low-pass and low-passes the resulting
+speed instead, because smoothing the position first flattens the peak the measure
+exists to report.
+
+Drinking-phase shoulder flexion is not reported, no ground-truth column existing
+for it, so eleven measures are reported where~\cite{unger2024} reports twelve.
+\todo{This measure is being added. When it lands, update the count in the
+abstract, the contributions list, Sec.~\ref{sec:measures},
+Sec.~\ref{sec:results-measures} and the Fig.~\ref{fig:correlation} caption --- and
+this paragraph goes away entirely, since the percent-timing variants are omitted
+by~\cite{unger2024} too and need no explanation from us.}
+
+\subsection{Latency Model}
+\label{sec:latency}
+We report processing time per trial: the wall-clock interval from the end of a
+trial's recording to the emission of its measures, on stated hardware. Per trial
+rather than per cohort, so that the figure is comparable across studies of
+different size, and because it is the form of the question a clinic asks ---
+whether a result arrives within the session that produced it.
+\todo{Measurement, not definition: per-stage wall-clock and the total, the
+hardware, and whether recording and inference share a GPU. Reported in
+Sec.~\ref{sec:results-latency} against the per-trial cost implied
+by~\cite{unger2024}, which needed roughly twelve GPU-days for 1160 trials plus
+thirty CPU-hours of inverse kinematics on the optical side.}
+
+\subsection{Validation Protocol}
+\label{sec:validation}
+All measures are computed from our markerless keypoints alone; the optical
+system contributes only the values compared against. Where our definitions
+depart from~\cite{unger2024} (Sec.~\ref{sec:measures}), the reference is
+computed from the optical markers using those same definitions, so that the
+comparison isolates pose error rather than reporting a difference of
+definition.
+
+Because a marker on the skin and a detected keypoint label different points on
+the body, a constant offset between the two is fitted per landmark, in the body
+and arm frames, and applied before the angles are compared. This is a
+landmark-matching step and not a correction of our estimate: neither system is
+positionally authoritative, since the optical markers carry their own placement
+error, and comparing unmatched landmarks reports that mismatch as though it were
+pose error. The fitted offsets are not themselves reported. Within each
+participant the fit is validated on trials held out from it, where agreement
+falls within $0.007$ of the in-sample value.
+\todo{Generalisation ACROSS participants is untested. Until it is, this is a
+within-participant landmark match and must not be described as transferable; a
+deployed version would fit against a biomechanical model rather than optical
+keypoints.}
+
+The two systems are aligned in time by cross-correlating wrist speed, and the
+optical series is shifted onto the video timebase by the resulting lag. For the
+per-frame trajectory comparison a static offset is estimated per trial and
+removed before agreement is computed, as in~\cite{unger2024}. Unlike the
+landmark offsets above, this one is reported: a consistent offset is
+correctable and a variable one is not, so its trial-to-trial spread is a result
+in itself (Tables~\ref{tab:trajectories} and~\ref{tab:biasiqr}). Per-frame
+agreement is then Pearson $r$ and RMSE on the offset-removed series, alongside
+the offset and the lag. Per-measure agreement is Spearman $r_s$ over trials and
+$r_{av}$ over per-participant, per-arm averages, following~\cite{unger2024}.
+Two alignments are therefore reported for the trajectories. Removing a static
+offset is the like-for-like comparison with~\cite{unger2024}, but it subtracts
+one constant per trial and so leaves the pose-dependent part of the landmark
+discrepancy inside the residual. Landmark matching removes that part as well,
+and is consequently the better estimate of agreement; it is the alignment used
+for the measures throughout.
+
+Both correlations pool across participants and arms, following~\cite{unger2024}.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{Study Population}
+\todo{Table: demographics, impairment scores, trial counts, exclusions with
+reasons. 826/837 recorded repetitions were scorable.}
+
+\subsection{Latency}
+\label{sec:results-latency}
+\todo{Table: per-stage and total processing time per trial, with the
+hardware. Compare against the per-trial cost implied by~\cite{unger2024}
+(twelve GPU-days for 1160 trials, plus thirty CPU-hours of inverse
+kinematics). NOT YET MEASURED --- this table does not exist and is the
+main gap between the current results and the paper's claim.}
+
+\subsection{Kinematic Trajectory Agreement}
+Table~\ref{tab:trajectories} reports per-frame agreement for the six
+kinematic trajectories, and Table~\ref{tab:biasiqr} the within-participant
+variability of the static bias. Fig.~\ref{fig:trajectories} shows exemplary
+trajectories for one participant.
+\todo{Prose: elbow extension and shoulder flexion agree closely; the velocity
+trajectories sit near $r=0.75$; shoulder abduction on the unaffected arm is
+the weakest. Say what the bias columns mean --- a consistent offset is
+correctable, a variable one is not, which is what Table~\ref{tab:biasiqr}
+addresses.}
+
+\input{tables/table1_trajectories}
+\input{tables/table2_bias_iqr}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig3_trajectories.png}
+  \caption{Exemplary kinematic trajectories for the affected and unaffected
+  arm, MMC versus OMC, with drinking-task phases marked and movement units
+  indicated on the end-effector velocity. \todo{name participant and trials}}
+  \label{fig:trajectories}
+\end{figure}
+
+\subsection{Movement Quality Measures}
+\label{sec:results-measures}
+Table~\ref{tab:measures} and Fig.~\ref{fig:correlation} report agreement for
+the eleven movement-quality measures.
+\todo{Prose, to be written against the REGENERATED numbers. Total movement
+time is phase-derived and, because both systems share optical phases here,
+is near tautological at $r_s = 1.00$ --- report it as a consistency check,
+not as validation of pose. Once the angles are landmark-matched only
+interjoint coordination and number of movement units sit low, and both are
+the reference's two weakest as well (Sec.~\ref{sec:discussion}). Do NOT
+attribute low shoulder flexion to the occluded hip keypoint: occlusion is
+why the body frame is frozen, but the residual it leaves is landmark
+correspondence, symmetric between the systems. These are floors of the
+construction, not of the reconstruction. On interjoint specifically: its
+reference values are near-constant across a cohort of largely intact
+coordination, so a rank correlation has little true variance to track and
+reads low even where the systems agree on every trial --- report it as
+agreement, the fraction of trials within a tolerance plus the bias, and
+check the spread of the reference values before reading a low $r_s$ as
+error.}
+
+\input{tables/table3_measures}
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{fig4_mmc_vs_omc.png}
+  \caption{Movement-quality measures, MMC versus OMC, per participant and
+  arm. Eleven measures; see Sec.~\ref{sec:measures} for the two omitted by
+  construction.}
+  \label{fig:correlation}
+\end{figure}
+
+\subsection{Phase Segmentation}
+\label{sec:results-seg}
+The measure comparison above gives both systems the same optical phase windows, so it
+says nothing about segmenting from the cup. Table~\ref{tab:boundaries} reports that
+separately: the same rule run on the markerless and on the optical cup, paired per
+trial. The quantity is the disagreement between the two inputs rather than the error
+against the reference phases, because a boundary bias shared by both sides cancels when
+markerless measures are compared against optical ones, and so is not what limits the
+comparison.
+
+The segmenter declines $37$ of $636$ trials ($5.8\%$). On these no cup frame survives the
+three-camera floor, the wrist-to-cup distance is flat, and the grasp collapses onto its
+floor at reach onset. Those boundaries are not measurements and are reported as a failure
+rate rather than scored: including them leaves the medians unchanged but puts a four-second
+tail on release ($p_{95}$ $240$ frames against $15$), which describes the absence of a cup
+track rather than the accuracy of a boundary. The failure is detectable without ground
+truth, from the cup track alone, which is what makes reporting it possible in deployment.
+
+\input{tables/table4_boundaries}
+
+On the remainder, the boundaries that bound the reaching phase agree closely --- reach
+onset to within $33$\,ms and release to within $50$\,ms at the median --- while the two
+drink boundaries are the weakest, at $133$\,ms with a fifth of trials beyond $0.25$\,s.
+\todo{say what follows for the measures: which of the eleven are windowed by the drink
+boundaries, and therefore how much of the segmentation cost in
+Table~\ref{tab:measures} is attributable to them.}
+
+\subsection{Ablations}
+\todo{PRIMARY TABLE --- the four-variant grid already run by
+\texttt{score\_vs\_automq.py}: \texttt{pipeline} (DLT, no smoothing),
+\texttt{+savgol}, \texttt{+smoothnet}, \texttt{BA+smoothnet}, all 11 measures
+on the full cohort. \texttt{+smoothnet}$\to$\texttt{BA+smoothnet} isolates the
+bundle adjustment; \texttt{pipeline}$\to$\texttt{+smoothnet} isolates the
+smoother; savgol shows whether the gain is SmoothNet or smoothing in general.
+BLOCKED: needs \texttt{out/automq/score\_vs\_automq.csv} copied to this
+machine --- only the \texttt{BA+smoothnet} rows are committed. Known from
+\texttt{relax\_gate\_*.csv}: plain DLT $\to$ BA+SmoothNet helps 6 of 11
+measures (median $+0.04$), all of it in the shape and derivative measures
+(interjoint $0.22\to0.51$, abduction $0.59\to0.72$), and nothing in the
+position measures, which plain DLT already scores at $0.89$--$1.00$.}
+
+\todo{Secondary, if room: bone-length prior on/off; camera-dropout and
+miscalibration augmentation (\texttt{augment*.csv}); segmentation factors
+(\texttt{seg\_factors.csv}). Select rather than dump --- one table of the
+choices a reimplementer must get right.}
+
+\section{Discussion}
+\label{sec:discussion}
+\todo{What the numbers support and what they do not. Once the angles are
+landmark-matched, only two measures sit low --- interjoint coordination and
+number of movement units --- and both are known to be fragile independently of
+markerless capture: \cite{unger2024} reports them as its own two weakest
+($0.71$ and $0.77$, against $0.87$--$0.98$ for everything else) and proposes
+replacing movement units with log dimensionless jerk, and the study's own
+processing treats its movement-unit implementation as unsettled for the same
+reason. So the weak pair is a property of the measures, not of the modality.
+Add the landmark-offset result here as evidence for the same point from the
+other direction: fitting a per-landmark offset lifts the angles to
+$0.94$--$0.96$, so the residual was landmark correspondence rather than pose
+error, and the optical side is not positionally authoritative either ---
+\cite{unger2024} makes the same argument by citation, that $1$--$2$\,cm of
+marker registration uncertainty moves a joint angle by $5$--$10$ degrees.
+Then: where the remaining error lives, and the clinical implication of
+same-session feedback.}
+
+\section{Limitations}
+\todo{Disclose the calibration scale error: a displacement-proportional
+$\approx 10\%$ inflation of every 3D distance and velocity the pipeline
+reports, body keypoints included, which belongs to the camera calibration
+rather than to any tracker. Correlational measures are insensitive to it;
+absolute ones are not. (The cup's own $\approx 60$\,mm rim-vs-centroid
+offset is constant and cancels in the plateau detector, so it needs no
+mention unless a cup number is reported.)}
+
+\todo{Cohort size and composition; single site; dependence on camera
+placement and calibration quality, including that eight of eleven units
+had to give up one or two cameras before they were usable; measures that
+could not be validated for lack of a ground-truth column; and that
+geometric angles are not anatomical joint angles.}
+
+\section{Conclusion}
+\todo{Two or three sentences.}
+
+\section*{Acknowledgment}
+\todo{funding, DELTA study data providers}
+
+\todo{REFERENCES: refs.bib holds three entries and needs the rest --- YOLO
+(pose and segmentation), UETrack-B, SmoothNet, the Alt Murphy planar angle
+definitions, prior real-time markerless work, and OpenSim/Rajagopal plus
+MuJoCo/Hamner to characterise what~\cite{unger2024} does that we do not. Full
+list in the comment block at the end of refs.bib. Verify every field against
+the publisher record; none of the current three has been checked.}
+
+\bibliographystyle{IEEEtran}
+\bibliography{refs}
+
+\end{document}

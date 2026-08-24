@@ -1,0 +1,25 @@
+\begin{table}[t]
+\caption{Processing time per trial on one consumer GPU (RTX 3060 Ti 8\,GB, i7-13700K),
+median over trials of five cameras and $549$ frames ($9.2$\,s of recording). Video decode
+($3.7$\,s) is measured and excluded: a deployment receives frames from the cameras.}
+\label{tab:latency}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrl}
+\toprule
+Stage & s & \% & Device \\
+\midrule
+Cup seed (scan to first consensus) & 0.21 & 1 & GPU \\
+Pose + cup tracking, concurrent & 15.37 & 91 & GPU \\
+Triangulation (9 joints + cup) & 1.00 & 6 & CPU \\
+Bundle adjustment & 0.41 & 2 & GPU \\
+Temporal smoothing (SmoothNet) & 0.03 & 0 & GPU \\
+Phase segmentation & 0.01 & 0 & CPU \\
+Movement-quality measures & 0.00 & 0 & CPU \\
+\midrule
+Total & 16.84 & 100 & \\
+\;\;of which after the last frame & 1.26 & 7 & \\
+\bottomrule
+\end{tabular}
+\end{table}

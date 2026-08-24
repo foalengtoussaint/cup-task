@@ -8,7 +8,7 @@ Runs every variant on both sources from cache/seg_inputs (no re-triangulation, n
 reports per boundary: median / |median| / IQR / p90 / frac>5f / frac>15f, plus the vs-AutoMQ medians
 for reference and the anchored segmenter's QA flag rates. Per-trial values are saved.
 
-    python scripts/score_seg_boundaries.py   -> out/automq/seg_boundaries.csv
+    python scripts/score_seg_boundaries.py   -> out/scoring/seg_boundaries.csv
 """
 from __future__ import annotations
 
@@ -25,7 +25,7 @@ import cache_seg_inputs as CSI                                    # noqa: E402
 from seg_anchored import segment_anchored_full                     # noqa: E402
 from seg_sequential import segment_sequential                      # noqa: E402
 from seg_anchor_min import segment_anchor_min                       # noqa: E402
-from cup_task.triangulate import fill_cup_from_wrist, kf_fill_gaps  # noqa: E402
+from pipeline.triangulate import fill_cup_from_wrist, kf_fill_gaps  # noqa: E402
 
 # SmoothNet is a DENOISER, not a gap filler -- pose_smooth.smooth_track restores X=None on every
 # frame that was missing on input, so the cached MMC cup still has 21% NaN / 1.33s longest gap. The
@@ -35,7 +35,10 @@ from cup_task.triangulate import fill_cup_from_wrist, kf_fill_gaps  # noqa: E402
 # A 2-camera cup is not weak evidence, it is not evidence (robustness study: 2 cams -> >1m errors),
 # and on the bad trials it is most of the track. mmc_c3_kf then fills those holes with the KF.
 # _wr  = wrist proxy on BOTH channels (wrong: kills wrist->cup, so grasp/release degrade)
-# _wr2 = wrist proxy on the cup->MOUTH channel only; grasp/release keep the observed-only cup
+# _wr2 = wrist proxy on the cup->MOUTH channel only; grasp/release keep the observed-only cup.
+#        SUPERSEDED 2026-08-20: segment_sequential now drives cup->mouth from the WRIST ITSELF by
+#        default (cm_source="wrist"), so `mmc_c3kf` IS the shipped configuration and _wr2 is kept
+#        only as the comparison against the offset-fitted proxy.
 SOURCES = ["omc", "mmc", "mmc_c3kf", "mmc_c3kf_wr", "mmc_c3kf_wr2"]
 NCAMS = ROOT / "cache" / (__import__("os").environ.get("OT_NCAMS_DIR") or "cup_ncams")
 
@@ -88,8 +91,8 @@ def main():
             print(f"  [{k+1}/{len(recs)}] {time.time()-t0:4.0f}s", flush=True)
 
     D = pd.DataFrame(rows); F = pd.DataFrame(flagrows)
-    D.to_csv(ROOT / "out/automq/seg_boundaries.csv", index=False)
-    F.to_csv(ROOT / "out/automq/seg_boundaries_flags.csv", index=False)
+    D.to_csv(ROOT / "out/scoring/seg_boundaries.csv", index=False)
+    F.to_csv(ROOT / "out/scoring/seg_boundaries_flags.csv", index=False)
     n_seq = int(D[[f"seq_omc_{l}" for l, _, _ in BOUNDS]].notna().all(1).sum())
     n_anc = int(D[[f"anc_omc_{l}" for l, _, _ in BOUNDS]].notna().all(1).sum())
     print(f"\nPROCESSING CHECK: trials {len(D)}, all-boundaries-present sequential {n_seq}, "
@@ -115,7 +118,7 @@ def main():
     print("\nANCHORED QA flag rate (fraction of trials):")
     cols = [c for c in F.columns if c not in ("src", "part", "trial")]
     print(F.groupby("src")[cols].mean().round(3).T.to_string())
-    print("\nwrote out/automq/seg_boundaries.csv + _flags.csv\nDONE", flush=True)
+    print("\nwrote out/scoring/seg_boundaries.csv + _flags.csv\nDONE", flush=True)
 
 
 if __name__ == "__main__":

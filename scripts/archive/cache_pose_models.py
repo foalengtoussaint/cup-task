@@ -36,8 +36,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import pose_keypoints, triangulate
-from cup_task.kalman_3d import load_calibration
+from pipeline import pose_keypoints, triangulate
+from pipeline.kalman_3d import load_calibration
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "cache" / "pose_models"

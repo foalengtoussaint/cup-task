@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import argparse
 import glob
+import os
+import re
 import json
 import sys
 from pathlib import Path
@@ -35,8 +37,8 @@ import numpy as np
 from scipy.signal import butter, filtfilt
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import triangulate
-from cup_task.kalman_3d import load_calibration
+from pipeline import triangulate
+from pipeline.kalman_3d import load_calibration
 
 ROOT = Path(__file__).resolve().parents[1]
 DELTA = ROOT / "cache" / "delta"
@@ -55,6 +57,17 @@ JOINTS = {
     "right_hip":      ("hip_R",),
     "left_hip":       ("hip_L",),
     "nose":           ("head",),
+}
+
+# OPTICAL-ONLY markers: no COCO counterpart, so _load_omc returns them but _load_mmc never tries to
+# triangulate them from video.
+#   trunk -- the sternum marker AutoMQ derives its trunk_displacement from. It calls the marker
+#   `trunk`; the C3D label is `chest` (AutoMQ also renames head->face and cluster_cup_1->glass).
+#   The markerless side has no sternum keypoint and falls back to the shoulder midpoint. Trunk
+#   displacement is a distance from the trial's own rest position, and a constant landmark offset
+#   cancels in that difference, so the two points can disagree only through trunk ROTATION.
+OMC_EXTRA = {
+    "trunk":          ("chest",),
 }
 
 # The Murphy scoring (imove_extensions/murphy_measures.py) uses MORE than wrist+elbow:
@@ -79,6 +92,55 @@ def _resample(xyz, from_hz, to_hz):
     out = np.empty((len(t_new), 3))
     for k in range(3):
         out[:, k] = np.interp(t_new, t_old, xyz[:, k])
+    return out
+
+
+# A marker that JUMPS AND STAYS is a mislabelling, not a spike, and _despike cannot fix it: NaNing
+# the single frame at the jump leaves the discontinuity between the segments either side, and the
+# interpolation every downstream filter performs puts it straight back. Set OT_OMC_DESTEP_MM=0 to
+# disable (the pre-2026-08-21 behaviour).
+DESTEP_MM = float(os.environ.get("OT_OMC_DESTEP_MM", "60"))
+
+
+def _destep(xyz, max_step_mm=None, max_drop_frac=0.35):
+    """Drop MISLABELLED SEGMENTS: split at implausible jumps, keep the longest run.
+
+    At the C3D's own rate a 60mm inter-frame step is ~6 m/s of marker travel, which no arm marker
+    does; a real fast wrist is nearer 15mm/frame at 100Hz. So a step past that threshold is a label
+    change, and the frames on one side of it belong to something else. The longest run is the trial's
+    real trajectory -- the observed faults are a marker that has not locked on for the first ~0.7 s
+    (P17 left elbow: 61-75 frames of 760, with the upper arm reading 20mm too long until it settles).
+
+    MUST run on the raw C3D series, BEFORE _resample: resampling interpolates the discontinuity into
+    its neighbours, after which no per-frame threshold can find it cleanly.
+
+    Refuses to act when more than `max_drop_frac` of the finite frames would go -- that is not a
+    leading-label fault, and silently deleting a third of a trial is worse than passing it through.
+    """
+    if max_step_mm is None:
+        max_step_mm = DESTEP_MM
+    x = np.asarray(xyz, float)
+    if max_step_mm <= 0:
+        return x
+    fin = np.isfinite(x).all(1)
+    if fin.sum() < 10:
+        return x
+    step = np.zeros(len(x))
+    step[1:] = np.linalg.norm(np.diff(x, axis=0), axis=1)
+    cuts = np.flatnonzero(step > max_step_mm)
+    if not len(cuts):
+        return x
+    bounds = [0, *cuts.tolist(), len(x)]
+    segs = [(bounds[i], bounds[i + 1]) for i in range(len(bounds) - 1)]
+    lens = [int(fin[a:b].sum()) for a, b in segs]
+    keep = int(np.argmax(lens))
+    dropped = sum(n for i, n in enumerate(lens) if i != keep)
+    if dropped > max_drop_frac * fin.sum():
+        return x
+    out = x.copy()
+    for i, (a, b) in enumerate(segs):
+        if i != keep:
+            out[a:b] = np.nan
     return out
 
 
@@ -182,8 +244,69 @@ def _load_mmc(part, trial):
     return out, n
 
 
-def _load_omc(part, trial, n_video):
-    c = ezc3d.c3d(str(DELTA / part / "c3d" / f"{trial}.c3d"))
+# ---------------------------------------------------------------------------- P25 pairing repair
+# P25 was recorded as ONE session and split into P251/P252 at the wrong boundaries, so three
+# contiguous spans of trials are paired with the NEXT repetition's C3D. Verified by cross-correlating
+# every trial against every C3D of that participant (scripts/check_trial_pairing.py): the mis-paired
+# trials match trial+1 far better than their own (r 0.70 -> 0.88-0.94 at ~zero lag), and the shift is
+# uniform across each span -- a mixture would be worse than either choice, so it is applied as BLOCKS.
+# Verification lives in scripts/apply_block_repair.py -> out/scoring/block_repair.csv.
+# (part, trial-suffix, lo, hi, offset) -- video trial N is paired with C3D N+offset for lo <= N <= hi.
+# P25: session split at the wrong boundary, offset +1. Verified 31/31 (scripts/apply_block_repair.py).
+# P10: the SAME failure in the opposite direction. Video R_unaffected jumps 19 -> 23 (reps 20-22 have
+# no video), and from 23 on every trial matches C3D N-1: 14 of the 15 trials in the span, own_r
+# 0.706 -> 0.923 median, residual |lag| <= 2 frames. Trials 1-19 are correctly paired at offset 0.
+_C3D_BLOCKS = [("P251", "R_unaffected", 12, 10**9, +1),
+               ("P251", "L_affected", 23, 10**9, +1),
+               ("P252", "R_unaffected", 43, 44, +1),
+               ("P10", "R_unaffected", 21, 10**9, -1)]
+# Boundary note: the block starts at 21, NOT 23. The first pass read the trial list off gnn_pairs,
+# which held only previously-built trials, so 20-22 looked absent and the span looked like it began at
+# 23. Re-derived against the complete list (scripts/verify_blocks.py): trial 21 r 0.563 -> 0.979 and
+# trial 22 r 0.923 -> 0.987 under -1. Trial 20 matches NOTHING at any offset in -2..+2 (best 0.586 at
+# +0, lag 144) -- a bad trial, not a shifted one, so it is left alone for the sync gate to drop.
+# Two trials have no clean target and are expected to drop out:
+#   P251/trial_22_R_unaffected -- +1 lands past the last R C3D (video has 22 reps, mocap 22, but the
+#                                 shift consumes one); skipped by c3d_path().exists().
+#   P252/trial_45_R_unaffected -- no usable MMC signal at all (corr -2.000 at every offset); the +1
+#                                 block gives its C3D to trial_44, and the sync gate drops this one.
+_TRIAL_RE = re.compile(r"trial_(\d+)_(.+)$")
+# P25 trial numbering runs continuously 1..83 across the whole session, but the C3D split falls after
+# 42 while the VIDEO split falls after 41 -- so trial_42_L_affected.c3d is filed under P252 even though
+# it is P251's last L rep. Shifting P251's L block by +1 therefore runs off the end of P251's own c3d
+# dir. Search the sibling session folder rather than dropping the trial (verified: r 0.685 -> 0.867 at
+# lag 2, in line with the other 30 repairs).
+_SIBLING = {"P251": "P252", "P252": "P251"}
+
+
+def c3d_path(part, trial):
+    """Path to the C3D that actually corresponds to this video trial. Identity outside the P25
+    blocks; falls back to the sibling session folder when the shift crosses the split."""
+    name = trial
+    m = _TRIAL_RE.search(trial)
+    if m:
+        n, suf = int(m.group(1)), m.group(2)
+        for p_, blk, lo, hi, off in _C3D_BLOCKS:
+            if p_ == part and suf == blk and lo <= n <= hi:
+                name = f"trial_{n+off}_{suf}"
+                break
+    q = DELTA / part / "c3d" / f"{name}.c3d"
+    if not q.exists() and part in _SIBLING:
+        alt = DELTA / _SIBLING[part] / "c3d" / f"{name}.c3d"
+        if alt.exists():
+            return alt
+    return q
+
+
+def c3d_name(part, trial):
+    """Just the stem of c3d_path -- recorded in the meta so the pairing is auditable."""
+    return c3d_path(part, trial).stem
+
+
+def _load_omc(part, trial, n_video, repair=True):
+    """repair=True resolves the trial->C3D block offset (see c3d_path). Audit scripts that probe a
+    SPECIFIC C3D by name must pass repair=False, else the block would be applied twice."""
+    c = ezc3d.c3d(str(c3d_path(part, trial) if repair else DELTA / part / "c3d" / f"{trial}.c3d"))
     L = c["parameters"]["POINT"]["LABELS"]["value"]
     P = c["data"]["points"]   # (4, m, T) mm
     # USE THE FILE'S OWN RATE, not the hardcoded 100: P13's C3Ds are 96Hz. Resampling 96Hz mocap as
@@ -199,10 +322,12 @@ def _load_omc(part, trial, n_video):
         # the arm actually being scored surfaces later as NaN measures, not a hard crash on load.
         if nm not in L:
             return np.full((T, 3), np.nan)
-        return P[:3, L.index(nm), :].T
+        # de-step on the RAW series, per marker and before the markers are averaged: a step in one
+        # of a pair (e.g. wrist_inner/outer) is halved by the mean and can slip under the threshold.
+        return _destep(P[:3, L.index(nm), :].T)
 
     out = {}
-    for joint, mks in JOINTS.items():
+    for joint, mks in {**JOINTS, **OMC_EXTRA}.items():
         with np.errstate(invalid="ignore"):          # all-NaN joint (missing non-scored arm) -> NaN
             import warnings
             with warnings.catch_warnings():
@@ -281,6 +406,72 @@ def _find_lag_multi(mmc, omc, side, mmc_cup=None, omc_cup=None, max_lag=180):
         if c > best_c:
             best_c, best_lag, best_sig = c, lag, name
     return best_lag, float(best_c), best_sig
+
+
+def _corr_curve(a, b, max_lag=180):
+    """Correlation of low-passed a vs lag-shifted b at EVERY lag. Returns (lags, corr)."""
+    a = _lp(a); bl = _lp(b)
+    lags = np.arange(-max_lag, max_lag + 1)
+    out = np.full(len(lags), np.nan)
+    for i, lag in enumerate(lags):
+        bs = np.roll(bl, lag)
+        m = np.isfinite(a) & np.isfinite(bs)
+        if m.sum() < 40:
+            continue
+        c = np.corrcoef(a[m], bs[m])[0, 1]
+        if np.isfinite(c):
+            out[i] = c
+    return lags, out
+
+
+def find_lag_best(mmc, omc, side, mmc_cup=None, omc_cup=None, max_lag=180, min_peak=0.3):
+    """THE canonical MMC<->OMC lag. Use this, not _find_lag or _find_lag_multi.
+
+    _find_lag uses wrist speed alone; _find_lag_multi takes an argmax over 8 candidate signals and
+    keeps only the winner. With 8 candidates the maximum is exactly the statistic noise inflates --
+    which is how P17/trial_17 ends up shifted -138 frames (its raw wrist_outer_L marker travels 4.6m,
+    a mocap label swap) while shoulder and elbow both agree on +13 at r 0.98.
+
+    Instead: take every signal's FULL correlation curve, Fisher-transform so they are additive, weight
+    each by peak^2 (how informative it is), sum, and take ONE argmax. Signals that agree reinforce at
+    the same lag; a lone spurious peak is outvoted. Also yields a real confidence (the margin over the
+    best competing peak), which an argmax cannot give.
+
+        z_i(tau) = arctanh(c_i(tau));  Z(tau) = sum_i w_i z_i(tau) / sum_i w_i;  tau* = argmax Z
+
+    mmc/omc: dict joint -> (T,3). Returns (lag, corr_of_stacked_peak, info dict).
+    """
+    cands = []
+    for j in ("wrist", "elbow", "shoulder"):
+        jn = f"{side}_{j}"
+        if jn in mmc and jn in omc:
+            cands.append((f"{j}_speed", _speed(mmc[jn]), _speed(omc[jn])))
+            cands.append((f"{j}_disp", _disp_from_start(mmc[jn]), _disp_from_start(omc[jn])))
+    if mmc_cup is not None and omc_cup is not None:
+        cands.append(("cup_speed", _speed(mmc_cup), _speed(omc_cup)))
+        cands.append(("cup_disp", _disp_from_start(mmc_cup), _disp_from_start(omc_cup)))
+    lags, Z, W, per = None, None, 0.0, {}
+    for name, a, b in cands:
+        lg, c = _corr_curve(a, b, max_lag)
+        if not np.isfinite(c).any():
+            continue
+        peak = float(np.nanmax(c))
+        if peak < min_peak:                       # a signal with no usable peak abstains entirely
+            continue
+        z = np.arctanh(np.clip(np.nan_to_num(c, nan=0.0), -0.999, 0.999))
+        w = peak ** 2
+        Z = z * w if Z is None else Z + z * w
+        W += w; lags = lg
+        per[name] = (int(lg[int(np.nanargmax(c))]), peak)
+    if Z is None:                                  # nothing usable -> fall back to the old gate
+        lag, c = _find_lag(mmc[f"{side}_wrist"], omc[f"{side}_wrist"], max_lag)
+        return lag, float(c), {"n_sig": 0, "fallback": "wrist"}
+    Z = Z / max(W, 1e-9)
+    i = int(np.argmax(Z))
+    lag = int(lags[i])
+    excl = np.ones(len(Z), bool); excl[max(0, i - 10):i + 11] = False
+    margin = float(np.tanh(Z[i]) - np.tanh(np.nanmax(Z[excl]))) if excl.any() else np.nan
+    return lag, float(np.tanh(Z[i])), {"n_sig": len(per), "margin": margin, "per_signal": per}
 
 
 def _murphy_signals(P, side="right"):

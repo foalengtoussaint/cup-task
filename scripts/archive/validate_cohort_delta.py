@@ -35,8 +35,8 @@ import numpy as np
 from scipy.stats import pearsonr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import segment
-from cup_task.score import compute_position_measures, _smoothed_xyz
+from pipeline import segment
+from pipeline.score import compute_position_measures, _smoothed_xyz
 import scripts.compare_pose_omc_delta as C
 from scripts.compare_pose_omc_delta import (_load_mmc, _despike, _resample, _lp, _find_lag,
                                             VIDEO_FPS, C3D_RATE, DELTA)

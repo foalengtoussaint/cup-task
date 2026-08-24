@@ -1,7 +1,7 @@
 """Table III (Unger et al.): movement-quality measures MMC vs OMC.
-  r_s  = Spearman across ALL trials
-  r_av = Spearman on per-(participant,arm) AVERAGED trials
-Reads the Fig-4 scorer CSV (out/automq/score_vs_automq.csv, BA+smoothnet). No OMC computation --
+  r_s  = PEARSON across ALL trials (single trials -- unger2024's subscript is "single", not "Spearman")
+  r_av = PEARSON on per-(participant,arm) AVERAGED trials
+Reads the Fig-4 scorer CSV (out/scoring/score_vs_automq.csv, BA+smoothnet). No OMC computation --
 the CSV already holds AutoMQ's stored scalar vs our pose-derived scalar per trial.
 Writes out/paper/table3_measures.md (+ .csv).
 """
@@ -10,12 +10,12 @@ import sys
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import pearsonr
 # paper/scripts/ -> REPO is two up, PAPER (output folder) one up.
 REPO = Path(__file__).resolve().parents[2]
 PAPER = Path(__file__).resolve().parents[1]
 import os
-CSV = Path(os.environ.get("SCORE_CSV", REPO / "out" / "automq" / "score_vs_automq.csv"))
+CSV = Path(os.environ.get("SCORE_CSV", REPO / "out" / "scoring" / "score_vs_automq.csv"))
 VARIANT = "BA+smoothnet"
 
 # (measure key, pretty label) in Unger Table III order; percent + flexion-D excluded (see methods.md)
@@ -45,10 +45,10 @@ def main():
         g = d[d["measure"] == key].dropna(subset=["automq", "mmc"])
         if len(g) < 3:
             rows.append((label, np.nan, np.nan, 0)); continue
-        rs = spearmanr(g["automq"], g["mmc"]).correlation
+        rs = pearsonr(g["automq"], g["mmc"])[0]
         # r_av: average per (participant, arm) then correlate
         av = g.groupby(["part", "arm"])[["automq", "mmc"]].mean().reset_index()
-        rav = spearmanr(av["automq"], av["mmc"]).correlation if len(av) >= 3 else np.nan
+        rav = pearsonr(av["automq"], av["mmc"])[0] if len(av) >= 3 else np.nan
         rows.append((label, rs, rav, len(g)))
 
     out_md = PAPER / "table3_measures.md"

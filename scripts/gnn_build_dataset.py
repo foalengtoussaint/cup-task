@@ -27,6 +27,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -63,13 +64,26 @@ def _trial_side(trial):
     return "right" if "_R_" in trial else "left"
 
 
+# Trial<->C3D pairing repair now lives in compare_pose_omc_delta (H) so that EVERY OMC loader gets
+# it, not just this builder. Re-exported here for the scripts that import it from this module.
+_C3D_BLOCKS = H._C3D_BLOCKS
+_SIBLING = H._SIBLING
+c3d_path = H.c3d_path
+c3d_name = H.c3d_name
+
+
 def _load_omc_defensive(part, trial, n_video):
     """Like H._load_omc but tolerant of the P15 typo + missing markers. Returns (dict, wrist_src)
     where wrist_src describes what the (affected-side) wrist target was built from."""
-    c = ezc3d.c3d(str(DELTA / part / "c3d" / f"{trial}.c3d"))
+    c = ezc3d.c3d(str(c3d_path(part, trial)))
     L = c["parameters"]["POINT"]["LABELS"]["value"]
     P = c["data"]["points"]                       # (4, m, T) mm
     lset = set(L)
+    # USE THE FILE'S OWN RATE, not the hardcoded H.C3D_RATE. P13's 80 C3Ds are 96Hz; resampling them
+    # as 100Hz gives a 4.17% PROGRESSIVE within-trial desync (~150fr end-to-end on a 3600fr trial)
+    # that no constant lag shift can remove. H._load_omc already does this; this loader did not, so
+    # every cached P13 pair carried the drift.
+    rate = float(c["parameters"]["POINT"]["RATE"]["value"][0]) or H.C3D_RATE
 
     def marker(nm):
         return P[:3, L.index(nm), :].T
@@ -90,7 +104,7 @@ def _load_omc_defensive(part, trial, n_video):
             out[joint] = np.full((n_video, 3), np.nan)
             continue
         raw = np.mean([marker(m) for m in present], axis=0)
-        grid = H._despike(H._resample(raw, H.C3D_RATE, H.VIDEO_FPS))
+        grid = H._despike(H._resample(raw, rate, H.VIDEO_FPS))
         if len(grid) < n_video:
             grid = np.vstack([grid, np.full((n_video - len(grid), 3), np.nan)])
         out[joint] = grid[:n_video]
@@ -103,7 +117,7 @@ def _load_omc_defensive(part, trial, n_video):
            ("midpoint" if len(present) >= 2 else
             ("outer_only" if present == [f"wrist_outer_{side[0].upper()}"] else
              ("+".join(present) if present else "MISSING"))))
-    return out, src
+    return out, src, rate
 
 
 def _shift(v, lag):
@@ -196,13 +210,15 @@ def build_trial(part, trial, force=False):
             except Exception as e:
                 return f"cached (reproj-err:{type(e).__name__})"
         return "cached"
+    if not c3d_path(part, trial).exists():
+        return "skip:no-c3d-target"
     side = _trial_side(trial)
     wr = f"{side}_wrist"
     try:
         mmc, n = H._load_mmc(part, trial)             # GOOD cams only (use_good_cams set by caller)
     except Exception as e:
         return f"mmc-err:{type(e).__name__}"
-    omc, wrist_src = _load_omc_defensive(part, trial, n)
+    omc, wrist_src, rate_used = _load_omc_defensive(part, trial, n)
 
     # sync on the AFFECTED-side wrist speed (same as the harness), shift OMC onto MMC
     lag, sc = H._find_lag(mmc[wr], omc[wr])
@@ -219,7 +235,11 @@ def build_trial(part, trial, force=False):
     except Exception:
         mcup = ocup = None
     lag_m, sc_m, sig_m = H._find_lag_multi(mmc, omc, side, mcup, ocup)
-    omc = {j: _shift(v, lag) for j, v in omc.items()}
+    # SHIFT BY THE STACKED LAG, not the wrist-only one. The admission gate already scored the
+    # multi-signal sync; applying the wrist lag while gating on the multi metric meant trials were
+    # admitted on one estimator and aligned by another that had failed (one by 151 frames).
+    lag_best, sc_best, info_best = H.find_lag_best(mmc, omc, side, mcup, ocup)
+    omc = {j: _shift(v, lag_best) for j, v in omc.items()}
 
     M = np.stack([mmc[j] for j in JOINTS], axis=1)    # (T, J, 3)
     O = np.stack([omc[j] for j in JOINTS], axis=1)    # (T, J, 3)
@@ -235,8 +255,14 @@ def build_trial(part, trial, force=False):
 
     meta = {
         "part": part, "trial": trial, "side": side, "n": int(n),
+        "c3d": c3d_name(part, trial),                 # the OMC file actually paired (P25 repair)
+        "c3d_dir": c3d_path(part, trial).parent.parent.name,
+        "c3d_rate": float(rate_used),
         "good_cams": sorted(H.GOOD_CAMS.get(part, []), key=lambda c: int(c.split("_")[1])),
-        "lag": int(lag), "sync_corr": float(sc),
+        "lag": int(lag_best), "sync_corr": float(sc_best),      # APPLIED: the stacked lag
+        "lag_stacked_margin": float(info_best.get("margin", float("nan"))),
+        "n_sync_signals": int(info_best.get("n_sig", 0)),
+        "lag_wrist": int(lag), "sync_corr_wrist": float(sc),      # retained for audit only
         "sync_corr_multi": float(sc_m), "sync_signal": sig_m, "lag_multi": int(lag_m),
         "target_wrist_source": wrist_src,
         "wrist_valid_frac": float(valid[:, JOINTS.index(wr)].mean()),
@@ -267,6 +293,8 @@ def main(argv=None):
           flush=True)
 
     n_ok = n_skip = 0
+    import time as _time
+    _t0 = _time.time(); _lags = []; _corrs = []
     for part in a.parts:
         trials = _trials_for(part)
         if a.audit_clean and part in audit:
@@ -282,10 +310,24 @@ def main(argv=None):
                 n_skip += 1
             elif r.startswith("built"):
                 n_ok += 1
-                if i < 3 or i % 20 == 0:      # sample the log, don't spam hundreds
-                    print(f"  [{i+1:3d}/{len(trials)}] {trial[:26]:26} {r}", flush=True)
             else:
                 print(f"  [{i+1:3d}/{len(trials)}] {trial[:26]:26} SKIP {r}", flush=True)
+            mj = CACHE / part / f"{trial}.json"
+            if mj.exists():
+                try:
+                    _m = json.loads(mj.read_text())
+                    _lags.append(_m.get("lag", 0)); _corrs.append(_m.get("sync_corr", np.nan))
+                except Exception:
+                    pass
+            # LIVE per-10 progress: count + elapsed + running sync quality (CLAUDE.md)
+            if (i + 1) % 10 == 0 or (i + 1) == len(trials):
+                _el = _time.time() - _t0
+                _c = np.array(_corrs[-200:], float)
+                print(f"  {part} [{i+1:3d}/{len(trials)}] {_el:6.0f}s "
+                      f"({_el/max(n_ok+n_skip,1):.2f}s/trial)  built {n_ok} skip {n_skip}  "
+                      f"median sync r {np.nanmedian(_c) if _c.size else float('nan'):.3f}  "
+                      f"|lag| med {np.median(np.abs(_lags[-200:])) if _lags else float('nan'):.0f}fr",
+                      flush=True)
         print(f"  {part} done", flush=True)
     print(f"\nbuilt {n_ok} new, {n_skip} already cached -> {CACHE}", flush=True)
 

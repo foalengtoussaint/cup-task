@@ -8,7 +8,8 @@ actually matter downstream:
     jitter (mm/s^2)    mean |accel| of the affected wrist             -- smoothness (SmoothNet metric)
     peak-vel err (%)   |peak wrist speed refined - OMC| / OMC, low-passed, signed (neg=undershoot)
 
-CLEAN filter: sync_corr >= 0.7 AND affected-wrist valid_frac >= 0.5 (measured: 171/279 trials).
+CLEAN filter: sync_corr >= 0.7 AND affected-wrist valid_frac >= 0.5 (842/851 trials, 2026-08-20;
+sync_corr is the stacked Fisher-z consensus, the same estimator that aligned the trial).
 Windows: centre-frame prediction over a (win) temporal window, stride 1; batches drawn across trials.
 NO hip root (PA loss is translation/rotation invariant). Prints per-epoch val PA-MPJPE (flush) so a
 long run is never a silent hang. Caches the best per-fold checkpoint under out/gnn/.
@@ -57,10 +58,18 @@ def load_clean(parts=None, sync_thr=0.7, wr_thr=0.5, need_reproj=False):
         m = json.loads(Path(mj).read_text())
         if parts and m["part"] not in parts:
             continue
-        # gate on the BETTER of raw-wrist-speed sync and the multi-signal sync (best joint/cup x
-        # speed/displacement). The multi metric rescues trials a bad wrist keypoint or fragile speed
-        # derivative spuriously fails, without ever being worse (it includes wrist-speed as a candidate).
-        sync = max(m.get("sync_corr", 0.0), m.get("sync_corr_multi", 0.0))
+        # Gate on sync_corr, which IS the stacked Fisher-z consensus (gnn_build_dataset stores
+        # find_lag_best's correlation there, tagged "APPLIED"), i.e. the same estimator whose lag was
+        # used to align the trial. sync_corr_wrist/sync_corr_multi are audit-only.
+        #
+        # This previously read max(sync_corr, sync_corr_multi). That admitted trials on the best-of-8
+        # argmax while the stacked lag actually applied to them had failed -- the "admitted on one
+        # estimator, aligned by another" bug gnn_build_dataset.py:238 records fixing for the lag but
+        # not for admission. Measured 2026-08-20 over 851 trials it rescued exactly two, both with a
+        # failed applied alignment (P15 trial_47_L_affected stacked 0.339 vs multi 0.894; P19
+        # trial_55_R_affected 0.389 vs 0.755), and zero in the other direction -- so it only ever
+        # added trials whose alignment was unjustified. Neither reached the scored cohort.
+        sync = m.get("sync_corr", 0.0)
         if sync < sync_thr or m["wrist_valid_frac"] < wr_thr:
             continue
         d = np.load(str(Path(mj).with_suffix(".npz")))

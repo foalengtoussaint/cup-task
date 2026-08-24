@@ -14,8 +14,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task.cup_detect import detect_cup, to_payload as cup_payload
-from cup_task.pose_keypoints import extract_pose, to_payload as pose_payload
+from pipeline.cup_detect import detect_cup, to_payload as cup_payload
+from pipeline.pose_keypoints import extract_pose, to_payload as pose_payload
 
 
 def main(argv=None) -> int:

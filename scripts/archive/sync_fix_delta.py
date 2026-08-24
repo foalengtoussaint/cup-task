@@ -29,7 +29,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare_pose_omc_delta as C  # noqa: E402
-from cup_task.triangulate import robust_triangulate  # noqa: E402
+from pipeline.triangulate import robust_triangulate  # noqa: E402
 
 CONF_MIN = 0.65    # shifted correlation must clear this to trust the offset
 LAG_SD_MAX = 4     # frames; offset must be consistent across trials to be a real clock shift

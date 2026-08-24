@@ -12,7 +12,7 @@ Output matches cache_tracks.py / bench_v3.py exactly:
     cache/tracks_uetrack/<part>__<trial>__uetrack__fs1.json
       {frame: {cam: {"yolo": [x,y,w,h]|null, "trk": [cx,cy]|null, "seeded": bool}}}
 
-The consumer (cup_task.cup_track.track_cup_3d_from_cache) only reads `trk` per cam per frame and runs
+The consumer (pipeline.cup_track.track_cup_3d_from_cache) only reads `trk` per cam per frame and runs
 consensus3 over whatever cameras have a point that frame -- so a camera that seeds late (its first
 detection at frame 46) simply contributes from frame 46 on. No GPU re-detection: seeds come from the
 already-cached <clip>.<cam>.cup.json boxes.
@@ -114,7 +114,7 @@ def _consensus_seed(part, trial, calib, cams):
     Scans the frames that actually HAVE >=2 detections (not a fixed early window), so it works for a
     cut clip AND for an uncut recording where the cup only enters late (e.g. cam co-detect at frame
     827). Reprojection into the NON-detecting cameras is done by the caller (needs X + calib)."""
-    from cup_task import consensus
+    from pipeline import consensus
     # per-cam set of detection frames + the box at each
     det = {}
     for c in cams:
@@ -167,7 +167,7 @@ def _existing_cams(cf):
 def _reproj_box(X, cam, ref_wh=(46.0, 46.0)):
     """Reproject world 3D X into `cam` -> an xywh box centred there, sized like a cup (ref_wh px).
     None if the point is behind the camera or off-image is unknown (caller checks bounds)."""
-    from cup_task.kalman_3d import project
+    from pipeline.kalman_3d import project
     uv, ok = project(cam, np.asarray(X, float))
     if not ok:
         return None

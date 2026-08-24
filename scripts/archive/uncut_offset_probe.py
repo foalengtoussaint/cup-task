@@ -32,7 +32,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare_pose_omc_delta as C  # noqa: E402
-from cup_task.kalman_3d import project  # noqa: E402
+from pipeline.kalman_3d import project  # noqa: E402
 from reaudit_cam_quality import ransac_point, _side  # noqa: E402
 from delta_recut import local_uncut, locate, coarse_thumbs, fps_of, duration, SHARE  # noqa: E402
 

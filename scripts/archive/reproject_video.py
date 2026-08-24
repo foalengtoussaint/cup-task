@@ -21,7 +21,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task.kalman_3d import load_calibration, project
+from pipeline.kalman_3d import load_calibration, project
 
 COLORS = {"cup": (0, 0, 255), "mouth": (255, 128, 0),
           "left_wrist": (0, 200, 0), "right_wrist": (0, 165, 255)}

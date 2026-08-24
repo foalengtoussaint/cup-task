@@ -22,3 +22,17 @@ out*/
 external/
 models/
 cache/
+
+# The 2026-08-20 reorg moved data/, runs/ and out*/ under archive/, where the
+# patterns above no longer match them -- 30 GB became git-visible. Re-ignore by
+# their new paths. archive/README.md, archive/docs_20260820/ and
+# archive/tests_20260820/ are source and stay tracked.
+archive/data_20260820/
+archive/runs/
+archive/runs_20260820/
+archive/delta_byproducts/
+archive/out640/
+archive/out_cup_pred/
+archive/out_media/
+archive/out_streams/
+archive/stray_backups/

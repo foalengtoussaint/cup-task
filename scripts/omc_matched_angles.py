@@ -27,11 +27,11 @@ low-pass; the CONTROL caught it (see below).
                land close to `r_s vs AutoMQ`. If it does not, this script is wrong -- that is
                exactly how the hand-rolled version was caught (0.808 vs 0.863).
 
-The MMC column is JOINED FROM out/automq/score_vs_automq.csv (BA+smoothnet, peak max/n-a), NOT
+The MMC column is JOINED FROM out/scoring/score_vs_automq.csv (BA+smoothnet, peak max/n-a), NOT
 recomputed, so the MMC numbers are literally the ones in the current table and the ONLY thing that
 changes is the ground truth.
 
-    python scripts/omc_matched_angles.py   ->  out/automq/omc_matched_angles.csv
+    python scripts/omc_matched_angles.py   ->  out/scoring/omc_matched_angles.csv
 """
 from __future__ import annotations
 
@@ -51,11 +51,11 @@ import compare_pose_omc_delta as H                                    # noqa: E4
 import gnn_train as GT                                                # noqa: E402
 import results_v3_delta as R                                          # noqa: E402
 from compare_pose_omc_delta import _murphy_signals, _lp               # noqa: E402
-from score_vs_automq import (load_automq, automq_part, _elbow_series,  # noqa: E402
+from score_vs_automq import (load_automq, automq_part, automq_key, _elbow_series,  # noqa: E402
                              automq_phases_to_video, _win, _seg_reduce, _planar_body_angles)
 
-SCORER = ROOT / "out/automq/score_vs_automq.csv"
-OUT = ROOT / "out/automq/omc_matched_angles.csv"
+SCORER = ROOT / "out/scoring/score_vs_automq.csv"
+OUT = ROOT / "out/scoring/omc_matched_angles.csv"
 GRID = R._GRID_JOINTS
 JN = ["right_shoulder", "left_shoulder", "right_elbow", "left_elbow",
       "right_wrist", "left_wrist", "right_hip", "left_hip", "nose"]
@@ -95,7 +95,7 @@ def main():
         if not m:
             continue
         p, tn, sd = t["part"], int(m.group(1)), m.group(2)
-        rec = amq.get((automq_part(p), tn, sd))
+        rec = amq.get(automq_key(p, t["trial"]))      # block-aware truth row
         if rec is None or rec.get("phases") is None:
             continue
         side = t["side"]
@@ -106,7 +106,7 @@ def main():
             continue
         if not np.isfinite(omc[wr]).any():
             continue
-        lag, _ = H._find_lag(t["mmc"][:, GRID.index(wr)], omc[wr])
+        lag, _, _ = H.find_lag_best({j: t["mmc"][:, k] for k, j in enumerate(GRID)}, omc, side)
         pose_omc = {j: R._shift(omc[j], lag) for j in JN}          # OMC on the VIDEO timebase
 
         other = "right" if side == "left" else "left"

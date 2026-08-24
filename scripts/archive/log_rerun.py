@@ -32,8 +32,8 @@ import numpy as np
 import rerun as rr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import pose_keypoints, segment, triangulate
-from cup_task.kalman_3d import load_calibration
+from pipeline import pose_keypoints, segment, triangulate
+from pipeline.kalman_3d import load_calibration
 
 FPS = 60.0
 
@@ -103,7 +103,7 @@ def main(argv=None):
 
     d_wc = np.linalg.norm(hand - cup, axis=1)      # the plateau signal (grasp + release)
 
-    rr.init("cup_task", spawn=False)
+    rr.init("pipeline", spawn=False)
     rr.save(str(a.out))
 
     # static: camera frusta + world axes

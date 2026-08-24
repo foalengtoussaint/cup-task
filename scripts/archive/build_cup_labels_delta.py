@@ -36,7 +36,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from cup_task.kalman_3d import load_calibration, project, triangulate_dlt  # noqa: E402
+from pipeline.kalman_3d import load_calibration, project, triangulate_dlt  # noqa: E402
 from gpu_decode import frames as gpu_frames  # noqa: E402  (NVDEC decode, cv2 CPU fallback)
 
 ROOT = Path(__file__).resolve().parents[1]

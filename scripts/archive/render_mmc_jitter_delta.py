@@ -23,8 +23,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import triangulate
-from cup_task.kalman_3d import project
+from pipeline import triangulate
+from pipeline.kalman_3d import project
 from scripts.score_omc_delta import _bonelock_pbd
 from scripts.compare_pose_omc_delta import _load_calib_mm, _despike, VIDEO_FPS, DELTA
 

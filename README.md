@@ -10,16 +10,16 @@ Standalone productization of the `object_tracking/experiments/drink_study` resea
 
 | | |
 |---|---|
-| **[docs/SPEC.md](docs/SPEC.md)** | **how the pipeline works** — stages, signals, phase definitions, conventions |
-| **[docs/RESULTS.md](docs/RESULTS.md)** | **every measured number** — accuracy vs OMC, speed, segmentation, Murphy |
-| [docs/WORKLOG.md](docs/WORKLOG.md) | chronological record, including what was tried and rejected |
-| [docs/SPEED_METRICS.md](docs/SPEED_METRICS.md) | the wrist-speed method comparison in detail |
+| **[SPEC.md](archive/docs_20260820/SPEC.md)** | **how the pipeline works** — stages, signals, phase definitions, conventions |
+| **[RESULTS.md](archive/docs_20260820/RESULTS.md)** | **every measured number** — accuracy vs OMC, speed, segmentation, Murphy |
+| [WORKLOG.md](archive/docs_20260820/WORKLOG.md) | chronological record, including what was tried and rejected |
+| [SPEED_METRICS.md](archive/docs_20260820/SPEED_METRICS.md) | the wrist-speed method comparison in detail |
 
 ## Run it
 
 ```bash
 # whole pipeline on one rep's clips
-python -m cup_task.pipeline CLIPDIR --calib calibration.toml -o out/ \
+python -m pipeline.pipeline CLIPDIR --calib calibration.toml -o out/ \
        --smooth-pose --cup-track
 
 # validation against OMC ground truth (cache-only, no GPU)
@@ -42,18 +42,18 @@ OFFLINE           triangulate → consensus → SmoothNet → blend
 
 Split at **the point a stage stops needing raw pixels**. Flow is online because it needs the frame
 *pair* (offline it would force a second full decode); SmoothNet is offline because it is a
-non-causal ±16-frame window. Full reasoning in [SPEC.md](docs/SPEC.md).
+non-causal ±16-frame window. Full reasoning in [SPEC.md](archive/docs_20260820/SPEC.md).
 
 | stage | module | what it does |
 |---|---|---|
-| cup detection | `cup_task.cup_detect` | YOLO, one-shot seed |
-| cup tracking | `cup_task.cup_track` + `consensus` | detect-once UETrack, ≥2-cam greedy consensus |
-| body keypoints | `cup_task.pose_keypoints` | YOLO-pose, COCO-17 upper body |
-| 3D triangulation | `cup_task.triangulate` | multi-view DLT |
-| temporal refinement | `cup_task.pose_smooth` | SmoothNet (pose **and** cup) |
-| wrist/cup velocity | `cup_task.flow_speed`, `speed_blend` | PyrLK flow → 3D velocity; speed-gated blend |
-| phase segmentation | `cup_task.segment` | 7 Murphy phases, van Andel definitions |
-| clinical measures | `cup_task.score` | 8/8 position measures |
+| cup detection | `pipeline.cup_detect` | YOLO, one-shot seed |
+| cup tracking | `pipeline.cup_track` + `consensus` | detect-once UETrack, ≥2-cam greedy consensus |
+| body keypoints | `pipeline.pose_keypoints` | YOLO-pose, COCO-17 upper body |
+| 3D triangulation | `pipeline.triangulate` | multi-view DLT |
+| temporal refinement | `pipeline.pose_smooth` | SmoothNet (pose **and** cup) |
+| wrist/cup velocity | `pipeline.flow_speed`, `speed_blend` | PyrLK flow → 3D velocity; speed-gated blend |
+| phase segmentation | `pipeline.segment` | 7 Murphy phases, van Andel definitions |
+| clinical measures | `pipeline.score` | 8/8 position measures |
 
 ## Headline results
 
@@ -67,7 +67,7 @@ Validated on DELTA, **n = 12** (P07+P08 × trial_10–15) against Qualisys OMC:
 | Murphy | peak_velocity **−46 %** error, movement_units **−50 %**, all 8 measures on all 12 trials |
 | realtime | 100 fps at 1 camera, 38.5 at 5 (GPU-bound); offline post-processing ~887 ms/trial |
 
-Full tables, caveats and the cohort exclusion in [RESULTS.md](docs/RESULTS.md).
+Full tables, caveats and the cohort exclusion in [RESULTS.md](archive/docs_20260820/RESULTS.md).
 
 ## Keypoints
 
@@ -79,7 +79,7 @@ mocap-free.
 ## Layout
 
 ```
-cup_task/        the pipeline modules
+pipeline/        the pipeline modules
 scripts/         active harnesses (results_v3_delta, bench_v3, cup_flow_probe) + shared libs
 scripts/archive/ settled investigations, kept — see its README
 models/          pose + SmoothNet + UETrack weights (repo-persistent on purpose)

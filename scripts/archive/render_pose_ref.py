@@ -40,7 +40,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task.kalman_3d import load_calibration, project
+from pipeline.kalman_3d import load_calibration, project
 
 ROOT = Path(__file__).resolve().parents[1]
 CACHE = ROOT / "cache" / "pose_models"

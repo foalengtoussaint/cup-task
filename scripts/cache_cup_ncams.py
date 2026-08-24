@@ -29,7 +29,7 @@ def main():
     H.use_good_cams()
     import cache_seg_inputs as CSI
     import results_v3_delta as R
-    from cup_task import cup_track
+    from pipeline import cup_track
     CACHE.mkdir(parents=True, exist_ok=True)
     recs = CSI.load_all()
     print(f"{len(recs)} trials -> {CACHE}", flush=True)
@@ -70,11 +70,11 @@ def main():
                         frac_eq2=float((nc == 2).mean())))
     import pandas as pd
     P = pd.DataFrame(per)
-    P.to_csv(ROOT / "out/automq/cup_ncams_coverage.csv", index=False)
+    P.to_csv(ROOT / "out/scoring/cup_ncams_coverage.csv", index=False)
     print("frames by n_cams: " + "  ".join(f"{k}:{v}" for k, v in enumerate(tot)))
     print(f"per-trial fraction below the >=3 floor: median {P.frac_lt3.median():.3f}  "
           f"p90 {P.frac_lt3.quantile(.9):.3f}  trials >30% {int((P.frac_lt3 > .3).sum())}")
-    print("\nwrote out/automq/cup_ncams_coverage.csv\nDONE", flush=True)
+    print("\nwrote out/scoring/cup_ncams_coverage.csv\nDONE", flush=True)
 
 
 if __name__ == "__main__":

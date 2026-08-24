@@ -5,8 +5,8 @@ import sys, numpy as np, cv2, torch
 from pathlib import Path
 sys.path.insert(0,'scripts'); sys.path.insert(0,'.')
 import compare_pose_omc_delta as H, flow_velocity_probe as F
-from cup_task import pose_smooth
-from cup_task.kalman_3d import triangulate_dlt
+from pipeline import pose_smooth
+from pipeline.kalman_3d import triangulate_dlt
 ROOT=Path('.'); H.use_good_cams()
 _M=[None]; CROP=384; RESEED=30
 def M():

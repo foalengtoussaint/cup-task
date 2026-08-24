@@ -115,7 +115,7 @@ def reproj_gate(part, gate_px=GATE_PX):
     This is the check I should have run on every re-cut from the start."""
     import numpy as np
     import compare_pose_omc_delta as _C
-    from cup_task.kalman_3d import project as _project
+    from pipeline.kalman_3d import project as _project
     from reaudit_cam_quality import ransac_point as _ransac
     work = CT / "cache" / "delta" / part / "work"
     dets = work / "dets"; clips = work / "clips"; rej = work / "rejected"

@@ -16,8 +16,8 @@ import numpy as np
 import rerun as rr
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import triangulate
-from cup_task.triangulate import kf_rts_smooth
+from pipeline import triangulate
+from pipeline.triangulate import kf_rts_smooth
 from scripts.score_omc_delta import _kf_only
 from scripts.compare_pose_omc_delta import _load_calib_mm, _despike, VIDEO_FPS, DELTA
 

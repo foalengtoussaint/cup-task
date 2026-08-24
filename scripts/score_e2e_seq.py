@@ -22,7 +22,7 @@ import compare_pose_omc_delta as H
 import gnn_train as GT
 import results_v3_delta as R
 from seg_sequential import segment_sequential
-from cup_task.score import compute_position_measures
+from pipeline.score import compute_position_measures
 GRID = S.GRID_JOINTS; FPS = S.FPS
 
 
@@ -71,7 +71,7 @@ def _cup_mmc(part, trial, nfr, wrist=None):
         nc = np.load(f)["n_cams"]
         X = np.asarray(X, float).copy()
         X[nc[:len(X)] < 3] = np.nan
-    from cup_task.triangulate import fill_cup_from_wrist, kf_fill_gaps
+    from pipeline.triangulate import fill_cup_from_wrist, kf_fill_gaps
     X = kf_fill_gaps(X)
     # OT_CUP_WRIST_PROXY=1: whatever the guarded KF would not fill (long gaps / low coverage) is taken
     # from the WRIST, which still carries the cup -- cup ~= wrist + median(cup-wrist) over the frames
@@ -93,7 +93,7 @@ def main():
         m = pat.search(trial)
         if not m:
             continue
-        rec = amq.get((S.automq_part(part), int(m.group(1)), m.group(2)))
+        rec = amq.get(S.automq_key(part, trial))      # block-aware truth row
         if rec is None or rec.get("phases") is None:
             continue
         nfr = t["mmc"].shape[0]
@@ -134,7 +134,7 @@ def main():
 
     df = pd.DataFrame(rows)
     import os
-    out = ROOT / "out/automq" / (os.environ.get("OT_E2E_OUT") or "score_e2e_seq.csv")
+    out = ROOT / "out/scoring" / (os.environ.get("OT_E2E_OUT") or "score_e2e_seq.csv")
     df.to_csv(out, index=False)
     print(f"\nPROCESSING CHECK: trials {n}, rows {len(df)}", flush=True)
 

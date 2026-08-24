@@ -17,8 +17,8 @@ import matplotlib.pyplot as plt
 from scipy.signal import find_peaks
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import segment
-from cup_task.score import (_smoothed_xyz, _hand_speed_mmps, DEFAULT_LOWPASS_HZ,
+from pipeline import segment
+from pipeline.score import (_smoothed_xyz, _hand_speed_mmps, DEFAULT_LOWPASS_HZ,
                             DEFAULT_BUTTER_ORDER, DEFAULT_MU_AMPLITUDE_MMPS, DEFAULT_MU_TIME_GAP_S)
 from scripts.score_omc_delta import _omc_cup, _shift
 from scripts.compare_pose_omc_delta import _load_mmc, _load_omc, _find_lag, _lp, VIDEO_FPS

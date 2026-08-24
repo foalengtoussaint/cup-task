@@ -32,8 +32,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import segment, triangulate
-from cup_task.kalman_3d import load_calibration
+from pipeline import segment, triangulate
+from pipeline.kalman_3d import load_calibration
 
 OT = Path("/home/imove/Documents/object_tracking/experiments/drink_study/cache")
 COMPARE = Path(__file__).resolve().parents[1] / "cache" / "phase_compare_omc.json"

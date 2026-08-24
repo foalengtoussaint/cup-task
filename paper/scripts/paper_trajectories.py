@@ -1,11 +1,18 @@
 """Reproduce Unger et al. Table I + Table II + Fig 3 -- TRAJECTORY-level MMC-vs-OMC agreement.
 
-Per scorable trial: take our BA+SmoothNet pose, build the SAME 6 kinematic trajectories AutoMQ stores
-(end-effector velocity, elbow angular velocity, elbow extension, shoulder flexion, shoulder abduction,
-trunk displacement), read AutoMQ's OWN stored series (combined_data_with_kinematics.pkl['kinematics'],
-100Hz -> resampled to 60Hz), find the sub-frame-consistent time lag (wrist-speed xcorr, same as the
-kinematics scorer), remove the per-trial static bias (mean offset), and compute per-frame RMSE, Pearson r,
-bias, and time-lag. AutoMQ series are READ (never recomputed) -- same status as the Fig-4 scalars.
+Per trial: build the six kinematic trajectories (end-effector velocity, elbow angular velocity, elbow
+extension, shoulder flexion, shoulder abduction, trunk displacement) from our BA+SmoothNet pose AND
+from the optical markers, through the SAME function; align by the stacked multi-signal lag; remove the
+per-trial static bias as unger2024 does; then compute per-frame RMSE, Pearson r, bias and lag.
+
+The optical side is `_our_trajectories` applied to the C3D keypoints (2026-08-21). It used to read the
+DELTA study's own stored kinematics (combined_data_with_kinematics.pkl), which made these two tables
+the last place its processing was the ground truth -- and gated them on its coverage, holding them at
+~705 trials while every other table moved to 794. Deriving both sides with one operator removes a
+difference of definition from what should read as pose error, and is the same change already made for
+the measures (scripts/score_own_phases.py).
+
+Trials come from cache/seg_inputs_ship, so Tables I-IV are scored on one trial set.
 
   Table I  : median [IQR] of RMSE / r / bias / lag per trajectory, split unaffected vs affected arm.
   Table II : mean IQR of bias across patients (within-patient trial variability of the static offset).
@@ -31,11 +38,12 @@ import compare_pose_omc_delta as H
 import gnn_train as GT
 import results_v3_delta as R
 from compare_pose_omc_delta import _murphy_signals, _lp, _movement_units
-from score_vs_automq import (load_automq, automq_phases_to_video, _pose_variant_cached,
-                             automq_part, _win, _elbow_series, FPS, AUTOMQ, C3D_RATE)
+from score_vs_automq import _pose_variant_cached, _elbow_series, FPS
+from seg_sequential import segment_sequential
 GRID = R._GRID_JOINTS
+SEG = REPO / "cache" / (__import__("os").environ.get("OT_SEG_INPUTS_DIR") or "seg_inputs_ship")
 
-# our trajectory name -> (pretty label, unit, AutoMQ kinematics column)
+# our trajectory name -> (pretty label, unit, _unused: was the AutoMQ column)
 TRAJ = [
     ("eev",   "End-effector velocity", "mm/s", "hand_R_velocity"),
     ("eav",   "Elbow angular velocity", "deg/s", None),          # d/dt elbow_angle
@@ -46,18 +54,6 @@ TRAJ = [
 ]
 
 
-def _amq_kin_lookup(part):
-    """{(trial_number, side): kinematics-DataFrame (100Hz)} for one AutoMQ participant."""
-    cdf = pd.read_pickle(AUTOMQ / automq_part(part) / "combined_data_with_kinematics.pkl")
-    out = {}
-    for fk in cdf.index:
-        try:
-            out[(int(fk[1]), fk[2])] = cdf.loc[fk, "kinematics"]
-        except Exception:
-            continue
-    return out
-
-
 def _resample_1d(y, n_out):
     """resample a 1-D series to n_out samples by linear interp on a normalized axis."""
     y = np.asarray(y, float)
@@ -65,6 +61,30 @@ def _resample_1d(y, n_out):
         return np.full(n_out, np.nan)
     xi = np.linspace(0, 1, len(y)); xo = np.linspace(0, 1, n_out)
     return np.interp(xo, xi, y)
+
+
+def _trunk_excursion(pose, side, n):
+    """Trunk displacement: 3D excursion of the trunk point from the trial's own rest position.
+
+    POINT. The STERNUM marker where one exists -- `_load_omc` supplies it as `trunk` (C3D label
+    `chest`), the same marker AutoMQ derives its trunk_displacement from and the same landmark
+    unger2024 use. COCO has no sternum keypoint, so the markerless side falls back to the midpoint of
+    the two shoulders. Because this is a distance from rest, a constant offset between the two points
+    cancels exactly; they can differ only through trunk ROTATION.
+
+    GEOMETRY. 3D norm, not a signed single axis. AutoMQ stores -(trunk_y - trunk_y[0]) in its own
+    frame -- the sternum's travel along ONE lab axis (its -y is the C3D's +x), signed, referenced to
+    a single frame. That ignores trunk motion in the other two directions, cannot be compared against
+    an unsigned norm without a sign flip, and takes its reference from one possibly-noisy frame.
+    """
+    pt = pose.get("trunk")
+    if pt is None or np.isfinite(pt).all(1).sum() < 15:
+        other = "right" if side == "left" else "left"
+        pt = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2.0
+    fin = np.isfinite(pt).all(1)
+    if fin.sum() < 15:
+        return np.full(n, np.nan)
+    return np.linalg.norm(pt - np.median(pt[fin][:15], 0), axis=1)
 
 
 def _our_trajectories(pose, side):
@@ -78,38 +98,8 @@ def _our_trajectories(pose, side):
         flex, abd = _lp(sig["shoulder_flexion"]), _lp(sig["shoulder_abduction"])
     except (IndexError, ValueError):                          # no finite shoulder/hip frames this trial
         flex = abd = np.full(len(elb), np.nan)
-    other = "right" if side == "left" else "left"
-    sh_mid = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2.0
-    finm = np.isfinite(sh_mid).all(1)
-    if finm.sum() >= 15:
-        ref = np.median(sh_mid[finm][:15], 0)
-        trunk = np.linalg.norm(sh_mid - ref, axis=1)         # 3D excursion (matches the scalar measure)
-    else:
-        trunk = np.full(len(elb), np.nan)
+    trunk = _trunk_excursion(pose, side, len(elb))
     return {"eev": eev, "eav": eav, "elbow": elb, "flex": flex, "abd": abd, "trunk": trunk}
-
-
-def _omc_trajectories(kin, n_video):
-    """AutoMQ's stored kinematics (100Hz) -> our 6 names, resampled to n_video (60Hz).
-
-    NB the end-effector velocity column is SIDE-SPECIFIC and varies per participant file:
-    some store `hand_R_velocity`, some `hand_L_velocity` (whichever arm AutoMQ processed). Hard-coding
-    hand_R silently returned all-NaN for the hand_L participants (P07 etc.) -> flat OMC velocity trace
-    and those trials dropped from Table I's EEV row. Pick whichever exists. Angle columns are
-    side-agnostic (elbow_angle / shoulder_flexion / shoulder_abduction carry no L/R suffix)."""
-    def col(c):
-        return _resample_1d(kin[c].to_numpy(), n_video) if c in kin.columns else np.full(n_video, np.nan)
-    vel_col = next((c for c in ("hand_R_velocity", "hand_L_velocity") if c in kin.columns), None)
-    eev = _resample_1d(kin[vel_col].to_numpy(), n_video) if vel_col else np.full(n_video, np.nan)
-    elbow = col("elbow_angle")
-    return {
-        "eev": eev,
-        "eav": np.abs(np.gradient(elbow)) * FPS,
-        "elbow": elbow,
-        "flex": col("shoulder_flexion"),
-        "abd": col("shoulder_abduction"),
-        "trunk": col("trunk_displacement"),
-    }
 
 
 def _agree(mmc, omc):
@@ -140,41 +130,38 @@ def main(argv=None):
     ap.add_argument("--fig-trial-l", default=None, help="left/affected trial stem for the Fig-3 panel")
     a = ap.parse_args(argv)
 
-    H.use_good_cams(); ba = R._ba_traj_cache(); amq = load_automq()
-    kin_cache = {}
-    pat = re.compile(r"trial_(\d+)_([LR])_")
+    H.use_good_cams(); ba = R._ba_traj_cache()
     rows = []            # per-trial per-trajectory agreement
-    fig_store = {}       # (part,trial)->(mmc,omc,phases,side) for the fig participant
+    fig_store = {}       # trial -> (mmc, omc, phases, side, arm) for the fig participant
     n_ok = n_skip = 0
 
-    trials = list(GT.load_clean(need_reproj=False))
-    print(f"{len(trials)} clean trials; scoring trajectories (BA+SmoothNet)...", flush=True)
-    for i, t in enumerate(trials):
-        m = pat.search(t["trial"])
-        if not m:
-            continue
-        part, tn, sd = t["part"], int(m.group(1)), m.group(2)
-        rec = amq.get((automq_part(part), tn, sd))
-        if rec is None or rec.get("phases") is None:
-            n_skip += 1; continue
-        if part not in kin_cache:
-            kin_cache[part] = _amq_kin_lookup(part)
-        kin = kin_cache[part].get((tn, sd))
-        if kin is None:
-            n_skip += 1; continue
+    files = sorted(SEG.glob("*.npz"))
+    lookup = {f"{t['part']}/{t['trial']}": t for t in GT.load_clean(need_reproj=False)}
+    trials = [(f, lookup[k]) for f in files
+              if (k := f"{str(np.load(f)['part'])}/{str(np.load(f)['trial'])}") in lookup]
+    print(f"{len(trials)} trials in {SEG.name}; scoring trajectories (BA+SmoothNet)...", flush=True)
+    for i, (f, t) in enumerate(trials):
+        z = np.load(f)
+        part = t["part"]
         pose = _pose_variant_cached(t, "BA", "smoothnet", ba)
         if pose is None:
             n_skip += 1; continue
         side = t["side"]; n = t["mmc"].shape[0]
-        # lag from wrist-speed xcorr (same path as the kinematics scorer)
+        # STACKED multi-signal lag (same path as the kinematics scorer) -- see H.find_lag_best
         omc_kp = H._load_omc(part, t["trial"], n)
-        lag, _ = H._find_lag(t["mmc"][:, GRID.index(f"{side}_wrist")], omc_kp[f"{side}_wrist"])
-        ph = automq_phases_to_video(rec["phases"], lag, n)
+        lag, _, _ = H.find_lag_best({j: t["mmc"][:, k] for k, j in enumerate(GRID)}, omc_kp, side)
+        # shift the KEYPOINTS onto the video timebase, then derive -- so both sides go through one
+        # operator and the optical series is never a differently-defined quantity
+        omc_pose = {j: R._shift(v, lag) for j, v in omc_kp.items()}
 
         our = _our_trajectories(pose, side)
-        omc = _omc_trajectories(kin, n)
-        omc = {k: _shift(v, lag) for k, v in omc.items()}     # align OMC onto video timeline
-        arm = "affected" if "unaffected" not in t["trial"] else "unaffected"
+        try:
+            omc = _our_trajectories(omc_pose, side)
+        except Exception:
+            n_skip += 1; continue
+        # phase marks for Fig 3 come from OUR segmenter on the optical channels, as in Table IV
+        ph = segment_sequential(z["cup_omc"], z["wrist_omc"], z["nose_omc"])
+        arm = str(z["arm"])
         for key, label, unit, _c in TRAJ:
             res = _agree(our[key], omc[key])
             if res is None:
@@ -208,7 +195,8 @@ def _fmt(v):
 def _table1(df, outdir):
     lines = ["# Table I — Kinematic-trajectory agreement (MMC BA+SmoothNet vs OMC)", "",
              "Median [IQR] across all trials, per trajectory, split by arm. "
-             "RMSE/bias in the trajectory's unit; r = Pearson; lag from wrist-speed cross-correlation.",
+             "RMSE/bias in the trajectory's unit; r = Pearson; lag from the stacked multi-signal "
+             "criterion. Both sides derived from keypoints by the same function.",
              "", "| Kinematic | Metric | Unaffected arm | Affected arm |", "|---|---|---|---|"]
     for key, label, unit, _c in TRAJ:
         for metric, col, u in [("r", "r", ""), ("RMSE", "rmse", f" ({unit})"),
@@ -255,11 +243,14 @@ def _fig3(store, part, tr_r, tr_l, outdir):
     tR = tr_r or pick("unaffected") or next(iter(store))
     tL = tr_l or pick("affected")
     cols = [c for c in [tR, tL] if c]
-    fig, axes = plt.subplots(len(TRAJ), len(cols), figsize=(5.2 * len(cols), 1.7 * len(TRAJ)),
+    # four of the six trajectories, at a shorter row height: the figure is illustrative and the
+    # full set is quantified in Table I, so it does not need a third of a page.
+    TRAJF = [t for t in TRAJ if t[0] in ("eev", "elbow", "flex", "trunk")]
+    fig, axes = plt.subplots(len(TRAJF), len(cols), figsize=(5.2 * len(cols), 1.25 * len(TRAJF)),
                              squeeze=False)
     for ci, trial in enumerate(cols):
         our, omc, ph, side, arm = store[trial]
-        for ri, (key, label, unit, _c) in enumerate(TRAJ):
+        for ri, (key, label, unit, _c) in enumerate(TRAJF):
             ax = axes[ri][ci]
             tsec = np.arange(len(our[key])) / FPS
             ax.plot(tsec, our[key], color="#c1440e", lw=1.1, label="MMC (end-to-end)")

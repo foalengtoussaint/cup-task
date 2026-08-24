@@ -28,8 +28,8 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import pose_keypoints, segment, triangulate
-from cup_task.kalman_3d import load_calibration
+from pipeline import pose_keypoints, segment, triangulate
+from pipeline.kalman_3d import load_calibration
 
 # ── the iMOVE OMC segmenter, imported by path (its package __init__ needs datajoint) ──
 _SEG_PY = Path("/home/imove/Documents/iMOVE/DEV/imove_extensions/imove_extensions"
@@ -130,7 +130,7 @@ SMOOTH_POSE = False   # set by --smooth-pose; runs the v2 pose_smooth (SmoothNet
 
 def _smooth_xyz(xyz):
     """Wrap an (T,3) track through the v2 pose_smooth stage (SmoothNet)."""
-    from cup_task.pose_smooth import smooth_track
+    from pipeline.pose_smooth import smooth_track
     tr = [{"frame": f, "X": (None if not np.isfinite(p).all() else [float(v) for v in p])}
           for f, p in enumerate(np.asarray(xyz, float))]
     out = smooth_track(tr)

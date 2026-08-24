@@ -2,7 +2,7 @@
 
 Mirrors Unger et al. (2411.14992) Fig 4: OMC on x, MMC on y, y=x diagonal reference, one point per
 trial, COLOR = participant, MARKER = arm (affected/unaffected). Uses our fast MMC (BA+SmoothNet) vs
-AutoMQ OMC from out/automq/score_vs_automq.csv. Per-panel r + n annotated.
+AutoMQ OMC from out/scoring/score_vs_automq.csv. Per-panel r + n annotated.
 
     python paper/scripts/fig4_correlation.py  ->  paper/fig4_mmc_vs_omc.png
 """
@@ -21,7 +21,7 @@ from scipy.stats import pearsonr, spearmanr
 REPO = Path(__file__).resolve().parents[2]
 PAPER = Path(__file__).resolve().parents[1]
 import os
-CSV = Path(os.environ.get("SCORE_CSV", REPO / "out" / "automq" / "score_vs_automq.csv"))
+CSV = Path(os.environ.get("SCORE_CSV", REPO / "out" / "scoring" / "score_vs_automq.csv"))
 VARIANT = "BA+smoothnet"
 
 # (measure, pretty label, unit) -- ordered + labelled to mirror Unger et al. Fig 4 (2 rows x 6 cols)
@@ -35,6 +35,7 @@ MEASURES = [
     ("interjoint_coordination",         "Interjoint coordination",   "r"),
     ("max_trunk_displacement",          "Trunk displacement",        "mm"),
     ("max_shoulder_flexion",            "Shoulder flexion",          "deg"),
+    ("max_shoulder_flexion_drink",      "Shoulder flexion (drinking)", "deg"),
     ("max_elbow_angle",                 "Elbow extension",           "deg"),
     ("max_shoulder_abduction",          "Shoulder abduction",        "deg"),
     # NB: time_to_peak_velocity_PERCENT dropped -- not one of the measures Unger et al. Fig 4
@@ -79,8 +80,9 @@ def main():
             sl, ic = np.polyfit(a, m, 1)
             ax.plot(xs, sl * xs + ic, "k--", lw=1.1, zorder=1)
         ax.set_xlim(lo - pad, hi + pad); ax.set_ylim(lo - pad, hi + pad)
-        # CORR=pearson switches the annotation to Pearson r (linear); default stays Spearman.
-        pear = os.environ.get("CORR", "spearman").lower().startswith("p")
+        # PEARSON by default since 2026-08-20, matching unger2024 ("Pearson correlations were
+        # calculated for each movement quality measure"). CORR=spearman restores the rank version.
+        pear = os.environ.get("CORR", "pearson").lower().startswith("p")
         rs = (pearsonr(a, m)[0] if pear else spearmanr(a, m).correlation)
         ax.set_title(f"{label} [{unit}]", fontsize=10, pad=3)
         ax.text(0.95, 0.06, f"${'r' if pear else 'r_s'}$ = {rs:.2f}", transform=ax.transAxes,
@@ -103,12 +105,11 @@ def main():
     fig.legend(handles=handles, loc="lower center", ncol=8,
                fontsize=8.5, frameon=False, bbox_to_anchor=(0.5, 0.055))
 
-    # panel-count reconciliation vs Unger et al. Fig 4 (12 panels): we show 11 — Unger's set minus
-    # 'Shoulder flexion D' (drinking-phase flexion, which AutoMQ does not store as a truth column).
-    # The two percent-timing variants AutoMQ stores are also omitted (Unger omits them too).
-    fig.text(0.5, 0.015, "11 of the 12 measures in Unger et al. — 'Shoulder flexion (drinking)' "
-             "omitted (no AutoMQ ground-truth column); percent-timing variants omitted as in Unger.",
-             ha="center", fontsize=7.5, color="0.35")
+    # panel-count reconciliation vs Unger et al. Fig 4 (12 panels): we show the same 12. Their
+    # 'Shoulder flexion D' is our max_shoulder_flexion_drink, computable since the optical reference
+    # became our own operator on the C3D markers. The percent-timing variants are omitted, as in Unger.
+    fig.text(0.5, 0.015, "The 12 measures of Unger et al.; percent-timing variants omitted as in "
+             "Unger.", ha="center", fontsize=7.5, color="0.35")
 
     fig.suptitle(os.environ.get("FIG_TITLE",
                  "Fast MMC (BA + SmoothNet) vs OMC — Murphy movement-quality measures"),

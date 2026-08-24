@@ -25,7 +25,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
-from cup_task.segment import _butter_lp, _interp_nan_xyz, _median_smooth, _runs, FPS, GRASP_FLAT_MMPS  # noqa: E402
+from pipeline.segment import _butter_lp, _interp_nan_xyz, _median_smooth, _runs, FPS, GRASP_FLAT_MMPS  # noqa: E402
 from seg_sequential import ARRIVE_REST, HOLD, LEAVE_REST, _sustained, _tail, _to_list  # noqa: E402
 
 
@@ -94,7 +94,7 @@ def segment_anchor_min(cup_xyz, hand_xyz, mouth_xyz, fps=FPS):
         bounds["forward_transport"] = (grasp, apex)
         rel = _release_anchored(v_wc, d_wc, big_wc, a_wc, apex, T)
         bounds["back_transport"] = (apex, rel)
-        _tail(bounds, d_rest, rel, T)
+        _tail(bounds, d_rest, rel, T, rule="pos")   # comparison variant: keep the old rule
         return _to_list(bounds)
     d_on = cc[1] if cc else max(grasp + 1, a_cm)
     d_off = oc[0] if oc else min(T - 1, max(d_on + 1, a_cm))
@@ -104,7 +104,7 @@ def segment_anchor_min(cup_xyz, hand_xyz, mouth_xyz, fps=FPS):
 
     rel = _release_anchored(v_wc, d_wc, big_wc, a_wc, d_off, T)
     bounds["back_transport"] = (d_off, max(rel, d_off + 1))
-    _tail(bounds, d_rest, max(rel, d_off + 1), T)
+    _tail(bounds, d_rest, max(rel, d_off + 1), T, rule="pos")   # comparison variant
     return _to_list(bounds)
 
 

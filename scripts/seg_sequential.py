@@ -26,13 +26,14 @@ sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 import compare_pose_omc_delta as H
 import gnn_train as GT
 import results_v3_delta as R
-from cup_task import segment as SEG
-from cup_task.segment import (_butter_lp, _interp_nan_xyz, _median_smooth, _runs, FPS,
+from pipeline import segment as SEG
+from pipeline.segment import (_butter_lp, _interp_nan_xyz, _median_smooth, _runs, FPS,
                               DRINK_SPEED, DRINK_FRAC, GRASP_FLAT_MMPS, MIN_PHASE)
-from score_vs_automq import (load_automq, automq_phases_to_video, automq_part, _win, COHORT_PARTS)
+from score_vs_automq import (load_automq, automq_phases_to_video, automq_part, automq_key, _win, COHORT_PARTS)
 GRID = R._GRID_JOINTS
 PHASES = ["reaching", "forward_transport", "drinking", "back_transport", "returning"]
 LEAVE_REST = 30.0     # mm: hand has left its rest position
+STILL_MMPS = 30.0     # mm/s: hand is "at rest" by the STILLNESS rule (see _tail)
 ARRIVE_REST = 40.0    # mm: hand is back home
 HOLD = max(int(0.15 * FPS), 3)
 
@@ -50,14 +51,35 @@ def _sustained(mask, start, hold, want=True):
     return None
 
 
-def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None):
+def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None,
+                       settle_rule="end", return_flags=False, cm_source="wrist"):
     """One forward pass -> list of (name, s, e) intervals, ordering guaranteed.
 
-    cup_mouth_xyz: optional SEPARATE cup track for the cup->mouth channel only. Needed because the
+    cm_source: what drives the cup->MOUTH channel. "wrist" (DEFAULT since 2026-08-20) uses the hand
+    itself; "cup" uses the cup track. The cup is needed for grasp and release -- they are read from
+    the wrist->cup distance and nothing else can see them -- but the DRINK boundaries never need it:
+    the hand carries the cup, so the hand's distance to the mouth closes, holds flat and opens on the
+    same schedule. Using the wrist is also the better signal, because it is triangulated from nine
+    confident body keypoints while the cup is a single occluded object that falls below the
+    three-camera floor on 21% of drinking frames. Measured on Table IV's quantity, both sides on the
+    wrist: drink onset 133->83 ms median (p90 403->267), drink offset 133->67 ms (p90 267->217);
+    every other boundary bit-identical. It also removes the offset estimator, its hold-detection and
+    its 20-frame minimum, which were undefined on 37 trials.
+
+    cup_mouth_xyz: explicit SEPARATE track for the cup->mouth channel; overrides cm_source. The
     wrist-proxy fill (cup ~= wrist + const where the cup has no consensus) is valid for cup->mouth --
     the hand carries the cup, so its distance to the mouth stands in -- but DESTROYS wrist->cup, which
     becomes a constant, and grasp/release are read from exactly that opening/closing. So the drink
     boundaries may use the proxy-filled cup while grasp/release keep the observed-only one.
+
+    settle_rule: "end" (DEFAULT since 2026-08-20) ends the trial when the hand comes within
+    ARRIVE_REST of where it ENDS UP; "pos" (the previous default) measures against where it STARTED;
+    "still" ends it when the hand stops moving. See _tail for why the reference matters.
+
+    return_flags: also return {"settle_observed": bool}. False means the movement end was never
+    observed inside the clip -- the returned settle is a timeout, so total_movement_time (and, to a
+    lesser degree, number_of_movement_units, which sums over `returning`) is RIGHT-CENSORED on that
+    trial and should be excluded rather than scored. Measured 19.2% of 636 under settle_rule="still".
     """
     cup = _butter_lp(_interp_nan_xyz(np.asarray(cup_xyz, float)), fps)
     hand = _butter_lp(_interp_nan_xyz(np.asarray(hand_xyz, float)), fps)
@@ -65,17 +87,22 @@ def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None
     T = min(len(cup), len(hand), len(mouth))
     cup, hand, mouth = cup[:T], hand[:T], mouth[:T]
     if T < 20:
-        return []
+        return ([], {"settle_observed": False}) if return_flags else []
 
     rest = np.median(hand[:max(int(0.5 * fps), 10)], axis=0)
     d_rest = np.linalg.norm(hand - rest, axis=1)
     d_wc = np.linalg.norm(hand - cup, axis=1)
     v_wc = np.r_[0.0, np.diff(_median_smooth(d_wc, 11))] * fps
     big_wc = 0.3 * float(d_wc.max() - d_wc.min())          # a "real" grasp/release travels >=30% of span
-    cup_cm = cup if cup_mouth_xyz is None else _butter_lp(
-        _interp_nan_xyz(np.asarray(cup_mouth_xyz, float)), fps)[:T]
+    if cup_mouth_xyz is not None:
+        cup_cm = _butter_lp(_interp_nan_xyz(np.asarray(cup_mouth_xyz, float)), fps)[:T]
+    elif cm_source == "wrist":
+        cup_cm = hand                      # the hand carries the cup; see cm_source in the docstring
+    else:
+        cup_cm = cup
     d_cm = np.linalg.norm(cup_cm - mouth, axis=1)
     v_cm = np.r_[0.0, np.diff(_median_smooth(d_cm, 11))] * fps    # cup->mouth distance rate
+    v_hand = np.r_[0.0, np.linalg.norm(np.diff(hand, axis=0), axis=1) * fps]   # hand SPEED, mm/s
 
     bounds = {}
     # 1) reach onset = hand leaves rest
@@ -105,8 +132,8 @@ def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None
         bounds["forward_transport"] = (grasp, apex)
         rel = _release(v_wc, d_wc, big_wc, apex, T)
         bounds["back_transport"] = (apex, rel)
-        _tail(bounds, d_rest, rel, T)
-        return _to_list(bounds)
+        obs = _tail(bounds, d_rest, rel, T, v_hand, settle_rule, hand)
+        return (_to_list(bounds), {"settle_observed": obs}) if return_flags else _to_list(bounds)
     d_on = closing_cm[0][1]                 # cup arrived at the mouth, distance went flat
     bounds["forward_transport"] = (grasp, d_on)
     opening_cm = [(s, e) for s, e in _runs(v_cm > GRASP_FLAT_MMPS)
@@ -116,8 +143,8 @@ def segment_sequential(cup_xyz, hand_xyz, mouth_xyz, fps=FPS, cup_mouth_xyz=None
     # 5) release = start of the BIG wrist->cup opening run after drink (hand withdraws, distance ramps)
     rel = _release(v_wc, d_wc, big_wc, d_off, T)
     bounds["back_transport"] = (d_off, rel)
-    _tail(bounds, d_rest, rel, T)
-    return _to_list(bounds)
+    obs = _tail(bounds, d_rest, rel, T, v_hand, settle_rule, hand)
+    return (_to_list(bounds), {"settle_observed": obs}) if return_flags else _to_list(bounds)
 
 
 def _release(v_wc, d_wc, big_wc, start, T):
@@ -126,12 +153,69 @@ def _release(v_wc, d_wc, big_wc, start, T):
     return opening[0][0] if opening else min(start + HOLD, T - 1)
 
 
-def _tail(bounds, d_rest, rel, T):
-    settle = _sustained(d_rest < ARRIVE_REST, rel, HOLD)
+def _tail(bounds, d_rest, rel, T, v_hand=None, rule="end", hand=None):
+    """Close the trial. Returns True if the end of movement was OBSERVED, False if timed out.
+
+    rule="end" (DEFAULT): hand within ARRIVE_REST of where it ENDS UP -- the median position over the
+    final 0.5 s. Adopted 2026-08-20: on Table IV's quantity (|MMC - OMC|, degenerate excluded) it puts
+    settle at 17 ms median / 83 ms p90 / 1.5% beyond 0.25 s, against 33 / 153 / 7.0% for "pos", and
+    leaves every other boundary untouched.
+
+    rule="pos" (the previous default): hand back within ARRIVE_REST of where it STARTED. A PROXIMITY test,
+    and it answers a different question than "is the hand at rest" -- a hand that stops somewhere else
+    fails it. Measured against AutoMQ it puts `settle` at 417 ms median error, the second-worst
+    boundary, and it is unstable: on trials where the hand is still travelling at clip end, whether it
+    dips inside 40 mm is near-arbitrary, so OMC and MMC pick different RULES (one detects, one times
+    out) on 10.3% of them vs 2.7% elsewhere -- which is what generates the 40-frame p90 tail.
+
+    rule="still_end": stillness AND the late-proximity test.
+
+    rule="still": hand SPEED below STILL_MMPS, sustained. This is the motion test AutoMQ/Unger use
+    ("based on the end-effector velocity", Unger et al. II-D-2). 117 ms median error, 83 ms on the
+    trials where it fires. It also never references the trial START, which matters because the OMC
+    lag shift leaves up to 14 leading NaNs -- on ~9% of trials that is half the 0.5 s rest reference.
+
+    Either way, when nothing fires the settle is a TIMEOUT at rel+HOLD, not a detection. That is not a
+    tuning failure: on 45% of those trials AutoMQ's own settle lies past the last recorded frame, so
+    the movement end is simply not in the video. Callers must treat those trials as censored.
+    """
+    if rule == "still":
+        if v_hand is None:
+            raise ValueError('settle_rule="still" needs the hand speed series')
+        settle = _sustained(v_hand < STILL_MMPS, rel, HOLD)
+    elif rule in ("end", "still_end"):
+        # LATE reference: where the hand ends up, not where it began. `pos` measures against a
+        # reference fixed in the trial's first 0.5 s and applies it ~6 s later, by which time the
+        # hand has come to rest a median 15 mm away with a p90 sitting ON the 40 mm threshold -- so
+        # the test is marginal exactly where the mass is, and OMC/MMC flip it independently.
+        if hand is None:
+            raise ValueError(f'settle_rule="{rule}" needs the hand position series')
+        tail_n = max(int(0.5 * FPS), 10)
+        ref_end = np.median(hand[max(T - tail_n, 0):T], axis=0)
+        d_end = np.linalg.norm(hand[:T] - ref_end, axis=1)
+        near = d_end < ARRIVE_REST
+        if rule == "still_end":
+            if v_hand is None:
+                raise ValueError('settle_rule="still_end" needs the hand speed series')
+            near = near & (v_hand[:T] < STILL_MMPS)
+        settle = _sustained(near, rel, HOLD)
+    else:
+        settle = _sustained(d_rest < ARRIVE_REST, rel, HOLD)
+    # WHERE the boundary is and WHETHER the movement ended are different questions, and the same
+    # test cannot answer both. A proximity rule ("pos"/"end") places the boundary well but claims a
+    # settle on 84-90% of the trials where the hand is still travelling when the video stops -- it
+    # cannot distinguish "arrived" from "passing through". Stillness is the only rule that gets that
+    # right (0% false positives), so `settle_observed` is ALWAYS the stillness test, whatever rule
+    # placed the boundary. False means total_movement_time is right-censored on this trial.
     if settle is None or settle <= rel:
         settle = min(rel + HOLD, T)
+    observed = False
+    if v_hand is not None:
+        s_still = _sustained(v_hand[:T] < STILL_MMPS, rel, HOLD)
+        observed = s_still is not None and s_still > rel
     bounds["returning"] = (rel, settle)
     bounds["rest_post"] = (settle, T)
+    return observed
 
 
 def _to_list(b):
@@ -156,7 +240,7 @@ def main():
         m = pat.search(trial)
         if not m:
             continue
-        rec = amq.get((automq_part(part), int(m.group(1)), m.group(2)))
+        rec = amq.get(automq_key(part, t["trial"]))   # block-aware truth row
         if rec is None or rec.get("phases") is None:
             continue
         nfr = t["mmc"].shape[0]
@@ -199,7 +283,7 @@ def main():
             print(f"[{n}] {time.time()-t0:4.0f}s", flush=True)
 
     df = pd.DataFrame(rows)
-    out = ROOT / f"out/automq/seg_sequential_{SRC}_vs_automq.csv"
+    out = ROOT / f"out/scoring/seg_sequential_{SRC}_vs_automq.csv"
     df.to_csv(out, index=False)
     print(f"\nPROCESSING CHECK: {SRC} trials {n}, rows {len(df)}, no-cup skipped {n_nocup}", flush=True)
     for meth in ("sequential", "staged"):

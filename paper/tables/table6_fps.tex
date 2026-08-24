@@ -1,0 +1,26 @@
+\begin{table}[t]
+\caption{Halving the capture rate. Pearson against the same optical reference; the
+markerless arm is decimated before smoothing and its segmenter and measures run at $30$\,Hz.
+Re-running the cup tracker at $30$\,Hz on $40$ trials, rather than decimating its output,
+reproduces every shift below to within $0.4$ percentage points and moves the phase boundaries
+by $0$--$50$\,ms at the median --- except the movement-unit count, which then loses one unit
+on $22$ of $40$ trials.}
+\label{tab:fps}
+\centering
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lccc}
+\toprule
+Movement quality measure & $r_s$ 60 & $r_s$ 30 & value change \\
+\midrule
+PV [mm/s] & 0.89 & 0.88 & -6.6\% \\
+Elbow angular PV [deg/s] & 0.90 & 0.91 & -8.7\% \\
+Time to PV [s] & 0.96 & 0.96 & +1.5\% \\
+Number of movement units [n] & 0.81 & 0.81 & +0.0\% \\
+Total movement time [s] & 0.99 & 0.99 & +0.0\% \\
+Interjoint coordination & 0.57 & 0.60 & -0.1\% \\
+Shoulder flexion [deg] & 0.97 & 0.97 & +0.5\% \\
+Elbow extension [deg] & 0.98 & 0.98 & +0.5\% \\
+\bottomrule
+\end{tabular}
+\end{table}

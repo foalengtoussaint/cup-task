@@ -33,7 +33,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 import compare_pose_omc_delta as C  # noqa: E402
-from cup_task.kalman_3d import project  # noqa: E402
+from pipeline.kalman_3d import project  # noqa: E402
 sys.path.insert(0, str(ROOT / "scripts" / "archive"))
 from reaudit_cam_quality import ransac_point, _trials  # noqa: E402
 

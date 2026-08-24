@@ -36,8 +36,8 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import pose_keypoints, triangulate
-from cup_task.kalman_3d import load_calibration, project
+from pipeline import pose_keypoints, triangulate
+from pipeline.kalman_3d import load_calibration, project
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = {n: ROOT / "models" / f"yolo26{n}-pose.pt" for n in ("n", "s", "m")}

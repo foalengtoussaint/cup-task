@@ -32,8 +32,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare_pose_omc_delta as C  # noqa: E402
-from cup_task.kalman_3d import project  # noqa: E402
-from cup_task.triangulate import robust_triangulate  # noqa: E402
+from pipeline.kalman_3d import project  # noqa: E402
+from pipeline.triangulate import robust_triangulate  # noqa: E402
 
 SYNC_R = 0.65     # below this vs the reference camera => desynced
 REPROJ_OK = 30.0  # px, same gate the triangulator uses

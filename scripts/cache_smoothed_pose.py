@@ -44,7 +44,7 @@ def run(overwrite=False):
         if p.exists() and not overwrite:
             skip += 1
             continue
-        from cup_task import pose_smooth as PS
+        from pipeline import pose_smooth as PS
         n = t["mmc"].shape[0]
         # BATCHED SmoothNet: one GPU forward per trip (all 9 joints, all windows stacked) -- ~20x
         # faster than the per-joint/per-window path and numerically identical (verified 0.05mm).

@@ -25,8 +25,8 @@ import ezc3d
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import segment
-from cup_task.score import compute_position_measures
+from pipeline import segment
+from pipeline.score import compute_position_measures
 from scripts.compare_pose_omc_delta import (_load_mmc, _despike, _resample, _lp, _find_lag,
                                             VIDEO_FPS, C3D_RATE, DELTA)
 from scripts.score_omc_delta import _shift, _bonelock_pbd

@@ -19,7 +19,8 @@ import numpy as np
 import pandas as pd
 
 PAPER = Path(__file__).resolve().parents[1]
-CUP = "mmc_c3kf_wr2"            # shipped: >=3 floor + KF fill + wrist proxy on cup->mouth only
+CUP = "mmc_c3kf"                # shipped: >=3 floor + KF fill for wrist->cup; cup->mouth is driven
+                                # by the WRIST itself (segment_sequential cm_source="wrist")
 FPS = 60.0
 HOLD = max(int(0.15 * FPS), 3)  # the segmenter's own minimum-run constant
 TOL_F = 15                      # 0.25 s at 60 Hz
@@ -46,7 +47,8 @@ def main() -> None:
 
     L = [r"\begin{table}[t]",
          r"\caption{Phase-boundary agreement between markerless and optical input to the",
-         r"same segmenter, paired per trial. Excludes the $5.8\%$ of trials on which the",
+         rf"same segmenter, paired per trial. Excludes the ${100 * deg.mean():.1f}\%$ of trials "
+         r"on which the",
          r"segmenter is degenerate for want of a usable cup track (see text).}",
          r"\label{tab:boundaries}", r"\centering", r"\footnotesize",
          r"\begin{tabular}{lcccc}", r"\toprule",

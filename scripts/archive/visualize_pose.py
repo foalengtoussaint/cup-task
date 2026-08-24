@@ -19,10 +19,10 @@ from pathlib import Path
 import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task.pose_keypoints import (  # noqa: E402
+from pipeline.pose_keypoints import (  # noqa: E402
     FramePose, extract_pose, mouth_proxy,
 )
-from cup_task.cup_detect import CupDet, detect_cup  # noqa: E402
+from pipeline.cup_detect import CupDet, detect_cup  # noqa: E402
 
 # Upper-body skeleton edges (by joint name) — knees/ankles intentionally absent.
 EDGES = [

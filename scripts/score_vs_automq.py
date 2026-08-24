@@ -27,7 +27,7 @@ WHAT THIS DOES, per scorable trial (gnn_train.load_clean, 826 trials, 693 with a
 Watch:  tail -f out/gnn/score_vs_automq.log
 """
 from __future__ import annotations
-import sys, csv, time, argparse
+import sys, csv, re, time, argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
@@ -37,8 +37,9 @@ sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 
 import compare_pose_omc_delta as H
 import gnn_train as GT
+import gnn_build_dataset as _GBD      # noqa: E402 -- the shared trial<->C3D block table
 import results_v3_delta as R              # reuse _pose_variant, _angle_scalars helpers, POSITION_MEASURES
-from cup_task.score import (compute_position_measures, _smoothed_xyz, _hand_speed_mmps,
+from pipeline.score import (compute_position_measures, _smoothed_xyz, _hand_speed_mmps,
                             _butter_lowpass, DEFAULT_LOWPASS_HZ, DEFAULT_BUTTER_ORDER)
 
 FPS = H.VIDEO_FPS                          # 60
@@ -102,6 +103,28 @@ def _amq_marker_peak(markers_df, marker, ph, fps=C3D_RATE):
     rs, re = ph["Reaching"]
     seg = vf[rs:re] if re > rs else vf
     return float(np.nanmax(seg)) if len(seg) else float("nan")
+
+
+_AMQ_PAT = re.compile(r"trial_(\d+)_([LR])_")
+
+
+def automq_key(part, trial):
+    """(automq_part, trial_number, side) for a VIDEO trial -- with the P10/P25 block offset applied.
+
+    AutoMQ numbers its rows by the MOCAP trial (P25 runs 1..83 continuously across the P251/P252
+    split), so wherever the video<->mocap pairing is shifted, the truth row shifts with it. Same
+    _C3D_BLOCKS table that repairs the C3D pairing; keeping them in one place is the point --
+    scoring a video trial against its neighbour's AutoMQ row is the same bug as loading its
+    neighbour's C3D, and fixing only one of the two hides the other.
+    """
+    m = _AMQ_PAT.search(trial)
+    if not m:
+        return None
+    sd = m.group(2)
+    shifted = _GBD.c3d_name(part, trial)          # applies the block offset, identity elsewhere
+    m2 = _AMQ_PAT.search(shifted)
+    tn = int(m2.group(1)) if m2 else int(m.group(1))
+    return (automq_part(part), tn, sd)
 
 
 def load_automq():
@@ -256,11 +279,20 @@ def angle_measures_automq(pose, ph, side, peak="max"):
     # ~0 on ~half of some participants' trials (P07: fwd-proj rs 0.06 while raw motion matched OMC).
     # The 3D excursion (drink-task trunk motion is dominated by forward lean) with a median-rest
     # reference tracks AutoMQ: cohort rs 0.65 -> 0.93, P07 0.06 -> 0.98. (2026-08-06)
+    # POINT: the STERNUM marker when the pose carries one -- `compare_pose_omc_delta._load_omc`
+    # supplies it as `trunk` (C3D label `chest`), the marker AutoMQ and unger2024 both use. COCO has
+    # no sternum keypoint, so the markerless pose has no such key and keeps the shoulder midpoint.
+    # The measure is an excursion from the trial's own rest position, so a constant offset between
+    # the two points cancels; they differ only through trunk rotation. Using the shoulder midpoint on
+    # BOTH sides also made this measure move whenever a landmark fit displaced the shoulder, which is
+    # a corruption rather than a correction (anat12 drove it 0.93 -> 0.48).
     other = "right" if side == "left" else "left"
-    sh_mid = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2.0
-    finm = np.isfinite(sh_mid).all(1)
+    pt = pose.get("trunk")
+    if pt is None or np.isfinite(pt).all(1).sum() < 15:
+        pt = (pose[f"{side}_shoulder"] + pose[f"{other}_shoulder"]) / 2.0
+    finm = np.isfinite(pt).all(1)
     if finm.sum() >= 15:
-        smf = sh_mid[finm]
+        smf = pt[finm]
         trunk_disp = float(np.percentile(np.linalg.norm(smf - np.median(smf[:15], 0), axis=1), 98))
     else:
         trunk_disp = float("nan")
@@ -274,6 +306,9 @@ def angle_measures_automq(pose, ph, side, peak="max"):
     out = {
         "max_shoulder_flexion": _seg_reduce(flex, rd, "max"),
         "max_shoulder_abduction": _seg_reduce(abd, rd, "max"),
+        # unger2024's twelfth measure: shoulder flexion over the DRINKING phase alone, not over
+        # Reaching[0]..Drinking[1]. Same series, a shorter window bounded by both drink boundaries.
+        "max_shoulder_flexion_drink": _seg_reduce(flex, drink, "max"),
         "max_elbow_angle": _seg_reduce(elb, whole, "max"),
         "peak_elbow_angular_velocity": _seg_reduce(eav, reach, peak),
         "interjoint_coordination": float("nan"),
@@ -345,7 +380,7 @@ COHORT_PARTS = ["P07", "P08", "P10", "P12", "P13", "P14", "P15", "P17", "P19", "
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", default="out/automq/score_vs_automq.csv")
+    ap.add_argument("--out", default="out/scoring/score_vs_automq.csv")
     ap.add_argument("--parts", nargs="*", default=None, help="subset of parts (default: all 11)")
     ap.add_argument("--variants", nargs="*",
                     default=["pipeline", "pipeline+savgol", "pipeline+smoothnet", "BA+smoothnet"])
@@ -386,7 +421,7 @@ def main(argv=None):
         if not m:
             n_nomatch += 1; continue
         tn, sd = int(m.group(1)), m.group(2)
-        rec = amq.get((automq_part(part), tn, sd))
+        rec = amq.get(automq_key(part, trial))     # block-aware: truth row follows the C3D pairing
         if rec is None:
             n_nomatch += 1; continue
         n_join += 1
@@ -394,10 +429,13 @@ def main(argv=None):
             n_nophase += 1; continue
 
         n = t["mmc"].shape[0]
-        # sync: same wrist-speed lag path as the grid (OMC->MMC). AutoMQ phases live in OMC time.
+        # sync: STACKED multi-signal lag (H.find_lag_best) -- NOT the wrist-speed argmax. AutoMQ
+        # phases live in OMC time and are placed on the MMC timebase by this lag, so a runaway wrist
+        # search puts every measurement window in the wrong place (P17/trial_17: -138 fr vs +13).
         omc = H._load_omc(part, trial, n)
         wr = f"{side}_wrist"
-        lag, _ = H._find_lag(t["mmc"][:, GRID_JOINTS.index(wr)], omc[wr])
+        lag, _, _ = H.find_lag_best({j: t["mmc"][:, k] for k, j in enumerate(GRID_JOINTS)},
+                                    omc, side)
         ph = automq_phases_to_video(rec["phases"], lag, n)
         if ph is None:
             n_nophase += 1; continue

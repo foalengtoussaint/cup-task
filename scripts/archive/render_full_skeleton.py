@@ -23,8 +23,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from cup_task import pose_keypoints, segment, triangulate
-from cup_task.kalman_3d import load_calibration, project
+from pipeline import pose_keypoints, segment, triangulate
+from pipeline.kalman_3d import load_calibration, project
 
 FPS = 60.0
 

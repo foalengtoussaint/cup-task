@@ -77,6 +77,16 @@ def _to_dev(t):
     )
 
 
+# Projected pixel coords are clamped to +-UVMAX before the residual norm. A point behind a camera has
+# its z clamped to 1e-3 mm inside project_torch, so the normalised coords are ~1e3 and the distortion
+# polynomial reaches ~1e22 px; squaring that in linalg.norm overflows float32 to `inf`. The in-front
+# weight for such a point is 0, and `inf * 0 = NaN` (IEEE-754), so ONE behind-camera joint-frame
+# poisons the whole energy. NaN compares false against every strong-Wolfe condition, so the line
+# search cannot backtrack and the trial blows up. Clamping keeps the residual large-but-finite (it is
+# masked to zero weight anyway) and the solve stays well-posed. Removes all 60 catastrophic trials.
+UVMAX = 1e6
+
+
 def _reproj_residual(X, S, huber_px):
     """Weighted Huber reprojection energy, summed over cams. X (B,T,J,3). Returns (energy, wsum).
 
@@ -88,6 +98,7 @@ def _reproj_residual(X, S, huber_px):
     h = huber_px
     for c in range(C):
         uvp, infront = G.project_torch(Xp[:, :, c], S["K"][c], S["dist"][c], S["R"][c], S["tt"][c])
+        uvp = uvp.clamp(-UVMAX, UVMAX)                                         # see UVMAX note above
         res = torch.linalg.norm(uvp - S["uv"][None, :, c], dim=-1)             # (B,T,J) px
         rob = torch.where(res <= h, 0.5 * res * res / h, res - 0.5 * h)        # Huber
         w = S["uvv"][None, :, c].float() * S["uvc"][None, :, c] * infront.float()
@@ -96,10 +107,32 @@ def _reproj_residual(X, S, huber_px):
 
 
 def _bone_energy(X, L):
-    """lam-free squared bone-length deviation from the per-trial reference L_uv. X (B,T,J,3)."""
+    """Bone-length VARIANCE within the trial. X (B,T,J,3). L supplies the limb keys only.
+
+    This penalises a bone whose length CHANGES frame to frame, without asserting what that length
+    should be. The earlier form pinned each bone to the per-trial median of the raw triangulation
+    (`_bone_energy_pinned` below) -- that pins the solve to a target derived from the very estimate
+    being refined, and a wrong median then becomes a constraint.
+
+    Judged against OMC on the full cohort (scripts/ba_free_bone.py, scripts/score_variant_measures.py)
+    the variance form at lam=0.05 improves peak elbow angular velocity 0.896 -> 0.905, peak velocity
+    0.877 -> 0.888 and max elbow angle 0.894 -> 0.912, with the gain concentrated on the participant
+    whose calibration is worst (P19 elbow 0.470 -> 0.674). It costs absolute error on the peaks
+    (median |err| 11.0 -> 13.2 deg/s, 46.8 -> 50.4 mm/s), so ranks improve and magnitudes do not.
+    """
+    e = torch.zeros((), device=X.device)
+    for (u, v) in L:
+        d = torch.linalg.norm(X[:, :, u] - X[:, :, v], dim=-1)                 # (B,T)
+        e = e + ((d - d.mean(dim=1, keepdim=True)) ** 2).sum()
+    return e
+
+
+def _bone_energy_pinned(X, L):
+    """Squared deviation from the per-trial reference length L_uv -- the superseded form, kept so the
+    comparison is reproducible. Not used by the shipped solve."""
     e = torch.zeros((), device=X.device)
     for (u, v), L_uv in L.items():
-        d = torch.linalg.norm(X[:, :, u] - X[:, :, v], dim=-1)                 # (B,T)
+        d = torch.linalg.norm(X[:, :, u] - X[:, :, v], dim=-1)
         e = e + ((d - L_uv) ** 2).sum()
     return e
 
@@ -161,8 +194,11 @@ def refine_trial_ba(t, lam_bone, huber_px=20.0, iters=60, lr=None, smooth_w=0.0,
         # (blow-ups up to 650mm on ~17% of trials). Any joint-frame BA moved MORE than fallback_mm
         # from the pipeline point -- or made non-finite -- reverts to the pipeline point. Guarantees
         # BA can never do WORSE than the incumbent; we keep BA's gain only where it stayed sane.
-        moved = np.linalg.norm(Xr - mmc, axis=-1)          # (T,J) mm; NaN where either is NaN
-        bad = ~np.isfinite(Xr).all(-1) | (np.isfinite(moved) & (moved > fallback_mm))
+        # float64: at float32 a 1e20 blow-up squares to 1e40 and `moved` overflows to inf, which the
+        # old `np.isfinite(moved) &` term then read as "not a revert" -- the guard silently skipped
+        # exactly the worst cases. Non-finite `moved` over a finite pipeline point IS a revert.
+        moved = np.linalg.norm(Xr.astype(np.float64) - mmc.astype(np.float64), axis=-1)   # (T,J) mm
+        bad = ~np.isfinite(Xr).all(-1) | ~np.isfinite(moved) | (moved > fallback_mm)
         # only revert where the pipeline HAS a point (else leave NaN)
         bad &= np.isfinite(mmc).all(-1)
         Xr[bad] = mmc[bad]
@@ -173,10 +209,12 @@ def refine_trial_ba(t, lam_bone, huber_px=20.0, iters=60, lr=None, smooth_w=0.0,
         # trajectory is a broken solve -> revert that joint entirely to the pipeline. (P19 trial_63 =
         # miscalibrated cams; the only trial that trips 150mm in 328.) Per joint, so a single bad joint
         # doesn't discard the good ones.
-        moved = np.linalg.norm(Xr - mmc, axis=-1)               # (T,J)
+        moved = np.linalg.norm(Xr.astype(np.float64) - mmc.astype(np.float64), axis=-1)   # (T,J)
+        finite_pair = np.isfinite(Xr).all(-1) & np.isfinite(mmc).all(-1)
         for j in range(NJ):
             mj = moved[:, j]
-            if (np.isfinite(mj) & (mj > trial_guard_mm)).any():
+            # same float64 / non-finite rule as the per-frame guard above
+            if ((finite_pair[:, j] & ~np.isfinite(mj)) | (np.isfinite(mj) & (mj > trial_guard_mm))).any():
                 col = np.isfinite(mmc[:, j]).all(-1)
                 Xr[col, j] = mmc[col, j]
                 n_guarded += 1

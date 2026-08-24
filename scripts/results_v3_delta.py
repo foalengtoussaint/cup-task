@@ -8,7 +8,7 @@ Four deliverables, all on the same trials, all vs OMC:
   3. SEGMENT   -- drink-phase boundaries + dwell error vs the OMC-cup segmentation.
   4. MURPHY    -- the position measures, v1 (raw pose) vs v3 (SmoothNet+blend), error vs OMC.
 
-METRIC NOTES (learned the hard way, see docs/SPEED_METRICS.md):
+METRIC NOTES (learned the hard way, see archive/docs_20260820/SPEED_METRICS.md):
   * Speed is frame-invariant -> report ABSOLUTE mm/s, never correlation (correlation hides magnitude).
   * Report the TAIL (p90/max), not just the median -- a good median can hide catastrophic failures.
   * DISPLACEMENT is reported as the error about the mean, i.e. after removing the constant offset.
@@ -28,15 +28,15 @@ import argparse
 import sys
 from pathlib import Path
 
+import os
 import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 
 import compare_pose_omc_delta as H
-import flow_velocity_probe as F
-from cup_task import segment, cup_track, pose_smooth, flow_speed, speed_blend
-from cup_task.score import compute_position_measures
+from pipeline import segment, cup_track, pose_smooth
+from pipeline.score import compute_position_measures
 
 FPS = H.VIDEO_FPS
 # OT_TRACKS_DIR lets a run read an alternative UETrack cache (e.g. tracks_uetrack_26x, seeded from
@@ -82,9 +82,11 @@ def _fill(xyz):
     return x
 
 
-def _omc_cup(part, trial, n):
+def _omc_cup(part, trial, n, repair=True):
+    """repair=True resolves the trial->C3D block offset (H.c3d_path), same as H._load_omc."""
     import ezc3d
-    c = ezc3d.c3d(str(H.DELTA / part / "c3d" / f"{trial}.c3d"))
+    c = ezc3d.c3d(str(H.c3d_path(part, trial) if repair
+                      else H.DELTA / part / "c3d" / f"{trial}.c3d"))
     L = c["parameters"]["POINT"]["LABELS"]["value"]
     P = c["data"]["points"]
     mk = [nm for nm in L if "cluster_cup" in nm.lower() or nm.lower().startswith("cup")]
@@ -124,7 +126,7 @@ def _cup_v1(part, trial, calib, n):
     read from one file and differ ONLY in the 2D source (fresh detection vs tracked point).
     """
     import json
-    from cup_task import consensus
+    from pipeline import consensus
     cf = TRACKS / f"{part}__{trial}__uetrack__fs1.json"
     if not cf.exists():
         return np.full((n, 3), np.nan)
@@ -141,14 +143,44 @@ def _cup_v1(part, trial, calib, n):
     return np.array(out, dtype=float)
 
 
+def _smooth_pose(joints_xyz):
+    """SmoothNet over several joints in ONE batched forward. {name: (T,3) mm} -> same.
+
+    `pose_smooth.smooth_track` issues one batch-1 forward per sliding window (a 550-frame trial =
+    ~520 launches PER JOINT), which is launch-bound: measured 1.08 s for nine joints against 0.036 s
+    batched, **29.7x**. The 0.1 mm rounding smooth_track applied to its output is kept, so the
+    numbers do not move -- verified identical on 9 of 11 trials, one per participant, with the other
+    two differing by exactly one rounding step (0.1 mm) on a few frames where the batched sum order
+    lands on the far side of a tie.
+
+    That 0.1 mm is physically nothing but the segmenter is one-frame sensitive to it (a +/-0.1 mm
+    perturbation of every channel moves a boundary by 1-2 frames on a third of trials), so
+    `cache/seg_inputs_ship` -- built with the per-window path -- is NOT rebuilt. Set
+    OT_SMOOTH_LEGACY=1 to reproduce it exactly.
+    """
+    if os.environ.get("OT_SMOOTH_LEGACY") == "1":
+        out = {}
+        for k, xyz in joints_xyz.items():
+            tr = [{"frame": i, "X": (None if not np.isfinite(p).all() else [float(v) for v in p])}
+                  for i, p in enumerate(np.asarray(xyz, float))]
+            sm = pose_smooth.smooth_track(tr)
+            out[k] = np.array([t["X"] if t["X"] else [np.nan] * 3 for t in sm])
+        return out
+    out = pose_smooth.smooth_joints_batched(joints_xyz)
+    return {k: np.round(np.asarray(v, float), 1) for k, v in out.items()}
+
+
 def _smooth_joint(xyz):
-    tr = [{"frame": i, "X": (None if not np.isfinite(p).all() else [float(v) for v in p])}
-          for i, p in enumerate(xyz)]
-    out = pose_smooth.smooth_track(tr)
-    return np.array([t["X"] if t["X"] else [np.nan] * 3 for t in out])
+    return _smooth_pose({"_": np.asarray(xyz, float)})["_"]
 
 
 def _flow_speed(part, trial, joint, calib, n):
+    # Flow speed feeds only the CLI paths (--what speed/murphy/grid); the paper's peak velocity comes
+    # from score_vs_automq.peak_velocity_reduce. Imported lazily so those archived modules are not a
+    # hard dependency for the paper chain, which imports this file purely as a helper library.
+    import flow_velocity_probe as F
+    from pipeline import flow_speed
+
     px = F.load_wrist_px(part, trial, joint)
     fl = {}
     for c in px:
@@ -310,6 +342,8 @@ def accuracy():
 def speed_path():
     """The v3 wrist-speed path: pos-diff vs SmoothNet vs flow vs BLEND. P07+P08 only."""
     from scipy.signal import find_peaks
+
+    from pipeline import speed_blend  # lazy: see _flow_speed
     print(f"\n{'='*86}\n=== 2. SPEED PATH — acting wrist, per-frame + PEAK (P07+P08, n=12) "
           f"===\n{'='*86}", flush=True)
     M = ["pos-diff", "smoothnet", "flow", "BLEND"]
@@ -573,8 +607,15 @@ def _savgol_joint(xyz, win=21, order=3):
 
 
 def _ba_traj_cache():
-    """Load the cached BA+guard trajectories (fb150) -> {id -> (T,9,3)}. Built by ba_cache_traj.py."""
-    p = ROOT / "cache" / "ba_traj" / "traj_sw0_fb150.npz"
+    """Load the cached BA trajectories -> {id -> (T,9,3)}. Built by scripts/ba_cache_traj_all.py.
+
+    UNGUARDED as of 2026-08-20. The fallback_mm=150 revert existed to catch blow-ups caused by the
+    0*inf NaN bug in _reproj_residual; with that fixed the guard is not merely redundant, it is
+    HARMFUL on derivative measures: reverting scattered joint-frames to DLT splices two different
+    solutions together and the seams are steps in the joint angle, which differentiation turns into
+    spikes. Measured on peak elbow angular velocity: guarded r_s 0.769 vs unguarded 0.884 (P19 blow-up
+    trials 23/63 -> 6/63); position measures are unaffected (peak_velocity 0.870 either way)."""
+    p = ROOT / "cache" / "ba_traj" / "traj_sw0_noguard.npz"
     if not p.exists():
         return None
     d = np.load(str(p), allow_pickle=True)
@@ -640,7 +681,7 @@ def _pose_variant(trial_rec, triangulation, smoother, ba_cache):
     elif smoother == "savgol":
         pose = {j: _savgol_joint(x) for j, x in pose.items()}
     elif smoother == "smoothnet":
-        pose = {j: _smooth_joint(x) for j, x in pose.items()}
+        pose = _smooth_pose(pose)                      # one batched forward for all nine joints
     else:
         raise ValueError(smoother)
     return pose

@@ -34,8 +34,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import compare_pose_omc_delta as C  # noqa: E402
-from cup_task.triangulate import robust_triangulate  # noqa: E402  (kept for import compat)
-from cup_task.kalman_3d import project, triangulate_dlt  # noqa: E402
+from pipeline.triangulate import robust_triangulate  # noqa: E402  (kept for import compat)
+from pipeline.kalman_3d import project, triangulate_dlt  # noqa: E402
 from sync_fix_delta import _w2d, _spd, _best_lag  # noqa: E402
 import itertools  # noqa: E402
 

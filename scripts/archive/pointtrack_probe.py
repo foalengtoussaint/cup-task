@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 import compare_pose_omc_delta as H
 import flow_velocity_probe as F
-from cup_task.kalman_3d import triangulate_dlt
+from pipeline.kalman_3d import triangulate_dlt
 
 FPS = 60.0
 CROP = 256          # track on a crop around the wrist (full 1080p OOMs the 7.6GB GPU)
@@ -138,7 +138,7 @@ def main(argv=None):
     trials = ([(a.part, a.trial, a.side)] if not a.batch
               else [(p, t, s) for p, (ts, s) in TRIALS.items() for t in ts])
     print(f"{'trial':16} {'track-speed vs OMC |Δ|':>22}", flush=True)
-    from cup_task import pose_smooth
+    from pipeline import pose_smooth
     for part, trial, side in trials:
         joint = f"{side}_wrist"
         mmc, n = H._load_mmc(part, trial); omc = H._load_omc(part, trial, n)

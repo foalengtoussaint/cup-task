@@ -31,7 +31,7 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
-from cup_task.segment import _butter_lp, _interp_nan_xyz, _median_smooth, FPS  # noqa: E402
+from pipeline.segment import _butter_lp, _interp_nan_xyz, _median_smooth, FPS  # noqa: E402
 
 PHASES = ["rest_pre", "reaching", "forward_transport", "drinking", "back_transport",
           "returning", "rest_post"]

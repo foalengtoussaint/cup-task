@@ -1734,3 +1734,35 @@ an absolute threshold.
 
 LESSON: a claim of the form "we use no absolute constants" needs every constant in the call path
 checked, not just the ones in the function being read. Three passes here, three different constants.
+
+### Is three cameras shown to be enough? For the pose yes, for the CUP no (2026-08-24)
+
+§V-F's three-camera claim was a **latency** claim only — 14.9 ms per rig-frame fits the 16.7 ms
+budget of 60 Hz — and said nothing about accuracy at three cameras, for either channel. Checked
+against the cohort, which already spans camera counts (`cam_quality.json` via `H.use_good_cams`):
+
+**5 cameras:** P07, P08, P15. **4:** P10, P14, P251, P252. **3:** P12, P13, P17, P19.
+
+| cameras | units | trials | segmenter declines |
+|---|---|---|---|
+| 3 | 4 | 287 | **37 (12.9%)** |
+| 4 | 4 | 247 | 1 (0.4%) |
+| 5 | 3 | 255 | 1 (0.4%) |
+
+**95% of all declines (37 of 39) come from the four three-camera units.** The cause is structural and
+already named in §IV-E without being connected to it: the cup is gated on **three AGREEING** cameras,
+so at a three-camera unit every camera must agree and there is no redundancy at all. The body fit is
+unaffected — it solves from two cameras up and only 0.6% of joint-frames go empty.
+
+So the paper's 4.9% decline rate is **not uniform**, and the configuration §V-F points at for 60 Hz
+live capture is the same one where the cup fails on one trial in eight. Both facts are now stated:
+§V-E gives the 12.9% / 0.4% split, and §V-F says the three-camera figure is about time alone and
+that the rate and the camera count cannot both be reduced.
+
+**NOT claimed, because the data cannot support it:** that measure agreement degrades at three
+cameras. Per-camera-count correlations exist (3 cam: PV 0.901, flexion 0.917, interjoint 0.637;
+4 cam: PV 0.841, flexion 0.970, interjoint 0.123; 5 cam: PV 0.850, flexion 0.990, interjoint 0.760)
+but each group holds only 3--4 recording units, so between-participant range differs wildly between
+them and the numbers are dominated by range restriction, not by camera count — the 4-camera group
+looks *worst* on the two range-restricted measures, which is not credible as a camera effect. **Do
+not quote the per-camera-count correlations.** The decline rate is the finding that survives.

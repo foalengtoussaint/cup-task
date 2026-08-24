@@ -557,7 +557,9 @@ then what the measures cost when the windows come from the markerless recording.
 
 The segmenter declines $39$ of $790$ trials ($4.9\%$). On these no cup frame
 survives the three-camera floor, the wrist-to-cup distance is flat, and the grasp
-collapses onto its floor at reach onset.
+collapses onto its floor at reach onset. The failures concentrate where the cup
+has no redundancy: $12.9\%$ of trials at the four units with three cameras
+against $0.4\%$ at the rest, the floor there requiring every camera to agree.
 
 Table~\ref{tab:boundaries} reports boundary agreement on the remaining $750$
 trials, as the disagreement between the same rule run on the markerless and on
@@ -649,7 +651,10 @@ $14.9$\,ms per rig-frame at three cameras, $19.1$ at four and $24.7$ at five ---
 the $28$\,ms above being the same pair inside the running pipeline, which adds
 queueing and result parsing. So at three cameras the front end is at the
 $16.7$\,ms budget of $60$\,Hz capture and at four or five it is inside the
-$33.3$\,ms of $30$\,Hz.
+$33.3$\,ms of $30$\,Hz. That is a statement about time alone: the body fit
+tolerates three cameras, but the cup's three-camera floor has no redundancy there
+(Sec.~\ref{sec:results-seg}), so the rate and the camera count cannot both be
+reduced.
 
 The $30$\,Hz column of Table~\ref{tab:measures} repeats the end-to-end comparison
 at half the capture rate on all $750$ trials, with the temporal smoother's window

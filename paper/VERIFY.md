@@ -1766,3 +1766,44 @@ but each group holds only 3--4 recording units, so between-participant range dif
 them and the numbers are dominated by range restriction, not by camera count — the 4-camera group
 looks *worst* on the two range-restricted measures, which is not credible as a camera effect. **Do
 not quote the per-camera-count correlations.** The decline rate is the finding that survives.
+
+### How predictable are interjoint's swings? Mostly — and mostly they are not real (2026-08-25)
+
+Interjoint's reported r ranges over 0.12--0.89 depending on condition. Asked whether that is
+predictable from the data. Two answers, and the second matters more.
+
+**1. The ordering is ~86% predictable; the level is not.** For `mmc = omc + e` with independent e,
+attenuation gives `r = 1/sqrt(1 + Var(e)/Var(omc))`. Across 400 random subsamples:
+
+| | interjoint | shoulder flexion (control) |
+|---|---|---|
+| Spearman(predicted, observed) | **+0.856** | +0.999 |
+| mean signed model error | **+0.164** (SD 0.092) | +0.002 (SD 0.001) |
+| corr(omc, error) | **−0.795** | −0.358 |
+
+The control shows the model is exact (+/-0.001) when its assumption holds. Interjoint breaks it: it is
+a correlation bounded at 1.0 and its median optical value sits **0.18 SD below that ceiling**, so
+where the reference is near 1 the error must be negative. Hence corr(omc, e) = −0.795 and a
+systematic over-prediction. `Var(omc)` alone predicts nothing (Spearman +0.008) — it is the ratio.
+
+**2. [!] The headline: interjoint's r spans 0.274 to 0.979 across random subsamples of the same 747
+trials.** Every interjoint value this project has reported — 0.48, 0.57, 0.30, 0.33, and the
+per-camera 0.64 / 0.12 / 0.76 and per-arm 0.63 / 0.17 — sits inside that range. **Subgroup
+comparisons on different trials are therefore uninterpretable and must not be quoted** (already
+flagged for the camera-count table; the same applies to the arm split).
+
+**3. [!] Two claims in the paper were over-readings, and both are corrected.** Same-trial comparisons
+need a PAIRED null, not the subsample spread, so bootstrapped paired (4000 resamples):
+
+| claim | observed | paired 95% CI | verdict |
+|---|---|---|---|
+| §V-E "improving by 0.088" under markerless windows | +0.088 | **[−0.086, +0.212]** | contains zero |
+| §V-F "falls from 0.57 to 0.30" at 30 Hz | −0.275 | **[−0.458, +0.075]** | contains zero |
+
+§V-E's *conclusion* survives and is now better supported: the change being inside its own interval is
+stronger evidence that the statistic is unstable than the direction of the change ever was. §V-F's
+causal attribution ("halving the rate halves the samples") is REMOVED — the mechanism may be real but
+the observed drop does not establish it. §VI now carries the 0.27--0.98 resampling range.
+
+Unaffected: the "ten of twelve clear r_s >= 0.84 and r_av >= 0.93" counts, at both rates. Interjoint
+fails the threshold on any of these values, so no count changes.

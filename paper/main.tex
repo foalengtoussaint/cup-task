@@ -601,10 +601,10 @@ Fig.~\ref{fig:correlation-mmcseg} give the end-to-end result, with the markerles
 recording supplying both the pose and the windows. Eight of the twelve measures
 move by less than $0.01$ against the optical-window column and none degrades by
 more than $0.04$: number of movement units loses $0.036$, time to peak velocity
-$0.033$ and peak elbow angular velocity $0.013$. Interjoint coordination moves
-most of all and in the helpful direction, improving by $0.088$ to $0.57$ --- not
-what a window explanation predicts, and further evidence that the statistic is
-dominated by noise rather than by the quantity it names. Elbow extension is unchanged by construction, being
+$0.033$ and peak elbow angular velocity $0.013$. Interjoint coordination appears to
+move most of all, improving by $0.088$ to $0.57$, but a paired bootstrap puts
+that change at $[-0.09, +0.21]$: its correlation is too unstable for a shift of
+that size to carry information. Elbow extension is unchanged by construction, being
 reduced over the whole movement rather than over a phase; trunk displacement is
 reduced over the same span and is likewise unchanged here, both boundaries of it
 being shared.
@@ -661,9 +661,9 @@ at half the capture rate on all $750$ trials, with the temporal smoother's windo
 scaled to the rate. The same ten of twelve measures clear $r_s \ge 0.84$ and $r_{av} \ge 0.93$
 as at $60$\,Hz, and every measure stays within $1.5\%$ of its $60$\,Hz value.
 Three move by more than $0.01$ in $r_s$: peak velocity loses $0.028$, number of
-movement units gains $0.016$, and interjoint coordination falls from $0.57$ to
-$0.30$ --- a correlation computed \emph{within} the reaching window, so halving
-the rate halves the samples it is estimated from.
+movement units gains $0.016$, and interjoint coordination reads $0.30$ against
+$0.57$ --- a change whose paired bootstrap interval, $[-0.46, +0.08]$, contains
+zero.
 
 \section{Discussion}
 \label{sec:discussion}
@@ -696,7 +696,9 @@ reconstruction. Interjoint coordination has almost no variance to track: its
 optical values span $0.976$ to $0.995$ across the interquartile range and $94\%$
 of their variance sits in $5\%$ of trials, so the correlation reads low even
 where the systems agree trial by trial --- its rank correlation is $0.65$ against
-the Pearson figure of $0.48$. Number of movement units has almost no resolution:
+the Pearson figure of $0.48$. Resampling the same trials moves it between $0.27$
+and $0.98$, so differences of the size reported here say nothing about the
+pipeline. Number of movement units has almost no resolution:
 three quarters of the optical values are exactly $1$, and the two systems agree
 exactly on $59\%$ of trials and to within one unit on $91\%$. Both are better reported as
 agreement within a tolerance. Summarising the flexion--elbow coupling by the

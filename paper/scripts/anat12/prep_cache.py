@@ -12,7 +12,7 @@ import sys, re
 from pathlib import Path
 from multiprocessing import Pool
 import numpy as np, pandas as pd
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT/"scripts"))
 import os
 CACHE = ROOT/"cache"/(os.environ.get("OT_OMC_PREP_DIR") or "omc_prep")

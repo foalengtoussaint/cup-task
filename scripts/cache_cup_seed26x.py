@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -34,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 from pipeline.kalman_3d import project, triangulate_dlt          # noqa: E402
 
-TEACHER = "/home/imove/Documents/object_tracking/data/pretrained/yolo26x-seg.pt"
+TEACHER = os.environ.get("OT_CUP_TEACHER") or "yolo26x-seg.pt"   # stock COCO segmentation model; ultralytics fetches it if absent
 CUP_LIKE = [39, 40, 41, 45, 75]      # bottle, wine glass, cup, bowl, vase
 CONF = 0.25
 THR = 30.0                            # px, the pipeline's consensus gate

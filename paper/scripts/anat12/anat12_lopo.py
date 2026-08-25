@@ -59,7 +59,7 @@ import pandas as pd
 from scipy.optimize import least_squares
 from scipy.stats import pearsonr, spearmanr
 
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 

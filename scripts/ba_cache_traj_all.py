@@ -11,14 +11,15 @@ work). Solve-once: refined (T,9,3) per trial saved; all downstream metrics read 
 
 Watch:  tail -f out/gnn/ba_cache_traj_all.log
 """
-import sys, os, time
+import sys
+from pathlib import Path, os, time
 import numpy as np
 from tqdm import tqdm
-sys.path.insert(0, "/home/imove/Documents/cup-task/scripts")
-sys.path.insert(0, "/home/imove/Documents/cup-task")
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import gnn_train as T, gnn_refiner as G, ba_refine as BA
 JOINTS = G.JOINTS
-CACHE = "/home/imove/Documents/cup-task/cache/ba_traj"
+CACHE = str(Path(__file__).resolve().parents[1] / "cache" / "ba_traj")
 os.makedirs(CACHE, exist_ok=True)
 FALLBACK_MM = None         # NO GUARD -- see results_v3_delta._ba_traj_cache for why it was removed
 LAM_BONE = 0.05            # weight on the bone-length VARIANCE term (ba_refine._bone_energy)

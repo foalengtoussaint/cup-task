@@ -11,7 +11,7 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT / "scripts"))
 import os
 os.environ.setdefault("OT_SEG_INPUTS_DIR", "seg_inputs_26x")

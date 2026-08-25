@@ -25,7 +25,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(ROOT / "paper" / "scripts" / "anat12"))

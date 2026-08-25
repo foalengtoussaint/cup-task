@@ -19,7 +19,7 @@ from pathlib import Path
 from multiprocessing import Pool
 import numpy as np, pandas as pd
 from scipy.optimize import least_squares
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT/"scripts"))
 import compare_pose_omc_delta as H, gnn_train as GT, results_v3_delta as R
 from score_vs_automq import (_pose_variant_cached, _planar_body_angles, _elbow_series, load_automq,

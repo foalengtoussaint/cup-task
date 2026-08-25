@@ -16,7 +16,7 @@ blocks, so the answer is anatomical and not just an index.
 import sys, time
 from pathlib import Path
 import numpy as np, pandas as pd
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT/"scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # anat12 modules live beside this file
 import prep_cache

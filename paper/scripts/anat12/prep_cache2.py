@@ -14,7 +14,7 @@ v1 is left in place (never delete experiment data).
 import sys, re
 from pathlib import Path
 import numpy as np
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT/"scripts"))
 CACHE = ROOT/"cache"/"omc_prep2"; CACHE.mkdir(parents=True, exist_ok=True)
 JN = ["right_shoulder", "left_shoulder", "right_elbow", "left_elbow", "right_wrist", "left_wrist",

@@ -14,7 +14,7 @@ from pathlib import Path
 import numpy as np, pandas as pd
 from scipy.optimize import least_squares
 from scipy.stats import spearmanr
-ROOT = Path("/home/imove/Documents/cup-task")
+ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT)); sys.path.insert(0, str(ROOT/"scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # anat12 modules live beside this file
 import prep_cache

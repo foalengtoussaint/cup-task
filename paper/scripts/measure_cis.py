@@ -53,7 +53,13 @@ def main(argv=None):
     a = ap.parse_args(argv)
     rng = np.random.default_rng(a.seed)
 
+    a_boot = a.boot
     bad = declined()
+    import glob
+    f30 = sorted(glob.glob(str(ROOT / "out/scoring/fps_full_*of3.csv")))
+    F30 = pd.concat([pd.read_csv(x) for x in f30]) if f30 else None
+    if F30 is None:
+        print("  no fps_full_*of3.csv -- 30 Hz columns will be blank", flush=True)
     d = pd.read_csv(ROOT / "out/scoring/score_own_phases_anat12.csv")
     d = d[[(p, t) not in bad for p, t in zip(d.part, d.trial)]]
 
@@ -94,6 +100,28 @@ def main(argv=None):
             lo, hi = np.percentile(ba, [2.5, 97.5])
             rec[f"r_av_{tag}_lo"], rec[f"r_av_{tag}_hi"] = lo, hi
             rec[f"n_groups_{tag}"] = len(av)
+        # --- 30 Hz, paired against 60 Hz on the intersection of trials.
+        # `mmc30r` is the rate-matched variant the paper reports (SmoothNet's window scaled to the
+        # rate); `mmc30` is the naive port, whose peak loss is a filter artefact, not sampling.
+        if F30 is not None:
+            f = F30[F30.measure == key][["part", "trial", "mmc30r"]]
+            M = g[["part", "trial", "omc_omc", "mmc_mmc"]].merge(f, on=["part", "trial"],
+                                                                 how="inner").dropna()
+            if len(M) > 20:
+                xx = M.omc_omc.values
+                y60, y30 = M.mmc_mmc.values, M.mmc30r.values
+                rec["n_30"] = len(M)
+                rec["r_s_30"] = _r(xx, y30)
+                b30, bd30 = [], []
+                for _ in range(a_boot):
+                    i = rng.integers(0, len(xx), len(xx))
+                    r3, r6 = _r(xx[i], y30[i]), _r(xx[i], y60[i])
+                    if np.isfinite(r3) and np.isfinite(r6):
+                        b30.append(r3); bd30.append(r3 - r6)
+                rec["r_s_30_lo"], rec["r_s_30_hi"] = np.percentile(b30, [2.5, 97.5])
+                rec["d30"] = rec["r_s_30"] - _r(xx, y60)
+                rec["d30_lo"], rec["d30_hi"] = np.percentile(bd30, [2.5, 97.5])
+                rec["d30_detectable"] = bool(rec["d30_lo"] > 0 or rec["d30_hi"] < 0)
         rows.append(rec)
 
     R = pd.DataFrame(rows)
@@ -107,7 +135,17 @@ def main(argv=None):
         print(f"{r.measure:>32s}  {r.r_s_mmc:5.2f} [{r.r_s_mmc_lo:5.2f},{r.r_s_mmc_hi:5.2f}] "
               f"{r.r_s_mmc_hi - r.r_s_mmc_lo:6.2f}  {r.d_mmc:+7.3f} "
               f"[{r.d_lo:+6.3f},{r.d_hi:+6.3f}]{det}")
-    print("\n  * = the optical->markerless change excludes zero")
+    if "d30" in R.columns:
+        print(f"\n{'measure':>32s} {'r_s 30Hz [95% CI]':>24s} {'60->30 change [CI]':>26s}")
+        for _, r in R.iterrows():
+            if not np.isfinite(r.get("d30", np.nan)):
+                continue
+            det = "*" if r.d30_detectable else " "
+            print(f"{r.measure:>32s}  {r.r_s_30:5.2f} [{r.r_s_30_lo:5.2f},{r.r_s_30_hi:5.2f}] "
+                  f"{r.d30:+7.3f} [{r.d30_lo:+6.3f},{r.d30_hi:+6.3f}]{det}")
+        print(f"  detectable 60->30 changes: {int(R.d30_detectable.sum())} of "
+              f"{int(R.d30.notna().sum())}")
+    print("\n  * = the change excludes zero")
     print(f"  detectable changes: {int(R.d_detectable.sum())} of {len(R)}")
     print(f"  widest CI on r_s: {R.loc[(R.r_s_mmc_hi-R.r_s_mmc_lo).idxmax(),'measure']}")
 

@@ -1857,3 +1857,28 @@ three-camera units, zero declines), because **they measure whether cameras agree
 whether the rig is right.** A coherently mis-calibrated rig triangulates consistently to the wrong
 place: high consensus, no declines, systematically wrong geometry. Consensus is not an accuracy
 proxy; do not use it as one.
+
+### 30 Hz gets intervals too, and only ONE measure changes detectably (2026-08-25)
+
+`measure_cis.py` now covers the 30 Hz arm as well, paired against 60 Hz on the intersection of
+trials, using `mmc30r` (the rate-matched variant the paper reports) from `fps_full_*of3.csv`.
+Table II's 30 Hz column carries its interval, and all five r columns now come from one source.
+
+| measure | 60 -> 30 change | paired 95% CI | |
+|---|---|---|---|
+| **peak velocity** | −0.028 | **[−0.051, −0.011]** | detectable |
+| time to first PV | −0.001 | [−0.002, −0.000] | detectable, trivially |
+| number of movement units | +0.016 | [−0.013, +0.048] | contains zero |
+| interjoint coordination | −0.275 | [−0.467, +0.073] | contains zero |
+| the other eight | <= 0.010 | contain zero | |
+
+**[!] §V-F said "three move by more than 0.01 in r_s" and named PV, movement units and interjoint.
+Only PV survives.** The claim is now the stronger one the data supports: **only peak velocity changes
+detectably at 30 Hz, by 0.028 (0.011--0.051), and the other eleven cannot be distinguished from no
+change at all.** That is a better result for the paper than the hedged enumeration it replaces —
+halving the capture rate costs one measure a little and the rest nothing measurable.
+
+Running tally for the day: five separate claims turned out to sit inside their own uncertainty once
+an interval was computed — the 17-vs-33 ms boundary medians, interjoint's window "improvement",
+interjoint's 30 Hz "collapse", "none degrades by more than 0.04", and now "three move by more than
+0.01". Every interval took under a minute. **Compute the interval before interpreting a difference.**

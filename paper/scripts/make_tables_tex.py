@@ -171,8 +171,12 @@ def table3(df: pd.DataFrame) -> str:
                      cell(c.r_av_opt, c.r_av_opt_lo, c.r_av_opt_hi),
                      cell(c.r_s_mmc, c.r_s_mmc_lo, c.r_s_mmc_hi),
                      cell(c.r_av_mmc, c.r_av_mmc_lo, c.r_av_mmc_hi)]
-        v30 = hz30.get(raw)
-        c30 = f"{v30:.2f}" if v30 is not None else "---"
+        # 30 Hz from the CI file when present, so all six columns come from one source
+        if c is not None and np.isfinite(c.get("r_s_30", np.nan)):
+            c30 = cell(c.r_s_30, c.r_s_30_lo, c.r_s_30_hi)
+        else:
+            v30 = hz30.get(raw)
+            c30 = f"{v30:.2f}" if v30 is not None else "---"
         L.append(f"{measure} & " + " & ".join(cells) + f" & {c30} & {int(r['n'])} \\\\")
     L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}", ""]
     return "\n".join(L)

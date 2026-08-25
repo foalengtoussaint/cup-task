@@ -28,15 +28,17 @@ author's to fill.
 `foalengtoussaint/fastmmc` (the method), §IV's at `foalengtoussaint/cup-task` (the scripts behind
 every table and this file).
 
-**`fastmmc` is PUBLIC** — verified by an anonymous request returning 200, not by the account that
-owns it — so that footnote is finished and its todo is gone.
+**Both repositories are PUBLIC and both footnotes are closed** (verified 2026-08-25 by anonymous
+requests returning 200, not by the account that owns them).
 
-**[!] `cup-task` IS PRIVATE.** An anonymous request returns **404**, so §IV's footnote is currently a
-dead link for every reader of the paper. `gh repo view` is not the test to use here: this machine is
-authenticated as two accounts, so a private repo of the owner's can resolve for one of them and look
-fine. Check it the way a reader would, unauthenticated. Either make the repository public before
-submission or delete that footnote — §III-C's is public and stands on its own. The todo in §IV says
-this.
+`gh repo view` is not the test to use here: this machine is authenticated as two GitHub accounts, so
+a private repository of the owner's resolves for one of them and looks published. Check it
+unauthenticated, the way a reader would.
+
+**`cup-task`'s default branch is now `paper`, and that mattered.** `master` held none of the 215
+`paper/` files and was 210 commits behind, still carrying the pre-reorg `cup_task/` layout — so for
+a while the footnote was public and still pointed at a tree without the scripts it promises. Public
+is not the same check as correct: follow the URL and look at what is actually there.
 
 **Figures**: Fig. 1 exemplary trajectories (P07, trials 10 and 43); Fig. 2 the twelve measures
 end-to-end (`fig4b_mmcseg_anat12.png`).

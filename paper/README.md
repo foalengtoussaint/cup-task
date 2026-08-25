@@ -137,9 +137,18 @@ stays — the paper imports its operators (`_planar_body_angles`, `_elbow_series
   therefore a notch below theirs (e.g. elbow extension r≈0.96 vs their 0.99) — same ordering, right
   ballpark, on consumer webcams at 60 Hz.
 
-## Current state (2026-08-24)
+## Current state (2026-08-25)
 
-Paper is 6 pages of content plus reference placeholders. Regenerating everything:
+Paper is 7 pages of content plus references — **one page over the 6-page target**. Measured: deleting
+Fig. 1 restores 6 exactly and nothing else does (not shrinking it, not any float placement). Awaiting
+a decision.
+
+Table II is now full width (`table*`) and carries 95% bootstrap intervals on all five r columns,
+because interjoint coordination's r_s spans 0.27–0.98 across random subsamples of the same trials and
+a bare point estimate cannot be read. Bibliography is 10 entries, every field publisher-checked, with
+PDFs of 7 in `refs/` and provenance at the end of `refs.bib`.
+
+Regenerating everything:
 
 ```bash
 export OT_SEG_INPUTS_DIR=seg_inputs_ship OT_TRACKS_DIR=tracks_uetrack_26x OT_NCAMS_DIR=cup_ncams_26x
@@ -153,7 +162,8 @@ python scripts/score_seg_boundaries.py && cp out/scoring/seg_boundaries.csv pape
 python paper/scripts/paper_trajectories.py       # Table I + Fig 1
 python paper/scripts/measures_table.py --own out/scoring/score_own_phases_anat12.csv --suffix _anat12
 python paper/scripts/make_seg_table.py           # Table III
-python paper/scripts/make_tables_tex.py          # all .tex tables
+python paper/scripts/measure_cis.py              # -> table3_cis.csv, the intervals in Table II
+python paper/scripts/make_tables_tex.py          # all .tex tables (reads table3_cis.csv)
 python paper/scripts/fig4_pair.py --own out/scoring/score_own_phases_anat12.csv --suffix _anat12
 cd paper && tectonic main.tex
 ```
@@ -163,5 +173,10 @@ and does not need re-running unless the 60 Hz numbers change.
 
 Analyses that are NOT in the paper but whose scripts and outputs are kept: `fps_cup.py` (cup
 re-tracked at both rates), `alt_measures.py` (vector coding, LDLJ, the travel-share coordination
-index), `scripts/latency_bench.py` and `scripts/latency_opt.py`. See VERIFY.md for why each was
-cut and what it found.
+index), `scripts/latency_bench.py` and `scripts/latency_opt.py`, and `scripts/seg_rules/` (the
+reach-onset and settle rule sweep — `seg_rule_sweep.csv`, `seg_rule_measures.csv`; conclusion was to
+keep the shipped rules, and the reason boundary metrics mislead here is worth reading before touching
+a boundary). See VERIFY.md for why each was cut and what it found.
+
+`scripts/seg_sequential.py` reads `OT_SEG_ONSET` / `OT_SEG_SETTLE` / `OT_SEG_PEAK_FRAC`, defaulting to
+the shipped `pos` / `end` — so every published number reproduces unless they are set.

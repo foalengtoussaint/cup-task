@@ -1,101 +1,74 @@
 # cup-task
 
-**Mocap-free drink-task scoring from multi-camera video.** Detect the cup and the person's
-keypoints, fuse to 3D with the existing camera calibration, segment the movement phases, and emit the
-Murphy clinical measures — no motion capture required.
+**Markerless scoring of the standardized drinking task, and its validation against optical mocap.**
 
-Standalone productization of the `object_tracking/experiments/drink_study` research pipeline.
+Five synchronized webcams in, the twelve drinking-task movement-quality measures out — with the
+movement phases found from the video itself rather than from the mocap, no inverse kinematics and no
+fitted biomechanical model.
 
-## Documentation
+This repository is the **research and validation record** behind the paper in [`paper/`](paper/): the
+scripts that produce every table and figure, and a claim-by-claim account of what each number was
+measured from. To *use* the method rather than reproduce the paper, see the pipeline-only repository
+(link in `paper/main.tex`), which carries the same stages without the research clutter.
 
-| | |
-|---|---|
-| **[SPEC.md](archive/docs_20260820/SPEC.md)** | **how the pipeline works** — stages, signals, phase definitions, conventions |
-| **[RESULTS.md](archive/docs_20260820/RESULTS.md)** | **every measured number** — accuracy vs OMC, speed, segmentation, Murphy |
-| [WORKLOG.md](archive/docs_20260820/WORKLOG.md) | chronological record, including what was tried and rejected |
-| [SPEED_METRICS.md](archive/docs_20260820/SPEED_METRICS.md) | the wrist-speed method comparison in detail |
+## What is validated
 
-## Run it
-
-```bash
-# whole pipeline on one rep's clips
-python -m pipeline.pipeline CLIPDIR --calib calibration.toml -o out/ \
-       --smooth-pose --cup-track
-
-# validation against OMC ground truth (cache-only, no GPU)
-python scripts/results_v3_delta.py --what all
-
-# speed benchmark (online fps + offline post-processing)
-python scripts/bench_v3.py --cams 1 5 10
-```
-
-## Pipeline at a glance
-
-```
-ONLINE   capture ─┬─ YOLO-pose ──────────────┐
-                  ├─ YOLO cup once → UETrack ┤   (2D per camera)
-                  └─ PyrLK flow @ wrist, cup ┘
-                     ─────────────────────────────────────────
-OFFLINE           triangulate → consensus → SmoothNet → blend
-                  → segment (7 phases) → Murphy measures
-```
-
-Split at **the point a stage stops needing raw pixels**. Flow is online because it needs the frame
-*pair* (offline it would force a second full decode); SmoothNet is offline because it is a
-non-causal ±16-frame window. Full reasoning in [SPEC.md](archive/docs_20260820/SPEC.md).
-
-| stage | module | what it does |
-|---|---|---|
-| cup detection | `pipeline.cup_detect` | YOLO, one-shot seed |
-| cup tracking | `pipeline.cup_track` + `consensus` | detect-once UETrack, ≥2-cam greedy consensus |
-| body keypoints | `pipeline.pose_keypoints` | YOLO-pose, COCO-17 upper body |
-| 3D triangulation | `pipeline.triangulate` | multi-view DLT |
-| temporal refinement | `pipeline.pose_smooth` | SmoothNet (pose **and** cup) |
-| wrist/cup velocity | `pipeline.flow_speed`, `speed_blend` | PyrLK flow → 3D velocity; speed-gated blend |
-| phase segmentation | `pipeline.segment` | 7 Murphy phases, van Andel definitions |
-| clinical measures | `pipeline.score` | 8/8 position measures |
-
-## Headline results
-
-Validated on DELTA, **n = 12** (P07+P08 × trial_10–15) against Qualisys OMC:
+On **750 trials** from **eleven recording units** (ten participants, one recorded twice under
+different calibrations) of the DELTA cohort, recorded simultaneously with Qualisys optical mocap:
 
 | | |
 |---|---|
-| cup trajectory | displacement corr **0.9996**, median error **2.3 mm**, 100 % coverage |
-| wrist speed | **6.9 mm/s** per-frame, **20.9 mm/s** at the peak (6–7× better than the v1 baseline) |
-| segmentation | **0/83 missed phases**, every boundary within **0–67 ms** (≤4 frames) |
-| Murphy | peak_velocity **−46 %** error, movement_units **−50 %**, all 8 measures on all 12 trials |
-| realtime | 100 fps at 1 camera, 38.5 at 5 (GPU-bound); offline post-processing ~887 ms/trial |
+| measures, markerless pose **and** markerless phase windows | 10 of 12 at `r_s ≥ 0.84`, `r_av ≥ 0.93` |
+| measures, both systems given the same optical windows | 11 of 12 |
+| speed | a 9.2 s trial from five cameras scored in **16.8 s** on one consumer GPU |
+| of which not overlappable with capture | **1.3 s** — the rest is per-frame work a front end absorbs |
+| segmentation | the segmenter **declines 39 of 790** trials and says so, from the cup track alone |
 
-Full tables, caveats and the cohort exclusion in [RESULTS.md](archive/docs_20260820/RESULTS.md).
-
-## Keypoints
-
-YOLO-pose (COCO-17), upper body — head (mouth proxy), shoulders, elbows, wrists, hips. Knees/ankles
-dropped (no signal for a seated drinking task). The mouth-proxy point (nose → eye/ear fallback)
-replaces the QTM head marker the research pipeline depended on, which is what makes scoring
-mocap-free.
+Every one of these is traced to the code that produced it in [`paper/VERIFY.md`](paper/VERIFY.md).
+Numbers quoted anywhere else in this repo that disagree with the paper are superseded by the paper.
 
 ## Layout
 
 ```
-pipeline/        the pipeline modules
-scripts/         active harnesses (results_v3_delta, bench_v3, cup_flow_probe) + shared libs
-scripts/archive/ settled investigations, kept — see its README
-models/          pose + SmoothNet + UETrack weights (repo-persistent on purpose)
-cache/           cached detections/tracks/flow — the offline path runs from here with no GPU
-runs/segment/    cup YOLO weights (still referenced by cache_tracks.py)
-out/figures/     current figures cited by the docs
-archive/         settled outputs and checkpoints, kept — see its README
+pipeline/    the stages, imported by everything below
+scripts/     the harnesses that build the caches and score the cohort
+paper/       the paper, its scripts, its tables and its provenance record
+archive/     settled investigations and superseded outputs, kept deliberately
 ```
 
-## Setup
+`pipeline/` holds the eight modules the current chain uses — `cup_track`, `consensus`,
+`cup_ba_refine`, `triangulate`, `kalman_3d`, `pose_smooth`, `segment`, `score`. The per-frame front
+end that feeds them (detection, 2D pose, optical flow) predates the reorg and still sits in
+`pipeline/_archive_20260820/`; `scripts/latency_bench.py` binds it back under its original name on
+purpose, so the timings it reports are of the code that actually built the caches.
+
+## Reproduce
+
+Full chain, in order, with the environment variables that select the shipped caches:
+**[`paper/README.md`](paper/README.md)**. Stage-by-stage derivation and the reasoning behind each
+choice: [`paper/results/PIPELINE.md`](paper/results/PIPELINE.md).
 
 ```bash
 conda activate object_tracking        # torch 2.7 + cu118, ultralytics 8.4.49
-pip install ultralytics opencv-python ezc3d huggingface_hub
+export OT_SEG_INPUTS_DIR=seg_inputs_ship OT_TRACKS_DIR=tracks_uetrack_26x OT_NCAMS_DIR=cup_ncams_26x
 ```
 
-Weights and data (`models/`, `cache/`, `runs/`, `data/`, `external/`) are **not versioned** — they are
-large and regenerable, but nothing is ever auto-deleted. If the UETrack weights go missing, re-fetch
-them from HuggingFace `kangben258/UETrack` into `models/trackers/uetrack/`.
+Those three variables are not optional — they select the caches the published numbers were computed
+from. `scripts/seg_sequential.py` additionally reads `OT_SEG_ONSET` / `OT_SEG_SETTLE` /
+`OT_SEG_PEAK_FRAC`, which default to the shipped rules, so leaving them unset reproduces the paper.
+
+## What is not in the repository
+
+`models/`, `cache/`, `external/`, `data/` and the archived run outputs are large and regenerable, so
+they are gitignored — but nothing here deletes them. The offline scoring path runs from `cache/`
+with no GPU; only rebuilding the caches needs one. If the UETrack weights go missing, re-fetch them
+from HuggingFace `kangben258/UETrack` into `models/trackers/uetrack/`.
+
+The DELTA recordings themselves are not ours to distribute. Access is via the study of Unger et al.
+
+## Archive
+
+`archive/` and `scripts/archive/` hold work that is settled rather than wrong — the investigations
+that were run, and the ones that failed. `paper/VERIFY.md` records why each was cut and what it
+found; the reach-onset and settle rule sweep under `paper/scripts/seg_rules/` is worth reading before
+anyone touches a phase boundary, because the boundary-agreement metrics there actively mislead.

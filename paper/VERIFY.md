@@ -949,6 +949,57 @@ doubt at 874×, but do not quote the ≥3 medians as an accuracy figure.
 inherited by copying a comment rather than checking it, which is the same lesson `refs.bib` records
 for citations. It survived in three files for months because it sounded decisive.
 
+### Review pass on Sec. V, 2026-08-25 — the Discussion was still pre-bootstrap
+
+Four corrections, all in the Discussion, all of them the same underlying fault: **the section was
+written before Table II carried intervals and was never re-read against them.**
+
+**1. Two of four claimed margins were inside their own interval.** Against `\cite{unger2024}`'s
+optical-window figures:
+
+| measure | ours | theirs | verdict |
+|---|---|---|---|
+| time to first PV | 1.00 [0.99, 1.00] | 0.94 | outside — stands |
+| peak elbow ang. vel. | 0.91 [0.89, 0.93] | 0.87 | outside — stands |
+| movement units | 0.84 [0.75, 0.89] | 0.77 | **inside — not resolvable** |
+| interjoint, single trial | 0.48 [0.25, 0.82] | 0.71 | **inside — not resolvable** |
+| interjoint, per-participant | 0.83 [0.34, 0.95] | 0.71 | **inside — the "reversal" is not there** |
+
+The "that one reverses on per-participant averages, $0.83$ against their $0.71$" claim is deleted.
+It contradicted a sentence **two paragraphs below it in the same section** — "resampling the same
+trials moves it between 0.27 and 0.98, so differences of the size reported here say nothing about
+the pipeline". Also added: since they report no intervals, even the two that stand are one-sided —
+their point estimate is outside our interval, which is weaker than the two being distinguishable.
+
+**2. The 30 Hz paragraph contradicted §IV-F.** It said the cost of halving the rate "is interjoint
+coordination, estimated from half as many samples" — the pre-bootstrap explanation. §IV-F says only
+peak velocity changes detectably, at 0.028, and interjoint's 0.30-against-0.57 cannot be
+distinguished from no change. Corrected to match.
+
+**3. The 31 % window difference was missing from the not-controlled list.** *This one is subtle and
+the obvious reply is wrong.* §V-E already documents it and says "the correlations in Table II are
+unaffected, both inputs being segmented by the same rule" — which is TRUE, and answers a different
+question. Internally, both our systems use our windows, so the correlation is unaffected. But
+`\cite{unger2024}`'s correlations are computed over THEIR windows, so the cross-paper comparison
+puts a 0.80 s reaching window against a 1.17 s one, and all four compared measures are reduced over
+that window. A shorter window also gives spurious speed oscillations less room, which would flatter
+the movement-unit count specifically. Checking that it does not affect our internal numbers is not
+the same as controlling for it in a comparison against someone else's.
+
+**4. §IV-B contradicted §III-F's own correction.** It opened "after the per-trial static offset is
+removed, the shape ... elbow extension at $r = 1.00$", while §III-F and the Table I caption say the
+offset is removed before RMSE and $r$ is on the raw series. Clause deleted. The paragraph below it
+had the same error — "the offsets that were removed to obtain those numbers" — now "the offsets
+removed before the RMSE column".
+
+**Not done, deliberately: the two figure defects.** Fig. 1 carries a baked-in "Fig 3 — Exemplary
+kinematic trajectories (P07)" title that duplicates the caption and names the wrong figure number,
+and it is drawn 10.3 in wide for a 3.5 in column, so every font arrives at 34 % of nominal. Fig. 2
+carries "(b) Markerless phase windows" with no (a) in the paper. There is also a live bug in
+`paper_trajectories.py`: the x-axis label test reads `len(TRAJ)` (six) while the loop runs `TRAJF`
+(four), so the bottom row is never labelled. Fixing the scale properly needs Fig. 1 to become a
+`figure*`, which costs a page. Author deprioritised these; they are cosmetic but they are real.
+
 ## Docs to fix before the repo is public
 
 - `results/PIPELINE.md` — the anat12 entry under "did not work" (contradicted), and the

@@ -445,8 +445,8 @@ carrying no usable value, it is reported on $n = 602$.
 Table~\ref{tab:trajectories} reports per-frame agreement for the six kinematic
 trajectories over all $790$ trials of the eleven recording units ($413$ affected,
 $377$ unaffected), and Fig.~\ref{fig:trajectories} shows exemplary trajectories
-for one participant. After the per-trial static offset is removed, the shape of
-the optical trajectory is recovered closely: elbow extension at $r = 1.00$ on
+for one participant. The shape of the optical trajectory is recovered closely:
+elbow extension at $r = 1.00$ on
 both arms with an RMSE of $4.2$\,deg, shoulder flexion at $0.96$ and $0.97$, the
 velocity trajectories at $0.96$--$0.98$, and trunk displacement at $0.96$ and
 $0.98$. Shoulder abduction is the weakest ($0.78$ unaffected, $0.88$ affected)
@@ -461,7 +461,7 @@ trajectories are far less forgiving under that null ($0.67$ and $0.65$), as is
 abduction ($0.53$), so it is the RMSE and bias columns that carry what the
 correlation does not.
 
-The offsets that were removed to obtain those numbers are not small. Taking the
+The offsets removed before the RMSE column are not small. Taking the
 offset as markerless minus optical, they are $+7.4$ and $+8.1$\,deg on elbow
 extension, $-5.0$ and $-3.2$\,deg on shoulder flexion, and $-6.0$ and
 $-2.0$\,deg on shoulder abduction: the markerless elbow reads more extended than
@@ -676,17 +676,27 @@ $r_{av} \ge 0.93$ end to end, without markers, without inverse kinematics and
 without a biomechanical model. The differentiable-biomechanics pipeline
 of~\cite{unger2024} takes its phase windows from the optical markers for both
 systems, so the column of Table~\ref{tab:measures} comparable to it is the
-optical-window one. There we are higher on number of movement units ($0.84$
-against $0.77$), time to first peak velocity ($1.00$ against $0.94$) and peak
-elbow angular velocity ($0.91$ against $0.87$), within $0.02$ on the angles,
-trunk displacement and the remaining timing measures, and lower on one:
-single-trial interjoint coordination, $0.48$ against $0.71$. That one reverses
-on per-participant averages, $0.83$ against their $0.71$, which is the statistic
-to prefer for a measure whose reference is range-restricted. The comparison is not
-controlled --- different trial subset, different exclusions, and a movement-unit
-threshold of $60$\,mm/s here against the protocol's $20$ --- though that last
-difference does not account for the margin, agreement being flat across that
-range of thresholds (Sec.~\ref{sec:measures}). A
+optical-window one. Two of their figures fall outside our bootstrap
+intervals: time to first peak velocity, $1.00$ $[0.99, 1.00]$ against their
+$0.94$, and peak elbow angular velocity, $0.91$ $[0.89, 0.93]$ against $0.87$.
+We are within $0.02$ on the angles, trunk displacement and the remaining timing
+measures. Two further differences are not resolvable at this sample size: number
+of movement units, $0.84$ $[0.75, 0.89]$ against $0.77$, and single-trial
+interjoint coordination, $0.48$ $[0.25, 0.82]$ against $0.71$, each of their
+values falling inside our interval. Since~\cite{unger2024} reports no intervals,
+even the two that separate are one-sided: their point estimate lies outside our
+interval, which is weaker than the two estimates being distinguishable from each
+other.
+
+The comparison is not controlled. The trial subset and the exclusions differ, the
+movement-unit threshold is $60$\,mm/s here against the protocol's $20$, and our
+reaching window is $31\%$ shorter than the reference protocol's
+(Sec.~\ref{sec:results-seg}). That last is the one that bears on these
+measures directly: all four are reduced over the reaching window, and a shorter
+window gives spurious speed oscillations less room to be counted, which would
+flatter the movement-unit count in particular. The threshold does not account for
+any margin, agreement being flat across that range (Sec.~\ref{sec:measures}); the
+window length is not something this comparison can rule out. A
 geometric construction from keypoints therefore gives up little of the agreement
 a fitted model achieves. What it buys is not primarily raw speed --- both
 pipelines are dominated by 2D keypoint extraction --- but a bounded per-trial
@@ -732,9 +742,9 @@ keeps pace with capture, which this card does not quite manage at five cameras
 and $60$\,Hz. Halving the capture rate buys that headroom and is close to free, provided the
 temporal smoother's window is scaled with the rate: the $6$--$9\%$ loss of peak
 magnitude that a naive port produces is an artefact of holding a learned filter's
-window at a fixed sample count, not a cost of sampling. What halving the rate
-does cost is interjoint coordination, which is estimated from half as many
-samples within the reaching window.
+window at a fixed sample count, not a cost of sampling. The only cost distinguishable from
+zero is peak velocity, which loses $0.028$; the other eleven measures cannot be
+separated from no change at all (Sec.~\ref{sec:results-latency}).
 
 \section{Limitations}
 \label{sec:limitations}

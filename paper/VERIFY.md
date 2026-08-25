@@ -1882,3 +1882,38 @@ Running tally for the day: five separate claims turned out to sit inside their o
 an interval was computed — the 17-vs-33 ms boundary medians, interjoint's window "improvement",
 interjoint's 30 Hz "collapse", "none degrades by more than 0.04", and now "three move by more than
 0.01". Every interval took under a minute. **Compute the interval before interpreting a difference.**
+
+### Why the study population cannot be completed here (2026-08-25)
+
+Chased the earlier note that the clinical scores "appear to be recoverable locally". Partly true.
+**No clinical values are copied into this file** — it is committed and pushed, and participant ages,
+sexes and stroke dates are health data; whether they enter the repo is the authors' decision.
+
+**(a) FMA-UE is NOT recoverable, and it is the one the paper needs.** `clinical_scores_import.ipynb`
+cell 5 reads `C:\Users\tim.unger\Desktop\FMA_clean.csv`, sums the `betroffen` / `unbetroffen` columns
+into `betroffen_sum` / `unbetroffen_sum`, and **emits only figures** — a bar chart per Record ID. No
+printed table, so the totals exist as pixels. §Limitations' "its impairment gradient is mild" rests
+on exactly this number.
+
+**(b) Recoverable but unusable: no Record ID -> P-label key.** The notebook's cached outputs DO carry,
+for all 38 records: measurement date, age, sex, stroke date, dominant hand, more-affected side, days
+between stroke and measurement, and Box-and-Block counts per hand. But they are keyed by DELTA Record
+ID and no key file exists on this machine. Tested the obvious hypothesis, Record ID == the number in
+the P-label, against affected side derived independently from our own trial names:
+
+- **8 of 9 informative units match** (P07, P10, P12, P13, P14, P15, P17, P19). p(all by chance) ~ 0.02.
+- **P08 is uninformative** — its record reads "beide" (both sides affected).
+- **P25 CONTRADICTS**: the record says "rechts", our trials say the affected arm is L, on both
+  sessions. Its Box-and-Block is 42 right against 43 left, a one-block difference, so BBT cannot
+  adjudicate. No second discriminator found.
+
+So the mapping is probably right for most units and demonstrably wrong for at least one. **A
+demographics table with one silently wrong row is worse than no table**, which is why this stays a
+TODO rather than being filled in from an inference.
+
+**(c) Ethics.** Still needs an explicit statement rather than §III-A's deferral; whether BASEC-No
+2022-00491 covers this re-analysis is a question only the authors can answer.
+
+**To unblock:** the FMA-UE totals in any tabular form, and either the Record ID -> P-label key or
+confirmation of P25's affected side. Trial counts per unit and arm are already recorded above, so the
+table's `n` column needs no work.

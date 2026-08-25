@@ -195,9 +195,12 @@ def main() -> None:
 
     # Processing check -- what actually went into the tables.
     n_part = traj["part"].nunique()
-    n_trial = traj["trial"].nunique()
+    # `part` counts RECORDING UNITS, not people: P25 was recorded twice under different
+    # calibrations and appears as P251 and P252. `trial` is a per-unit index and is reused
+    # across units, so its nunique() is a label count -- the trial count is len(traj)/6.
+    n_trial = len(traj) // len(TRAJ_ORDER)
     print(f"trajectory_agreement.csv: {len(traj)} rows, "
-          f"{n_part} participants, {n_trial} trials, "
+          f"{n_part} recording units, {n_trial} trials, "
           f"trajectories={sorted(traj.traj.unique())}", flush=True)
     for col in ("r", "rmse", "bias", "lag_s"):
         n_bad = int((~np.isfinite(traj[col])).sum())

@@ -913,6 +913,42 @@ must be moved into `paper/scripts/` at the time it is written, not recovered aft
 5. **Promote the three audit scripts** out of `scripts/archive/` into `scripts/`.
 6. **Then regenerate**, per the table changes in the plan block.
 
+### [!] "A 2-camera cup is not evidence" was rhetoric, and it is now measured (2026-08-25)
+
+Three files asserted it — `score_seg_boundaries.py`, `cache_cup_ncams.py`, `score_e2e_seq.py` — two
+of them citing "a robustness study: 2 cams -> >1m errors". **Neither half survives measurement.**
+`paper/scripts/two_camera_cup.py` is the check; all three comments are corrected.
+
+| cams | frames | median | p90 | >100 mm | >500 mm | >1 m |
+|---|---|---|---|---|---|---|
+| **2 (held out)** | 34 234 | **60.4 mm** | 363 | **21.5 %** | 8.0 % | **0.00 %** |
+| 3 | 120 106 | 9.1 mm | 28 | 0.07 % | 0 % | 0 % |
+| 4 | 116 396 | 12.8 mm | 26 | 0.00 % | 0 % | 0 % |
+| 5 | 105 352 | 11.9 mm | 27 | 0.00 % | 0 % | 0 % |
+
+Two calibrated views **do** determine a point, and they place the cup to 60 mm at the median. That is
+information, not noise, and calling it "not evidence" was a slogan. **No 2-camera frame exceeds 1 m**,
+so the figure the comments cited is not reproduced on the shipped cache.
+
+**The real case for the floor is detectability, and it is stronger than the slogan.** 21.5 % of
+2-camera frames are more than 100 mm out against 0.02 % at three or more — an **874×** higher rate —
+and 8 % are beyond half a metre. With two views there is no redundancy to say *which* frames those
+are: a wrong point both cameras agree on reprojects perfectly, because there is no third ray to
+contradict it. The floor buys the ability to identify bad frames, not better frames on average. That
+is also why `consensus3` accepts a size-2 subset under a continuity constraint during tracking while
+the cup that feeds the measures is floored at three — the two uses want different things, which the
+"not evidence" phrasing obscured.
+
+**METHOD NOTE, because the naive version is badly wrong.** The two cups live in different world
+frames; their raw positional difference is 1–2 m and *grows* with camera count, which is the
+giveaway. One rigid transform is fitted per trial by Kabsch on the ≥3-camera frames only, so the
+2-camera frames are held out and the ≥3 rows are in-sample and optimistic. The direction is not in
+doubt at 874×, but do not quote the ≥3 medians as an accuracy figure.
+
+**Pattern:** this is failure mode 1 again — a mechanism asserted instead of measured — and it was
+inherited by copying a comment rather than checking it, which is the same lesson `refs.bib` records
+for citations. It survived in three files for months because it sounded decisive.
+
 ## Docs to fix before the repo is public
 
 - `results/PIPELINE.md` — the anat12 entry under "did not work" (contradicted), and the

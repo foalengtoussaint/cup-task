@@ -32,8 +32,11 @@ from pipeline.triangulate import fill_cup_from_wrist, kf_fill_gaps  # noqa: E402
 # segmenter's _interp_nan_xyz then draws a straight line through the occlusion. kf_rts_smooth is the
 # filler that already exists for exactly this (constant-velocity coast + RTS backward correction).
 # mmc_c3 = the SAME pipeline cup with every frame below the >=3-agreeing-camera floor dropped.
-# A 2-camera cup is not weak evidence, it is not evidence (robustness study: 2 cams -> >1m errors),
-# and on the bad trials it is most of the track. mmc_c3_kf then fills those holes with the KF.
+# A 2-camera cup is DROPPED because its errors are undetectable, not because it carries nothing:
+# measured in paper/scripts/two_camera_cup.py it is 60mm at the median, but 21% of those frames
+# are >100mm out against 0.02% at >=3 cams, and two views give no redundancy to say which. (The
+# older '>1m errors' note here did not reproduce: 0.00% of 2-cam frames exceed 1m.) On the bad
+# trials this is most of the track. mmc_c3_kf then fills those holes with the KF.
 # _wr  = wrist proxy on BOTH channels (wrong: kills wrist->cup, so grasp/release degrade)
 # _wr2 = wrist proxy on the cup->MOUTH channel only; grasp/release keep the observed-only cup.
 #        SUPERSEDED 2026-08-20: segment_sequential now drives cup->mouth from the WRIST ITSELF by

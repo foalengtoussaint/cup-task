@@ -1,9 +1,11 @@
 """Cache the cup 3D together with its per-frame CONSENSUS SIZE, so unconfirmed frames can be dropped.
 
 cup_track returns a point whenever it can, including frames where only TWO cameras agree -- and a
-2-camera cup is the regime the robustness study calls catastrophic. Those frames are not weak
-evidence, they are not evidence: on P13 trial_34 they are 161 of 408 frames and they are what the
-segmenter then reads as a cup.
+2-camera cup is the regime whose errors cannot be detected. It is not that the point carries
+nothing -- measured against the optical cup it is 60mm at the median -- but 21% of those frames are
+>100mm out against 0.02% at >=3 cams, and with two views nothing identifies which. On P13 trial_34
+they are 161 of 408 frames and they are what the segmenter then reads as a cup.
+See paper/scripts/two_camera_cup.py; the older '>1m errors' claim does not reproduce.
 
 This stores, per trial, the cup 3D and n_cams per frame, so a consumer can apply the >=3 floor
 strictly. Cheap (~0.22 s/trial) but worth caching because every segmenter variant re-reads it.

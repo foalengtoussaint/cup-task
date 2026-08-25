@@ -56,7 +56,7 @@ def measures(pose, ph, side, rec):
 def _cup_mmc(part, trial, nfr, wrist=None):
     """The MMC cup the segmenter sees.
 
-    OT_CUP_STRICT_KF=1: apply the >=3-agreeing-camera floor strictly (a 2-camera cup is not weak
+    OT_CUP_STRICT_KF=1: apply the >=3-agreeing-camera floor strictly (a 2-camera cup has undetectable
     evidence, it is none), then fill the resulting holes with the KF+RTS smoother rather than letting
     the segmenter's _interp_nan_xyz draw a straight line through them -- a chord cuts the corner of
     the cup's arc to the mouth, so "near the mouth" fires late and clears early.

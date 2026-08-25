@@ -963,6 +963,46 @@ DELTA trials bit-for-bit, and the test that shows it must ship with it. An unver
 precisely failure mode 3 above — a number quoted from the wrong artifact — with the whole pipeline
 as the artifact.
 
+### The extraction was done, 2026-08-25 — `fastmmc`
+
+`github.com/foalengtoussaint/fastmmc`, which is what §III-C's footnote points at. It met the bar:
+
+```
+SEGMENTER: compared 1580 trial-sources, 0 differ
+MEASURES:  compared  789 trials,        0 differ      (zero tolerance, not np.isclose)
+BA:        compared    6 trials,        0 differ      (worst 0.000e+00 mm)
+```
+
+`tests/test_parity.py` there runs both implementations side by side over
+`cache/seg_inputs_ship` and `cache/pose_smoothed`. **It caught a real port bug on its first run**: a
+sed that inlined `H._lp` had been applied to a version of the file that a later regeneration
+overwrote, so the angle measures raised `NameError` and were being swallowed by the `try/except` that
+`_measures` wraps them in. Every trial silently returned seven of twelve. That is failure mode 1 in
+miniature — the port *looked* right — and nothing but running both sides would have found it.
+
+**Four defaults in the shipped modules were wrong for this task**, all found by running the driver
+end to end rather than by reading:
+
+| | shipped default | what the paper actually used |
+|---|---|---|
+| cup detector | `cup_clean3d_refill.pt`, the BRIO finetune | the stock COCO teacher `yolo26x-seg` |
+| pose model | `yolo11n-pose` (ultralytics' own) | `yolo26s-pose` |
+| calibration | translations in **metres** | mm — every threshold in the pipeline is mm |
+| camera screening | absent from `pipeline/` | required; 12 of 55 camera slots dropped |
+
+The metres one is the dangerous member of that list: nothing raises. The 30 mm rest gate, the
+150 mm/s drink gate and the 60 mm/s movement-unit amplitude all pass silently on a metres world and
+return measures that look plausible. The first end-to-end run produced exactly that.
+
+**Independent confirmation the seed port is faithful**: run on P13 trial_9 with the paper's camera
+set, the ported detect-once seed lands at frame 0 with cameras 1/3/4 all `yolo` origin — identical to
+`cache/cup_seed26x/P13__trial_9_L_unaffected.json`, which was written by the original script.
+
+**Known limitation, stated in that repo's README rather than hidden:** camera screening's sync
+statistic is a median over repetitions, so on a single repetition it is noisy. Screening P13 on one
+trial keeps cams 1/3/5 and drops cam_4 (sync 0.59 against the 0.65 threshold, but reprojection
+6.6 px — a good camera). The cohort audit, run over all of a participant's trials, keeps 1/3/4.
+
 ### Internal-consistency pass over the whole paper (2026-08-24)
 
 Every number in `main.tex` re-derived from the CSVs, caches and logs. Build clean throughout:

@@ -8,8 +8,11 @@ fitted biomechanical model.
 
 This repository is the **research and validation record** behind the paper in [`paper/`](paper/): the
 scripts that produce every table and figure, and a claim-by-claim account of what each number was
-measured from. To *use* the method rather than reproduce the paper, see the pipeline-only repository
-(link in `paper/main.tex`), which carries the same stages without the research clutter.
+measured from. To *use* the method rather than reproduce the paper, see
+**[fastmmc](https://github.com/foalengtoussaint/fastmmc)** — the same stages, without the research
+clutter, runnable on your own recordings in one command. Its `tests/test_parity.py` runs both
+implementations over the caches here and requires them to agree, so it is the same method rather
+than a similar one.
 
 ## What is validated
 

@@ -24,9 +24,19 @@ repositories go public.
 institutional address in place of the gmail one that was there. The group or lab line is still the
 author's to fill.
 
-**Code URLs settled 2026-08-25**, split by what a reader would want: §III-C's footnote points at the
-pipeline-only repository (the method), §IV's at `foalengtoussaint/cup-task` (the scripts behind every
-table and this file). Both carry a todo to confirm once public.
+**Code URLs settled 2026-08-25**, split by what a reader would want: §III-C's footnote points at
+`foalengtoussaint/fastmmc` (the method), §IV's at `foalengtoussaint/cup-task` (the scripts behind
+every table and this file).
+
+**`fastmmc` is PUBLIC** — verified by an anonymous request returning 200, not by the account that
+owns it — so that footnote is finished and its todo is gone.
+
+**[!] `cup-task` IS PRIVATE.** An anonymous request returns **404**, so §IV's footnote is currently a
+dead link for every reader of the paper. `gh repo view` is not the test to use here: this machine is
+authenticated as two accounts, so a private repo of the owner's can resolve for one of them and look
+fine. Check it the way a reader would, unauthenticated. Either make the repository public before
+submission or delete that footnote — §III-C's is public and stands on its own. The todo in §IV says
+this.
 
 **Figures**: Fig. 1 exemplary trajectories (P07, trials 10 and 43); Fig. 2 the twelve measures
 end-to-end (`fig4b_mmcseg_anat12.png`).

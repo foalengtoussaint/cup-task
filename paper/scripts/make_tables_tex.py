@@ -124,43 +124,57 @@ _SHORT = {
 
 
 def table3(df: pd.DataFrame) -> str:
+    """Full width (`table*`): the CIs do not fit one IEEE column.
+
+    Point estimates alone cannot be read here -- interjoint coordination's r_s spans 0.27-0.98
+    across random subsamples of the same trials -- so every r carries a bootstrap interval from
+    ``measure_cis.py``. Falls back to the bare numbers if that file is absent.
+    """
+    ci_f = PAPER / "table3_cis.csv"
+    ci = pd.read_csv(ci_f).set_index("measure") if ci_f.exists() else None
+    f30 = PAPER / "table3_fps30.csv"
+    hz30 = pd.read_csv(f30).set_index("measure")["r_s_30"].to_dict() if f30.exists() else {}
+
     L = [
-        r"\begin{table}[t]",
+        r"\begin{table*}[t]",
         r"\caption{Movement-quality measures, MMC versus OMC: $r_s$ over single trials and",
         r"$r_{av}$ over per-participant, per-arm averages, with the phase windows taken from the",
         r"optical and from the markerless recording in turn, and the markerless condition",
-        r"repeated at $30$\,Hz. $n$ is the $60$\,Hz pair count.}",
+        r"repeated at $30$\,Hz. Brackets are $95\%$ bootstrap intervals, resampling trials for",
+        r"$r_s$ and the $21$ participant--arm groups for $r_{av}$. $n$ is the $60$\,Hz pair count.}",
         r"\label{tab:measures}",
         r"\centering",
-        # six columns do not fit an IEEE column at \footnotesize (overfull 32.5pt); the smaller
-        # font plus tightened intercolumn padding brings it inside without \resizebox, which would
-        # make this table's type a different size from every other table's.
-        r"\scriptsize",
-        r"\setlength{\tabcolsep}{1.5pt}",
-        r"\begin{tabular}{lccccccc}",
+        r"\footnotesize",
+        r"\setlength{\tabcolsep}{4pt}",
+        r"\begin{tabular}{lcccccc}",
         r"\toprule",
-        r" & \multicolumn{2}{c}{Optical win.} & \multicolumn{2}{c}{Markerless win.} & \multicolumn{2}{c}{Markerless, 30\,Hz} & \\",
-        r"\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(lr){6-7}",
-        r"Measure & $r_s$ & $r_{av}$ & $r_s$ & $r_{av}$ & $r_s$ & $r_{av}$ & $n$ \\",
+        r" & \multicolumn{2}{c}{Optical windows} & \multicolumn{2}{c}{Markerless windows} & 30\,Hz & \\",
+        r"\cmidrule(lr){2-3}\cmidrule(lr){4-5}",
+        r"Measure & $r_s$ & $r_{av}$ & $r_s$ & $r_{av}$ & $r_s$ & $n$ \\",
         r"\midrule",
     ]
-    # the 30 Hz column is the same end-to-end condition at half the capture rate; it is the
-    # configuration whose front end fits a live budget, so it belongs beside the 60 Hz result
-    f30 = PAPER / "table3_fps30.csv"
-    if f30.exists():
-        _d30 = pd.read_csv(f30).set_index("measure")
-        hz30 = _d30["r_s_30"].to_dict()
-        hz30av = _d30["r_av_30"].to_dict()
-    else:
-        hz30 = hz30av = {}
+
+    def cell(point, lo, hi):
+        if lo is None or not np.isfinite(lo):
+            return f"{point:.2f}"
+        return f"{point:.2f} [{lo:.2f}, {hi:.2f}]"
+
     for _, r in df.iterrows():
-        measure = _SHORT.get(str(r["measure"]), str(r["measure"])).replace("_", r"\_")
-        v30, v30a = hz30.get(str(r["measure"])), hz30av.get(str(r["measure"]))
+        raw = str(r["measure"])
+        measure = _SHORT.get(raw, raw).replace("_", r"\_")
+        c = ci.loc[raw] if ci is not None and raw in ci.index else None
+        if c is None:
+            cells = [f"{r['r_s']:.2f}", f"{r['r_av']:.2f}",
+                     f"{r['r_s_mmcwin']:.2f}", f"{r['r_av_mmcwin']:.2f}"]
+        else:
+            cells = [cell(c.r_s_opt, c.r_s_opt_lo, c.r_s_opt_hi),
+                     cell(c.r_av_opt, c.r_av_opt_lo, c.r_av_opt_hi),
+                     cell(c.r_s_mmc, c.r_s_mmc_lo, c.r_s_mmc_hi),
+                     cell(c.r_av_mmc, c.r_av_mmc_lo, c.r_av_mmc_hi)]
+        v30 = hz30.get(raw)
         c30 = f"{v30:.2f}" if v30 is not None else "---"
-        c30a = f"{v30a:.2f}" if v30a is not None else "---"
-        L.append(f"{measure} & {r['r_s']:.2f} & {r['r_av']:.2f} & "
-                 f"{r['r_s_mmcwin']:.2f} & {r['r_av_mmcwin']:.2f} & {c30} & {c30a} & {int(r['n'])} \\\\")
-    L += [r"\bottomrule", r"\end{tabular}", r"\end{table}", ""]
+        L.append(f"{measure} & " + " & ".join(cells) + f" & {c30} & {int(r['n'])} \\\\")
+    L += [r"\bottomrule", r"\end{tabular}", r"\end{table*}", ""]
     return "\n".join(L)
 
 

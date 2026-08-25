@@ -1807,3 +1807,53 @@ the observed drop does not establish it. §VI now carries the 0.27--0.98 resampl
 
 Unaffected: the "ten of twelve clear r_s >= 0.84 and r_av >= 0.93" counts, at both rates. Interjoint
 fails the threshold on any of these values, so no count changes.
+
+### Bootstrap CIs added to Table II (2026-08-25)
+
+Prompted by interjoint's 0.27--0.98 resampling range: a bare point estimate cannot be read, so every
+r now carries a $95\%$ interval. `paper/scripts/measure_cis.py` -> `paper/table3_cis.csv`, read by
+`make_tables_tex.py`. **`r_s` resamples TRIALS; `r_av` resamples the 21 participant-arm GROUPS**,
+which is the unit that statistic averages over — resampling trials for `r_av` would understate it.
+
+**The intervals make the paper's own argument visible.** Median width on `r_s` is 0.03 and ten of
+twelve are under 0.10; the two exceptions are the two measures the paper already calls weak:
+
+| | r_s (markerless) | CI width |
+|---|---|---|
+| interjoint coordination | 0.57 [0.38, 0.80] | **0.43** |
+| number of movement units | 0.80 [0.70, 0.87] | **0.17** |
+| the other ten | — | 0.00--0.10 |
+
+**Table II is now `table*` (full width)** — the CIs do not fit one IEEE column. `\footnotesize`,
+tabcolsep 4pt, no overfull, still 8 pages.
+
+**[!] And the paired comparison corrected a claim.** §V-E said "eight of the twelve measures move by
+less than 0.01 ... and none degrades by more than 0.04". The optical-vs-markerless change must be
+bootstrapped PAIRED (same trials, same draw); done that way, **five of twelve degrade detectably**
+and movement units' interval reaches **0.066**, so "none by more than 0.04" was a point estimate the
+interval does not support:
+
+| measure | change | paired 95% CI |
+|---|---|---|
+| number of movement units | −0.036 | [−0.066, −0.019] |
+| time to peak velocity | −0.033 | [−0.096, −0.001] |
+| peak elbow angular velocity | −0.013 | [−0.027, −0.003] |
+| total movement time | −0.005 | [−0.011, −0.002] |
+| peak velocity | −0.005 | [−0.013, −0.000] |
+| the other seven | | contain zero |
+
+§V-E now says five degrade detectably, all small, and the remaining seven cannot be distinguished
+from no change — a cleaner claim than enumerating deltas, and one that survives scrutiny.
+
+**A bug worth not repeating:** the detectability test `(lo > 0) == (hi > 0)` returns True for a
+zero-width interval at zero, so trunk displacement and elbow extension — identical between the two
+conditions by construction — were flagged as detectable changes. Now `lo > 0 or hi < 0`.
+
+**P19 correction to my own analysis, not the paper's claim.** §Limitations says the participant with
+the worst calibration is the one whose measures agree least well. I doubted it and was wrong: P19 IS
+the worst on measure agreement (error z 0.697, next 0.223), and its calibration is known bad. My
+proxies — cup camera consensus, decline rate — showed P19 as *good* (best cup consensus of the four
+three-camera units, zero declines), because **they measure whether cameras agree with each other, not
+whether the rig is right.** A coherently mis-calibrated rig triangulates consistently to the wrong
+place: high consensus, no declines, systematically wrong geometry. Consensus is not an accuracy
+proxy; do not use it as one.

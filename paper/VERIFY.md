@@ -1917,3 +1917,33 @@ TODO rather than being filled in from an inference.
 **To unblock:** the FMA-UE totals in any tabular form, and either the Record ID -> P-label key or
 confirmation of P25's affected side. Trial counts per unit and arm are already recorded above, so the
 table's `n` column needs no work.
+
+### Calibration errors located on the network share (2026-08-25)
+
+The DELTA study's own per-unit calibration error is on the institutional SMB share, not on this
+machine: `smb://nslliappl01.lli.local/research_analyzed_dataset/DELTA/DELTA/DATA/data_newStruc/
+2024_10_23_1138_Calibration_errors.csv` (mounted via gvfs at
+`/run/user/1000/gvfs/smb-share:server=nslliappl01.lli.local,share=research_analyzed_dataset`).
+Columns `id_p;cam_used;error`. The share also confirms our unit labels are the study's own —
+`P251`/`P252` appear there, as do `P241`/`P242` for another two-session participant.
+
+**[!] This file CANNOT be used to rank the units, and I briefly "corrected" §Limitations on the basis
+that it could.** The error is an aggregate over whatever camera set that unit was calibrated with,
+and those sets differ: 10 cameras for P14, P15, P17, P19; 7 for P07, P08; 5 for the rest. We keep
+only 3--5 of them. P17 reads worst overall at 13.32, but that spans 10 cameras of which the pipeline
+uses 3 — the error is inflated by cameras that were then discarded, which is why its measures are
+mid-pack. **A number computed over cameras the pipeline does not use says nothing about the
+reconstruction.** §Limitations' claim is correct as the authors state it — P19 is the worst on the
+cameras actually used — and now says "over the cameras actually used" to foreclose the same mistake.
+The naive Spearman on the aggregate (+0.645 across 11 units) is confounded by the mixed camera sets
+and is NOT quoted.
+
+**What the file DOES support cleanly, because both sessions were calibrated over the same 5 cameras:**
+P25's two sessions read **0.47 and 3.13** — a sevenfold difference in calibration error for the same
+person on the same rig on different days. Now in §Limitations. It is independent evidence for §V-C's
+central argument, that the landmark offsets are a property of each recording SESSION rather than of
+the participant, arrived at there from the fit alone.
+
+**Still not found on the share:** the clinical scores. `DELTA/DELTA/archive/DELTA_Patients` exists and
+is unexplored; the FMA-UE totals and the Record ID -> P-label key remain the two blockers on the
+study-population table.

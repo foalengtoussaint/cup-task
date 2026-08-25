@@ -1947,3 +1947,26 @@ the participant, arrived at there from the fit alone.
 **Still not found on the share:** the clinical scores. `DELTA/DELTA/archive/DELTA_Patients` exists and
 is unexplored; the FMA-UE totals and the Record ID -> P-label key remain the two blockers on the
 study-population table.
+
+### Searched the network share for the clinical scores: not there (2026-08-25)
+
+Where I looked, so nobody repeats it. Share
+`smb://nslliappl01.lli.local/research_analyzed_dataset` (the only one mounted; gvfs has no other, and
+`smbclient` is not installed here so sibling shares could not be enumerated):
+
+- `DELTA/` subtree, every `.csv` / `.xlsx` / `.pkl` to depth 4 -> **one file only**, the calibration
+  errors already used. No clinical export.
+- `DELTA/DELTA/archive/DELTA_Patients/` -> a Vicon Nexus session for a single **pilot** patient
+  ("Paul"), with `06_BoxAndBlock`, `07_MotricityIndex`, `08_FugelMayer` folders. Those are trial
+  CAPTURE directories for one pilot, not the cohort's score table.
+- Share root -> 34 study folders, no clinical/REDCap/demographics directory.
+- `1. Project_content.xlsx` at the root -> a catalogue of studies, sensors and goals. Not a data map;
+  no pointer to where scores live.
+
+**Conclusion: the FMA-UE totals and the Record ID -> P-label key are not reachable from this
+machine.** The notebook read REDCap exports (`1DELTABasisdaten_...csv`, `4DELTABBT_...csv`,
+`FMA_clean.csv`) from a local Desktop, so they are either on that machine, on a share not mounted
+here, or need a fresh REDCap export. §V-A's TODO now says the share was searched.
+
+**What the share DID give**, and it was worth the trip: the per-unit calibration errors, and
+confirmation that `P251`/`P252` are the study's own labels rather than a local invention.
